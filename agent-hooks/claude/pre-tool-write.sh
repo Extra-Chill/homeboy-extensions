@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Claude Code PreToolUse (Edit) hook - Dynamic file protection
+# Claude Code PreToolUse (Write) hook - Dynamic file protection
 # Uses homeboy init --json to detect protected files
-# Exit 0: Allow edit
-# Exit 2: Block edit with reason
+# Exit 0: Allow write
+# Exit 2: Block write with reason
 
 set -euo pipefail
 
@@ -71,5 +71,5 @@ EOF
     fi
 done
 
-# No protected files matched, allow edit
+# No protected files matched, allow write
 exit 0
