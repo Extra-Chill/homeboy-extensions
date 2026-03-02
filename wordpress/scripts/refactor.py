@@ -194,6 +194,58 @@ def detect_class_name(content):
     return m.group(1) if m else None
 
 
+def detect_parent_class(content):
+    """Extract the parent class name from file content, if any.
+
+    class Foo extends Bar { ... } -> 'Bar'
+    class Foo implements Baz { ... } -> None
+    class Foo { ... } -> None
+    """
+    m = re.search(r'class\s+\w+\s+extends\s+([\w\\]+)', content)
+    return m.group(1) if m else None
+
+
+def detect_extraction_strategy(all_contents, function_name, method_source):
+    """Determine the best extraction strategy for a group of duplicate functions.
+
+    Examines class hierarchies and method characteristics to decide:
+    - 'trait'       : files have no common base class (default)
+    - 'base_class'  : all files extend the same base class
+    - 'static'      : method doesn't use $this — could be a static helper
+
+    Args:
+        all_contents: dict of {file_path: file_content} for all files in the group
+        function_name: the duplicated function name
+        method_source: the canonical method source code
+
+    Returns:
+        (strategy, detail) tuple:
+          strategy: 'trait' | 'base_class' | 'static'
+          detail: str — extra context (e.g., the base class name)
+    """
+    # Detect parent classes for all files
+    parent_classes = {}
+    for fpath, fcontent in all_contents.items():
+        parent = detect_parent_class(fcontent)
+        if parent:
+            # Normalize to short name (strip namespace prefix)
+            parent_classes[fpath] = parent.split('\\')[-1]
+
+    # Check if ALL files extend the same base class
+    if parent_classes and len(parent_classes) == len(all_contents):
+        unique_parents = set(parent_classes.values())
+        if len(unique_parents) == 1:
+            base_class = unique_parents.pop()
+            return ('base_class', base_class)
+
+    # Check if method uses $this — if not, it could be a static helper
+    uses_this = bool(re.search(r'\$this\b', method_source))
+    if not uses_this:
+        return ('static', 'method does not reference $this')
+
+    return ('trait', '')
+
+
 def namespace_to_path(namespace):
     """Convert a PHP namespace to a directory path.
 
@@ -379,13 +431,22 @@ def extract_shared(data):
     item = items[0]
     method_source = item['source']
 
-    # Find imports the method depends on
-    dependency_imports = extract_method_dependencies(method_source, canonical_content)
-
-    # Detect namespaces from all files to find the common ancestor
+    # Build content map for all files
     all_contents = {canonical_file: canonical_content}
     for f in files:
         all_contents[f['path']] = f['content']
+
+    # Determine extraction strategy (trait vs base class vs static)
+    strategy, detail = detect_extraction_strategy(all_contents, function_name, method_source)
+
+    if strategy == 'base_class':
+        return {
+            'skip': True,
+            'reason': f'all files extend {detail} — method should be added to {detail} instead of extracted to a trait',
+        }
+
+    # Find imports the method depends on
+    dependency_imports = extract_method_dependencies(method_source, canonical_content)
 
     namespaces = []
     for fpath in all_file_paths:
@@ -472,13 +533,19 @@ def extract_shared(data):
 
         file_edits.append(edit)
 
-    return {
+    result = {
         'trait_file': trait_file_path,
         'trait_content': trait_content,
         'trait_name': trait_name,
         'trait_namespace': trait_namespace,
         'file_edits': file_edits,
+        'strategy': strategy,
     }
+
+    if strategy == 'static':
+        result['note'] = 'method does not use $this — consider a static helper class instead of a trait'
+
+    return result
 
 
 # ============================================================================
