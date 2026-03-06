@@ -19,17 +19,9 @@ set -euo pipefail
 FAILED_STEP=""
 FAILURE_OUTPUT=""
 
-# Step filtering
-should_run_step() {
-    local step_name="$1"
-    if [ -n "${HOMEBOY_STEP:-}" ]; then
-        echo ",${HOMEBOY_STEP}," | grep -q ",${step_name}," && return 0 || return 1
-    fi
-    if [ -n "${HOMEBOY_SKIP:-}" ]; then
-        echo ",${HOMEBOY_SKIP}," | grep -q ",${step_name}," && return 1 || return 0
-    fi
-    return 0
-}
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./lib/runner-steps.sh
+source "${SCRIPT_DIR}/lib/runner-steps.sh"
 
 print_failure_summary() {
     if [ -n "$FAILED_STEP" ]; then
