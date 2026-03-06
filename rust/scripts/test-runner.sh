@@ -19,8 +19,9 @@ FAILURE_OUTPUT=""
 FAILURE_REPLAY_MODE="full"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RUNNER_STEPS_HELPER="${HOMEBOY_RUNTIME_RUNNER_STEPS:-${SCRIPT_DIR}/lib/runner-steps.sh}"
 # shellcheck source=./lib/runner-steps.sh
-source "${SCRIPT_DIR}/lib/runner-steps.sh"
+source "${RUNNER_STEPS_HELPER}"
 
 print_failure_summary() {
     if [ -n "$FAILED_STEP" ]; then

@@ -27,8 +27,9 @@ fi
 # Supports step filtering via HOMEBOY_STEP/HOMEBOY_SKIP (steps: phpcs, eslint, phpstan)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RUNNER_STEPS_HELPER="${HOMEBOY_RUNTIME_RUNNER_STEPS:-${SCRIPT_DIR}/../lib/runner-steps.sh}"
 # shellcheck source=../lib/runner-steps.sh
-source "${SCRIPT_DIR}/../lib/runner-steps.sh"
+source "${RUNNER_STEPS_HELPER}"
 
 # Debug environment variables (only shown when HOMEBOY_DEBUG=1)
 if [ "${HOMEBOY_DEBUG:-}" = "1" ]; then
