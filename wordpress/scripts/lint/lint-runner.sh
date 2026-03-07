@@ -131,6 +131,7 @@ READDIR_FIXER="${EXTENSION_PATH}/scripts/lint/php-fixers/readdir-fixer.php"
 COMMENTED_CODE_FIXER="${EXTENSION_PATH}/scripts/lint/php-fixers/commented-code-fixer.php"
 WP_ALTERNATIVES_FIXER="${EXTENSION_PATH}/scripts/lint/php-fixers/wp-alternatives-fixer.php"
 WP_FILESYSTEM_FIXER="${EXTENSION_PATH}/scripts/lint/php-fixers/wp-filesystem-fixer.php"
+PHPCS_IGNORE_FIXER="${EXTENSION_PATH}/scripts/lint/php-fixers/phpcs-ignore-fixer.php"
 PHPCS_CONFIG="${EXTENSION_PATH}/phpcs.xml.dist"
 
 # Validate tools exist
@@ -337,6 +338,15 @@ if [[ "${HOMEBOY_AUTO_FIX:-}" == "1" ]]; then
         echo ""
     else
         echo "Warning: phpcbf not found, skipping auto-fix"
+    fi
+
+    # Run phpcs:ignore fixer LAST — adds ignore comments for known false positives
+    # (PreparedSQL table names, base64_encode for auth, mt_srand, ValidHookName)
+    # This must run after all real-code fixers and phpcbf
+    if [ -f "$PHPCS_IGNORE_FIXER" ]; then
+        for lint_target in "${LINT_FILES[@]}"; do
+            php "$PHPCS_IGNORE_FIXER" "$lint_target" --phpcs-binary="$PHPCS_BIN" --phpcs-standard="$PHPCS_CONFIG"
+        done
     fi
 fi
 
