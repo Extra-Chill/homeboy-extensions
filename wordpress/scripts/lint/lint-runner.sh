@@ -129,6 +129,8 @@ SILENCED_ERROR_FIXER="${EXTENSION_PATH}/scripts/lint/php-fixers/silenced-error-f
 EMPTY_CATCH_FIXER="${EXTENSION_PATH}/scripts/lint/php-fixers/empty-catch-fixer.php"
 READDIR_FIXER="${EXTENSION_PATH}/scripts/lint/php-fixers/readdir-fixer.php"
 COMMENTED_CODE_FIXER="${EXTENSION_PATH}/scripts/lint/php-fixers/commented-code-fixer.php"
+WP_ALTERNATIVES_FIXER="${EXTENSION_PATH}/scripts/lint/php-fixers/wp-alternatives-fixer.php"
+WP_FILESYSTEM_FIXER="${EXTENSION_PATH}/scripts/lint/php-fixers/wp-filesystem-fixer.php"
 PHPCS_CONFIG="${EXTENSION_PATH}/phpcs.xml.dist"
 
 # Validate tools exist
@@ -277,6 +279,16 @@ if [[ "${HOMEBOY_AUTO_FIX:-}" == "1" ]]; then
         # This fixer runs PHPCS internally to find CommentedOutCode violations
         if [ -f "$COMMENTED_CODE_FIXER" ]; then
             php "$COMMENTED_CODE_FIXER" "$lint_target"
+        fi
+
+        # Run WP alternatives fixer (strip_tags → wp_strip_all_tags, unlink → wp_delete_file)
+        if [ -f "$WP_ALTERNATIVES_FIXER" ]; then
+            php "$WP_ALTERNATIVES_FIXER" "$lint_target"
+        fi
+
+        # Run WP Filesystem fixer (file_get_contents → $fs->get_contents, file_put_contents → $fs->put_contents)
+        if [ -f "$WP_FILESYSTEM_FIXER" ]; then
+            php "$WP_FILESYSTEM_FIXER" "$lint_target"
         fi
     done
 
