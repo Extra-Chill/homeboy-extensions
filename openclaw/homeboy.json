@@ -1,12 +1,9 @@
 {
-  "id": "rust",
+  "id": "openclaw",
   "changelog_target": "docs/CHANGELOG.md",
-  "extensions": {
-    "rust": {}
-  },
   "version_targets": [
     {
-      "file": "rust.json",
+      "file": "openclaw.json",
       "pattern": "\"version\":\\s*\"([0-9.]+)\""
     }
   ]
