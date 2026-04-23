@@ -19,7 +19,8 @@ register_shutdown_function(function() {
 $tests_dir = '/homeboy-extension/vendor/wp-phpunit/wp-phpunit';
 $plugin_path = '/wordpress/wp-content/plugins/{{PLUGIN_SLUG}}';
 
-file_put_contents("$tests_dir/wp-tests-config.php", <<<'CONFIG'
+$config_path = '/tmp/wp-tests-config.php';
+file_put_contents($config_path, <<<'CONFIG'
 <?php
 $table_prefix = 'wptests_';
 define('DB_NAME', ':memory:');
@@ -41,7 +42,7 @@ CONFIG
 require_once '/homeboy-extension/vendor/autoload.php';
 log_msg("BOOT OK");
 
-$argv = ['install.php', "$tests_dir/wp-tests-config.php", 'no_ms_tests', 'no_core_tests'];
+$argv = ['install.php', $config_path, 'no_ms_tests', 'no_core_tests'];
 $_SERVER['argv'] = $argv;
 
 log_msg("INSTALLING");
