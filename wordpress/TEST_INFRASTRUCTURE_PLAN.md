@@ -452,6 +452,67 @@ composer test
 | PHPUnit only when tests exist | ✅ Complete |
 | Per-component reporting | ✅ Complete |
 
+### 🔧 Phase 5: Playground Backend (IN PROGRESS — Phase 1 of #214)
+
+Opt-in backend that runs PHPUnit inside WordPress Playground (PHP-WASM + embedded
+SQLite) instead of host PHP. Does not replace the host backend.
+
+| Task | File | Status |
+|------|------|--------|
+| Add `test_backend` setting to wordpress.json | wordpress.json | ✅ Complete |
+| Add `@wp-playground/cli` to package.json | package.json | ✅ Complete |
+| Create test-runner-playground.sh | scripts/test/test-runner-playground.sh | ✅ Complete |
+| Add backend dispatch in test-runner.sh | scripts/test/test-runner.sh | ✅ Complete |
+| Update setup.sh for Playground deps | scripts/build/setup.sh | ✅ Complete |
+| Update README with backend docs | README.md | ✅ Complete |
+| In-process WP install (replace `system()` call) | — | 🔲 Blocked |
+| PHPUnit stdout forwarding | — | 🔲 Upstream gap |
+| db.php drop-in support (MDI test) | — | 🔲 Pending |
+
+**Architecture:**
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                  test-runner.sh (router)                         │
+│  Reads test_backend from settings JSON                          │
+│  ├── "host"      → runs existing host-PHP PHPUnit path          │
+│  └── "playground" → exec test-runner-playground.sh              │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                  test-runner-playground.sh
+                              │
+┌─────────────────────────────────────────────────────────────────┐
+│  1. Generate PHP wrapper (env vars + bootstrap + PHPUnit)       │
+│  2. Build mount list (plugin + deps + extension)                │
+│  3. Run via: wp-playground-cli php --mount ... -- /runner.php   │
+│  4. Capture results via host-mounted .pg-test-result.txt        │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Known Gaps (Phase 1):**
+
+1. **No DB tables.** `WP_TESTS_SKIP_INSTALL=1` is required because Playground's
+   PHP-WASM cannot spawn subprocesses via `system()`. The wp-phpunit `install.php`
+   is normally run as a child PHP process. Tests using `WP_UnitTestCase` factory
+   methods fail with "no such table". Fix: rewrite install.php as an in-process
+   include (set `$argv` before `require_once`).
+
+2. **No PHPUnit stdout.** The `wp-playground-cli php` subcommand does not forward
+   PHP's stdout to the host terminal when the process exits non-zero. Workaround:
+   results are written to a host-mounted log file and parsed after the run.
+
+3. **WP version pinning.** The `--wp` flag must match the wp-phpunit package
+   version (currently 6.9.x). Mismatch causes missing class errors in the
+   wp-phpunit bootstrap.
+
+4. **db.php drop-in support.** Custom `db.php` drop-ins (e.g., markdown-database-
+   integration) can be mounted into the Playground VFS, but Playground's built-in
+   SQLite integration may conflict. Needs per-case testing.
+
+**References:**
+- Issue: Extra-Chill/homeboy-extensions#214
+- Playground CLI: https://www.npmjs.com/package/@wp-playground/cli
+
 ---
 
 ## 13. Benefits Summary
