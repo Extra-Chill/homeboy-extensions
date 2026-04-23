@@ -12,12 +12,14 @@ set -euo pipefail
 #
 # HOW IT WORKS:
 #
-# 1. Generates a PHP wrapper script that:
+# 1. Fills in the static PHP template (playground-runner.php) with the plugin
+#    slug and dependency mount paths via sed substitution.
+#
+#    The template:
 #    - Generates wp-tests-config.php inside the wp-phpunit VFS
-#    - Sets env vars (WP_TESTS_DIR, ABSPATH, HOMEBOY_*)
-#    - Loads the wp-phpunit bootstrap with WP_TESTS_SKIP_INSTALL=1
-#      (Playground's PHP-WASM cannot spawn subprocesses via system(),
-#       so the WP install step is skipped)
+#    - Runs install.php IN-PROCESS (set $argv, require_once) which boots
+#      WordPress AND creates DB tables without needing system()
+#    - Loads wp-phpunit test case classes directly (no host bootstrap)
 #    - Discovers and runs test files via PHPUnit's programmatic API
 #
 # 2. Mounts host directories into Playground's VFS:
@@ -26,17 +28,15 @@ set -euo pipefail
 #    - Extension dir     → /homeboy-extension
 #    - Custom db.php     → /wordpress/wp-content/db.php (if present)
 #
-# 3. Runs the wrapper via `wp-playground-cli php`
+# 3. Runs the filled template via `wp-playground-cli php`
 #
 # KNOWN GAPS (Phase 1):
-#   - DB tables are not created (WP_TESTS_SKIP_INSTALL=1). Tests that
-#     use WP_UnitTestCase factory methods (user/post creation) will fail
-#     with "no such table". Future work: in-process WP install.
-#   - PHPUnit stdout is not forwarded by the Playground CLI's php
-#     subcommand. Results are captured via a host-mounted log file.
 #   - WP version is pinned to match wp-phpunit package (6.9.x).
+#   - db.php drop-in support needs per-case testing (Playground's built-in
+#     SQLite integration may conflict with custom drop-ins like MDI).
 #
-# See TEST_INFRASTRUCTURE_PLAN.md §17 for the full gap analysis.
+# The host bootstrap (tests/bootstrap.php) is NOT used by this backend.
+# install.php is included in-process which avoids the system() subprocess.
 
 FAILED_STEP=""
 FAILURE_OUTPUT=""
@@ -169,108 +169,18 @@ fi
 RESULT_FILE="${PLUGIN_PATH}/.pg-test-result.txt"
 rm -f "$RESULT_FILE"
 
-WRAPPER_SCRIPT=$(cat <<PHPWRAPPER
-<?php
-error_reporting(E_ALL & ~E_WARNING & ~E_NOTICE);
+TEMPLATE="${SCRIPT_DIR}/playground-runner.php"
+if [ ! -f "$TEMPLATE" ]; then
+    echo "Error: playground-runner.php template not found at $TEMPLATE"
+    FAILED_STEP="Playground setup"
+    exit 1
+fi
 
-\$out = '/wordpress/wp-content/plugins/${PLUGIN_SLUG}/.pg-test-result.txt';
-function log_msg(\$msg) { global \$out; file_put_contents(\$out, \$msg . "\\n", FILE_APPEND); }
-register_shutdown_function(function() {
-    global \$out;
-    \$error = error_get_last();
-    if (\$error && \$error['type'] === E_ERROR) {
-        file_put_contents(\$out, "FATAL: {\$error['message']}\\n", FILE_APPEND);
-    }
-});
-
-\$tests_dir = '/homeboy-extension/vendor/wp-phpunit/wp-phpunit';
-\$plugin_path = '/wordpress/wp-content/plugins/${PLUGIN_SLUG}';
-
-file_put_contents("\$tests_dir/wp-tests-config.php", <<<'CONFIG'
-<?php
-\\\$table_prefix = 'wptests_';
-define('DB_NAME', ':memory:');
-define('DB_USER', 'root');
-define('DB_PASSWORD', '');
-define('DB_HOST', 'localhost');
-define('DB_CHARSET', 'utf8');
-define('WP_TESTS_DOMAIN', 'example.org');
-define('WP_TESTS_EMAIL', 'admin@example.org');
-define('WP_TESTS_TITLE', 'Test Blog');
-define('WP_PHP_BINARY', 'php');
-define('ABSPATH', '/wordpress/');
-define('FS_CHMOD_FILE', 0644);
-define('FS_CHMOD_DIR', 0755);
-define('FS_METHOD', 'direct');
-define('WP_INSTALLING', true);
-CONFIG
-);
-
-require_once '/homeboy-extension/vendor/autoload.php';
-log_msg("BOOT OK");
-
-putenv("WP_TESTS_DIR=\$tests_dir");
-putenv("ABSPATH=/wordpress");
-putenv("WP_TESTS_SKIP_INSTALL=1");
-putenv("HOMEBOY_COMPONENT_ID=${COMPONENT_ID}");
-putenv("HOMEBOY_COMPONENT_PATH=\$plugin_path");
-putenv("HOMEBOY_PLUGIN_PATH=\$plugin_path");
-putenv("HOMEBOY_WORDPRESS_DEPENDENCY_PATHS=${PLAYGROUND_DEP_MOUNTS}");
-
-require_once "\$tests_dir/includes/functions.php";
-
-\\\$component_file = null;
-\\\$files = glob("\\\$plugin_path/*.php");
-foreach (\\\$files as \\\$f) {
-    if (strpos(file_get_contents(\\\$f), 'Plugin Name:') !== false) {
-        \\\$component_file = \\\$f;
-        break;
-    }
-}
-if (\\\$component_file) {
-    tests_add_filter('muplugins_loaded', function() use (\\\$component_file) {
-        require_once \\\$component_file;
-    });
-}
-
-log_msg("LOADING BOOTSTRAP");
-require_once "\$tests_dir/includes/bootstrap.php";
-log_msg("BOOTSTRAP OK");
-
-wp_installing(false);
-while (ob_get_level() > 0) @ob_end_clean();
-
-log_msg("DISCOVERING TESTS");
-\\\$test_dir = "\$plugin_path/tests";
-\\\$test_files = array_merge(
-    glob("\\\$test_dir/test-*.php") ?: [],
-    glob("\\\$test_dir/*Test.php") ?: []
-);
-if (empty(\\\$test_files)) {
-    log_msg("NO TEST FILES FOUND");
-    exit(1);
-}
-
-\\\$suite = new PHPUnit\\Framework\\TestSuite('Playground Tests');
-foreach (\\\$test_files as \\\$tf) {
-    require_once \\\$tf;
-    \\\$class_name = basename(\\\$tf, '.php');
-    if (class_exists(\\\$class_name)) {
-        \\\$suite->addTestSuite(\\\$class_name);
-    }
-}
-
-log_msg("RUNNING " . count(\\\$test_files) . " TEST FILES");
-\\\$runner = new PHPUnit\\TextUI\\TestRunner();
-\\\$result = \\\$runner->run(\\\$suite, ['colors' => 'never', 'testdox' => true, 'verbose' => false]);
-log_msg(\\\$result->wasSuccessful() ? "ALL TESTS PASSED" : "SOME TESTS FAILED");
-log_msg("TESTS: " . \\\$result->count() . " FAILURES: " . count(\\\$result->failures()) . " ERRORS: " . count(\\\$result->errors()));
-exit(\\\$result->wasSuccessful() ? 0 : 1);
-PHPWRAPPER
-)
-
-WRAPPER_TMPFILE=$(mktemp --suffix=.php)
-echo "$WRAPPER_SCRIPT" > "$WRAPPER_TMPFILE"
+WRAPPER_TMPFILE=$(mktemp "${TMPDIR:-/tmp}/pg-runner.XXXXXX.php")
+sed \
+    -e "s|{{PLUGIN_SLUG}}|${PLUGIN_SLUG}|g" \
+    -e "s|{{PLAYGROUND_DEP_MOUNTS}}|${PLAYGROUND_DEP_MOUNTS}|g" \
+    "$TEMPLATE" > "$WRAPPER_TMPFILE"
 
 echo "Running PHPUnit tests via WordPress Playground..."
 echo "  Plugin: ${PLUGIN_SLUG} (${PLUGIN_PATH})"
@@ -281,6 +191,8 @@ if [ "${HOMEBOY_DEBUG:-}" = "1" ]; then
     echo "  Mount args: ${MOUNT_ARGS[*]}"
 fi
 
+PHPUNIT_TMPFILE=$(mktemp)
+
 set +e
 "$PLAYGROUND_CLI" php \
     "${MOUNT_ARGS[@]}" \
@@ -288,8 +200,8 @@ set +e
     --wp=6.9 \
     --verbosity=normal \
     -- /runner.php \
-    2>&1
-playground_exit=$?
+    2>&1 | tee "$PHPUNIT_TMPFILE"
+playground_exit=${PIPESTATUS[0]}
 set -e
 
 rm -f "$WRAPPER_TMPFILE"
@@ -297,19 +209,35 @@ rm -f "$WRAPPER_TMPFILE"
 PHPUNIT_OUTPUT=""
 if [ -f "$RESULT_FILE" ]; then
     PHPUNIT_OUTPUT=$(cat "$RESULT_FILE")
-    echo ""
-    echo "--- Playground test results ---"
-    echo "$PHPUNIT_OUTPUT"
-    echo ""
 fi
 
+# Also capture PHPUnit stdout from the tee'd output
+PHPUNIT_STDOUT=$(cat "$PHPUNIT_TMPFILE")
+rm -f "$PHPUNIT_TMPFILE"
+
+# Parse test results for homeboy core (best-effort, non-blocking)
 PARSE_RESULTS="${EXTENSION_PATH}/scripts/test/parse-test-results.sh"
-if [ -n "${HOMEBOY_TEST_RESULTS_FILE:-}" ] && [ -f "$PARSE_RESULTS" ] && [ -n "$PHPUNIT_OUTPUT" ]; then
-    echo "$PHPUNIT_OUTPUT" | bash "$PARSE_RESULTS" || true
+PARSE_FAILURES="${EXTENSION_PATH}/scripts/test/parse-test-failures.sh"
+if [ -n "${HOMEBOY_TEST_RESULTS_FILE:-}" ] && [ -f "$PARSE_RESULTS" ]; then
+    if [ -n "$PHPUNIT_STDOUT" ]; then
+        echo "$PHPUNIT_STDOUT" | bash "$PARSE_RESULTS" || true
+    elif [ -n "$PHPUNIT_OUTPUT" ]; then
+        echo "$PHPUNIT_OUTPUT" | bash "$PARSE_RESULTS" || true
+    fi
+fi
+if [ -n "${HOMEBOY_TEST_FAILURES_FILE:-}" ] && [ -f "$PARSE_FAILURES" ]; then
+    if [ -n "$PHPUNIT_STDOUT" ]; then
+        echo "$PHPUNIT_STDOUT" | bash "$PARSE_FAILURES" "${PLUGIN_PATH:-}" || true
+    fi
 fi
 
 if [ $playground_exit -ne 0 ]; then
     if echo "$PHPUNIT_OUTPUT" | grep -q "SOME TESTS FAILED"; then
+        FAILED_STEP="PHPUnit tests (playground backend)"
+        FAILURE_REPLAY_MODE="none"
+        rm -f "$RESULT_FILE"
+        exit $playground_exit
+    elif echo "$PHPUNIT_STDOUT" | grep -qE 'FAILURES|ERRORS'; then
         FAILED_STEP="PHPUnit tests (playground backend)"
         FAILURE_REPLAY_MODE="none"
         rm -f "$RESULT_FILE"
@@ -332,7 +260,7 @@ if [ $playground_exit -ne 0 ]; then
     fi
 fi
 
-if [ -z "$PHPUNIT_OUTPUT" ]; then
+if [ -z "$PHPUNIT_OUTPUT" ] && [ -z "$PHPUNIT_STDOUT" ]; then
     echo ""
     echo "============================================"
     echo "WARNING: No test output captured (playground)"
@@ -343,13 +271,25 @@ if [ -z "$PHPUNIT_OUTPUT" ]; then
     exit 1
 fi
 
-if echo "$PHPUNIT_OUTPUT" | grep -q "NO TEST FILES FOUND"; then
+if echo "$PHPUNIT_OUTPUT" | grep -q "NO_TEST_FILES"; then
     echo ""
     echo "============================================"
     echo "WARNING: No test files discovered"
     echo "============================================"
     echo ""
     FAILED_STEP="PHPUnit tests (no test files, playground)"
+    rm -f "$RESULT_FILE"
+    exit 1
+fi
+
+# Detect zero-test runs from PHPUnit stdout
+if echo "$PHPUNIT_STDOUT" | grep -qE 'No tests executed|OK \(0 tests'; then
+    echo ""
+    echo "============================================"
+    echo "WARNING: PHPUnit ran 0 tests (playground)"
+    echo "============================================"
+    echo ""
+    FAILED_STEP="PHPUnit tests (zero tests executed, playground)"
     rm -f "$RESULT_FILE"
     exit 1
 fi

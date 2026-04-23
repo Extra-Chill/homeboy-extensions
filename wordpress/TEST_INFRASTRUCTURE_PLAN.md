@@ -465,8 +465,8 @@ SQLite) instead of host PHP. Does not replace the host backend.
 | Add backend dispatch in test-runner.sh | scripts/test/test-runner.sh | ✅ Complete |
 | Update setup.sh for Playground deps | scripts/build/setup.sh | ✅ Complete |
 | Update README with backend docs | README.md | ✅ Complete |
-| In-process WP install (replace `system()` call) | — | 🔲 Blocked |
-| PHPUnit stdout forwarding | — | 🔲 Upstream gap |
+| In-process WP install (replace `system()` call) | — | ✅ Complete |
+| PHPUnit stdout forwarding | — | ✅ Complete |
 | db.php drop-in support (MDI test) | — | 🔲 Pending |
 
 **Architecture:**
@@ -491,23 +491,18 @@ SQLite) instead of host PHP. Does not replace the host backend.
 
 **Known Gaps (Phase 1):**
 
-1. **No DB tables.** `WP_TESTS_SKIP_INSTALL=1` is required because Playground's
-   PHP-WASM cannot spawn subprocesses via `system()`. The wp-phpunit `install.php`
-   is normally run as a child PHP process. Tests using `WP_UnitTestCase` factory
-   methods fail with "no such table". Fix: rewrite install.php as an in-process
-   include (set `$argv` before `require_once`).
-
-2. **No PHPUnit stdout.** The `wp-playground-cli php` subcommand does not forward
-   PHP's stdout to the host terminal when the process exits non-zero. Workaround:
-   results are written to a host-mounted log file and parsed after the run.
-
-3. **WP version pinning.** The `--wp` flag must match the wp-phpunit package
+1. **WP version pinning.** The `--wp` flag must match the wp-phpunit package
    version (currently 6.9.x). Mismatch causes missing class errors in the
    wp-phpunit bootstrap.
 
-4. **db.php drop-in support.** Custom `db.php` drop-ins (e.g., markdown-database-
+2. **db.php drop-in support.** Custom `db.php` drop-ins (e.g., markdown-database-
    integration) can be mounted into the Playground VFS, but Playground's built-in
    SQLite integration may conflict. Needs per-case testing.
+
+3. **No host bootstrap.** The Playground backend does not use `tests/bootstrap.php`.
+    It runs `install.php` in-process and loads test case classes directly. Any
+   customizations in the host bootstrap (e.g., additional `tests_add_filter` calls)
+   won't apply.
 
 **References:**
 - Issue: Extra-Chill/homeboy-extensions#214

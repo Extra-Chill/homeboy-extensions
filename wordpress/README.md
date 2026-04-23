@@ -147,10 +147,8 @@ backend. It boots a WordPress Playground instance, mounts the plugin, and
 runs PHPUnit inside PHP-WASM. No host PHP or MySQL is required.
 
 **Limitations (Phase 1):**
-- Database tables are not created (`WP_TESTS_SKIP_INSTALL=1`). Tests using
-  `WP_UnitTestCase` factory methods (user/post creation) will fail with
-  "no such table" errors.
 - WordPress version is pinned to match the wp-phpunit package (currently 6.9.x).
+- Custom `db.php` drop-ins may conflict with Playground's built-in SQLite integration.
 
 ### Database Options
 
