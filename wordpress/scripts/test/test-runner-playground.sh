@@ -202,7 +202,7 @@ if [ ! -f "$TEMPLATE" ]; then
     exit 1
 fi
 
-WRAPPER_TMPFILE=$(mktemp "${TMPDIR:-/tmp}/pg-runner.XXXXXX.php")
+WRAPPER_TMPFILE=$(mktemp "${TMPDIR:-/tmp}/pg-runner.XXXXXX")
 sed \
     -e "s|{{PLUGIN_SLUG}}|${PLUGIN_SLUG}|g" \
     -e "s|{{PLAYGROUND_DEP_MOUNTS}}|${PLAYGROUND_DEP_MOUNTS}|g" \
@@ -251,6 +251,77 @@ if [ -n "${HOMEBOY_TEST_RESULTS_FILE:-}" ] && [ -f "$PARSE_RESULTS" ]; then
         echo "$PHPUNIT_OUTPUT" | bash "$PARSE_RESULTS" || true
     fi
 fi
+
+discover_smoke_tests() {
+    local smoke_dir="${PLUGIN_PATH}/tests"
+    if [ ! -d "$smoke_dir" ]; then
+        return 0
+    fi
+
+    find "$smoke_dir" -maxdepth 1 -type f -name 'smoke-*.php' | sort
+}
+
+run_smoke_tests() {
+    local smoke_files=()
+    local smoke_file
+    while IFS= read -r smoke_file; do
+        [ -z "$smoke_file" ] && continue
+        smoke_files+=("$smoke_file")
+    done < <(discover_smoke_tests)
+
+    if [ "${#smoke_files[@]}" -eq 0 ]; then
+        return 2
+    fi
+
+    echo ""
+    echo "Running standalone smoke tests..."
+
+    local passed=0
+    local failed=0
+    local smoke_output=""
+
+    for smoke_file in "${smoke_files[@]}"; do
+        echo "  - $(basename "$smoke_file")"
+		set +e
+		smoke_output=$(php "$smoke_file" 2>&1)
+		local smoke_exit
+		smoke_exit=$?
+		set -e
+
+        if [ -n "$smoke_output" ]; then
+            echo "$smoke_output"
+        fi
+
+        if [ "$smoke_exit" -eq 0 ]; then
+            passed=$((passed + 1))
+        else
+            failed=$((failed + 1))
+        fi
+    done
+
+    local total=$((passed + failed))
+    if [ -n "${HOMEBOY_TEST_RESULTS_FILE:-}" ]; then
+        cat > "$HOMEBOY_TEST_RESULTS_FILE" << JSONEOF
+{
+  "total": ${total},
+  "passed": ${passed},
+  "failed": ${failed},
+  "skipped": 0,
+  "runner": "smoke"
+}
+JSONEOF
+    fi
+
+    echo "[test-results] Total: ${total}, Passed: ${passed}, Failed: ${failed}, Skipped: 0 (smoke)" >&2
+
+    if [ "$failed" -gt 0 ]; then
+        FAILED_STEP="Standalone smoke tests"
+        FAILURE_REPLAY_MODE="none"
+        return 1
+    fi
+
+    return 0
+}
 if [ -n "${HOMEBOY_TEST_FAILURES_FILE:-}" ] && [ -f "$PARSE_FAILURES" ]; then
     if [ -n "$PHPUNIT_STDOUT" ]; then
         echo "$PHPUNIT_STDOUT" | bash "$PARSE_FAILURES" "${PLUGIN_PATH:-}" || true
@@ -358,6 +429,16 @@ fi
 
 # Case 7: discovery found zero test files.
 if echo "$PHPUNIT_OUTPUT" | grep -q "^NO_TEST_FILES"; then
+    if run_smoke_tests; then
+        rm -f "$RESULT_FILE"
+        exit 0
+    fi
+    smoke_exit=$?
+    if [ "$smoke_exit" -eq 1 ]; then
+        rm -f "$RESULT_FILE"
+        exit 1
+    fi
+
     dump_diagnostics "NO TEST FILES DISCOVERED"
     FAILED_STEP="PHPUnit tests (no test files, playground)"
     rm -f "$RESULT_FILE"
@@ -367,6 +448,16 @@ fi
 # Case 8: PHPUnit ran but executed zero tests (class didn't extend TestCase,
 # all tests excluded, etc.).
 if echo "$PHPUNIT_STDOUT" | grep -qE 'No tests executed|OK \(0 tests'; then
+    if run_smoke_tests; then
+        rm -f "$RESULT_FILE"
+        exit 0
+    fi
+    smoke_exit=$?
+    if [ "$smoke_exit" -eq 1 ]; then
+        rm -f "$RESULT_FILE"
+        exit 1
+    fi
+
     dump_diagnostics "ZERO TESTS EXECUTED"
     FAILED_STEP="PHPUnit tests (zero tests executed, playground)"
     rm -f "$RESULT_FILE"

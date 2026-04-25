@@ -17,11 +17,16 @@
 set -euo pipefail
 
 OUTPUT_FILE="${1:-}"
-if [ -z "$OUTPUT_FILE" ] || [ ! -f "$OUTPUT_FILE" ]; then
+if [ -n "$OUTPUT_FILE" ]; then
+    if [ ! -f "$OUTPUT_FILE" ]; then
+        exit 0
+    fi
+    OUTPUT=$(cat "$OUTPUT_FILE")
+elif [ ! -t 0 ]; then
+    OUTPUT=$(cat)
+else
     exit 0
 fi
-
-OUTPUT=$(cat "$OUTPUT_FILE")
 
 TOTAL=0
 PASSED=0
