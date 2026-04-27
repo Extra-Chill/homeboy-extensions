@@ -31,6 +31,7 @@ homeboy_resolve_context
 homeboy_require_package_json
 
 FAILURE_TRAP_HELPER="${HOMEBOY_RUNTIME_FAILURE_TRAP:-}"
+BENCH_HELPER_SH="${HOMEBOY_RUNTIME_BENCH_HELPER_SH:-${HOME}/.homeboy/runtime/bench-helper.sh}"
 # shellcheck source=/dev/null
 if [ -n "$FAILURE_TRAP_HELPER" ] && [ -f "$FAILURE_TRAP_HELPER" ]; then
     source "$FAILURE_TRAP_HELPER"
@@ -38,6 +39,13 @@ if [ -n "$FAILURE_TRAP_HELPER" ] && [ -f "$FAILURE_TRAP_HELPER" ]; then
 else
     FAILED_STEP=""
     FAILURE_OUTPUT=""
+fi
+# shellcheck source=/dev/null
+if [ -f "$BENCH_HELPER_SH" ]; then
+    source "$BENCH_HELPER_SH"
+else
+    echo "ERROR: Homeboy bench helper not found at ${BENCH_HELPER_SH}" >&2
+    exit 2
 fi
 
 ITERATIONS="${HOMEBOY_BENCH_ITERATIONS:-10}"
@@ -52,9 +60,7 @@ if [ ! -d "$BENCH_DIR" ] && [ -z "${HOMEBOY_BENCH_EXTRA_WORKLOADS:-}" ]; then
     echo "⚠ No bench/ directory found at ${BENCH_DIR}"
     echo "  Skipping bench run — nothing to measure."
     echo ""
-    cat > "$RESULTS_FILE" <<EMPTY
-{"component_id":"${COMPONENT_ID}","iterations":0,"scenarios":[]}
-EMPTY
+    homeboy_write_empty_bench_results "$COMPONENT_ID" 0 "$RESULTS_FILE"
     exit 0
 fi
 
@@ -76,6 +82,7 @@ else
 fi
 
 export HOMEBOY_BENCH_RESULTS_FILE="$RESULTS_FILE"
+export HOMEBOY_RUNTIME_BENCH_HELPER_JS="${HOMEBOY_RUNTIME_BENCH_HELPER_JS:-${HOME}/.homeboy/runtime/bench-helper.mjs}"
 export HOMEBOY_COMPONENT_ID="$COMPONENT_ID"
 export HOMEBOY_COMPONENT_PATH="$PROJECT_PATH"
 export HOMEBOY_BENCH_ITERATIONS="$ITERATIONS"
