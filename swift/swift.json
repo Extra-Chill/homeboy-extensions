@@ -4,6 +4,12 @@
   "icon": "swift",
   "description": "Swift testing infrastructure for macOS, iOS, and Swift CLI projects",
   "author": "Extra Chill",
+  "provides": {
+    "capabilities": ["validate"]
+  },
+  "scripts": {
+    "validate": "scripts/validate.sh"
+  },
   "executable": {
     "runtime": {
       "setup_command": "bash {{extension_path}}/scripts/setup.sh",
