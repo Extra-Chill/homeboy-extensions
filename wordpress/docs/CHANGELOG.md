@@ -2,6 +2,26 @@
 
 All notable changes to the **wordpress** extension will be documented in this file.
 
+## [2.26.0] - 2026-04-27
+
+### Added
+- support persisted bench site scenarios
+
+## [2.25.0] - 2026-04-27
+
+### Added
+- detect mock-over-fixture test smells
+
+## [2.24.0] - 2026-04-27
+
+### Added
+- support core-dev component shape
+
+## [2.23.2] - 2026-04-27
+
+### Fixed
+- fail lint runner on reported issues
+
 ## [2.23.1] - 2026-04-27
 
 ### Fixed
