@@ -72,6 +72,20 @@ RESOLVE_CONTEXT_HELPER="${HOMEBOY_RUNTIME_RESOLVE_CONTEXT:-${SCRIPT_DIR}/../lib/
 source "${RESOLVE_CONTEXT_HELPER}"
 homeboy_resolve_context
 
+COMPONENT_SHAPE="${HOMEBOY_COMPONENT_SHAPE:-}"
+if [ -z "$COMPONENT_SHAPE" ]; then
+    DETECT_COMPONENT_HELPER="${HOMEBOY_RUNTIME_DETECT_COMPONENT:-${SCRIPT_DIR}/../lib/detect-component.sh}"
+    # shellcheck source=../lib/detect-component.sh
+    source "${DETECT_COMPONENT_HELPER}"
+    if homeboy_detect_component "$PLUGIN_PATH"; then
+        COMPONENT_SHAPE="$HOMEBOY_COMPONENT_TYPE"
+    fi
+fi
+
+if [ "$COMPONENT_SHAPE" = "core-dev" ]; then
+    exec bash "${SCRIPT_DIR}/lint-runner-core-dev.sh" "$@"
+fi
+
 homeboy_mktemp() {
     local template="$1"
     local tmpdir="${HOMEBOY_CACHE_DIR:-${TMPDIR:-/tmp}}"
@@ -507,6 +521,7 @@ fi
 
 # Validation
 echo "Validating with PHPCS..."
+fixable_count=0
 
 # Build base phpcs arguments
 phpcs_base_args=(--standard="$PHPCS_CONFIG")
@@ -684,6 +699,7 @@ if [ -n "$json_output" ] && command -v php &> /dev/null; then
                         "id" => $relPath . "::" . $source . "::" . $line,
                         "message" => ($msg["message"] ?? "Unknown") . " (" . $source . ")",
                         "category" => $category,
+                        "fixable" => (bool) ($msg["fixable"] ?? false),
                     ];
                 }
             }
@@ -797,7 +813,8 @@ if [[ "${HOMEBOY_SUMMARY_MODE:-}" == "1" ]]; then
         _PHPSTAN_FINDINGS_TMPFILE=$(homeboy_mktemp 'phpstan-findings.XXXXXX')
     fi
 
-    # Run PHPStan (warn-only - does not affect exit code)
+    # Run PHPStan after PHPCS/ESLint so the caller gets the full lint signal
+    # before the aggregate exit code is computed.
     PHPSTAN_PASSED=1
     run_phpstan_summary || PHPSTAN_PASSED=0
 
@@ -809,13 +826,16 @@ if [[ "${HOMEBOY_SUMMARY_MODE:-}" == "1" ]]; then
         rm -f "$_PHPSTAN_FINDINGS_TMPFILE"
     fi
 
-    # Always exit 0 (warn-only mode) - lint issues are warnings, not failures
     if [ "$PHPCS_PASSED" -eq 1 ] && [ "$ESLINT_PASSED" -eq 1 ] && [ "$PHPSTAN_PASSED" -eq 1 ]; then
         echo "Linting passed"
+        exit 0
     else
         echo "Linting found issues (see above)"
+        if [ "${fixable_count:-0}" -gt 0 ] 2>/dev/null; then
+            echo "Auto-fixable findings remain; run the refactor command above before pushing."
+        fi
+        exit 1
     fi
-    exit 0
 fi
 
 # Full report mode (default)
@@ -887,7 +907,8 @@ if [ -n "${HOMEBOY_LINT_FINDINGS_FILE:-}" ]; then
     _PHPSTAN_FINDINGS_TMPFILE=$(homeboy_mktemp 'phpstan-findings.XXXXXX')
 fi
 
-# Run PHPStan (warn-only - does not affect exit code)
+# Run PHPStan after PHPCS/ESLint so the caller gets the full lint signal
+# before the aggregate exit code is computed.
 PHPSTAN_PASSED=1
 run_phpstan || PHPSTAN_PASSED=0
 
@@ -897,12 +918,15 @@ if [ -n "${HOMEBOY_LINT_FINDINGS_FILE:-}" ] && [ -n "$_PHPSTAN_FINDINGS_TMPFILE"
     rm -f "$_PHPSTAN_FINDINGS_TMPFILE"
 fi
 
-# Always exit 0 (warn-only mode) - lint issues are warnings, not failures
 if [ "$PHPCS_PASSED" -eq 1 ] && [ "$ESLINT_PASSED" -eq 1 ] && [ "$PHPSTAN_PASSED" -eq 1 ]; then
     echo ""
     echo "Linting passed"
+    exit 0
 else
     echo ""
     echo "Linting found issues (see above)"
+    if [ "${fixable_count:-0}" -gt 0 ] 2>/dev/null; then
+        echo "Auto-fixable findings remain; run the refactor command above before pushing."
+    fi
+    exit 1
 fi
-exit 0
