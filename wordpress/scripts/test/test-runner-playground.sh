@@ -216,7 +216,16 @@ if [ -f "$PLUGIN_DB_PHP" ]; then
     fi
 fi
 
+PLAYGROUND_BOOTSTRAP_PHP="${EXTENSION_PATH}/scripts/lib/playground-bootstrap.php"
+if [ ! -f "$PLAYGROUND_BOOTSTRAP_PHP" ]; then
+    echo "Error: Playground bootstrap helper not found at $PLAYGROUND_BOOTSTRAP_PHP" >&2
+    echo "This is a Homeboy WordPress extension installation/update problem, not a component test failure." >&2
+    FAILED_STEP="Playground bootstrap helper setup"
+    exit 2
+fi
+
 MOUNT_ARGS+=("--mount" "${EXTENSION_PATH}:/homeboy-extension")
+MOUNT_ARGS+=("--mount" "${PLAYGROUND_BOOTSTRAP_PHP}:/homeboy-extension/scripts/lib/playground-bootstrap.php")
 
 PLAYGROUND_DEP_MOUNTS=""
 if [ -n "$DEPENDENCY_PATHS" ]; then
@@ -349,7 +358,7 @@ if echo "$PHPUNIT_OUTPUT" | grep -qE '^STAGE_(FAIL|FATAL):'; then
     FAILURE_OUTPUT="$FAILED_STAGE_LINE"
     dump_diagnostics "BOOTSTRAP FAILURE: $FAILED_STAGE_DETAIL"
     rm -f "$RESULT_FILE"
-    exit ${playground_exit:-1}
+    exit 2
 fi
 
 # Case 2: PHPUnit ran, some tests failed.
@@ -378,7 +387,7 @@ if [ $playground_exit -ne 0 ] && echo "$PHPUNIT_STDOUT" | grep -qE '^(PHP Parse 
     FAILURE_OUTPUT=$(echo "$PHPUNIT_STDOUT" | grep -E '^(PHP Parse error|Parse error:|PHP Fatal error|Fatal error:)' | head -5)
     dump_diagnostics "PHP CRASH"
     rm -f "$RESULT_FILE"
-    exit $playground_exit
+    exit 2
 fi
 
 # Case 5: playground exited non-zero and we still can't classify it.
@@ -387,7 +396,7 @@ if [ $playground_exit -ne 0 ]; then
     FAILED_STEP="Playground exited with code $playground_exit (unclassified)"
     dump_diagnostics "UNCLASSIFIED PLAYGROUND FAILURE (exit=$playground_exit)"
     rm -f "$RESULT_FILE"
-    exit $playground_exit
+    exit 2
 fi
 
 # Case 6: no output at all (not even a result file). Shouldn't happen on a

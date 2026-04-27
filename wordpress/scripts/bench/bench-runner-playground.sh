@@ -230,7 +230,16 @@ if [ -f "$PLUGIN_DB_PHP" ]; then
     MOUNT_ARGS+=("--mount" "${PLUGIN_DB_PHP}:/wordpress/wp-content/db.php")
 fi
 
+PLAYGROUND_BOOTSTRAP_PHP="${EXTENSION_PATH}/scripts/lib/playground-bootstrap.php"
+if [ ! -f "$PLAYGROUND_BOOTSTRAP_PHP" ]; then
+    echo "Error: Playground bootstrap helper not found at $PLAYGROUND_BOOTSTRAP_PHP" >&2
+    echo "This is a Homeboy WordPress extension installation/update problem, not a component bench failure." >&2
+    FAILED_STEP="Playground bootstrap helper setup"
+    exit 2
+fi
+
 MOUNT_ARGS+=("--mount" "${EXTENSION_PATH}:/homeboy-extension")
+MOUNT_ARGS+=("--mount" "${PLAYGROUND_BOOTSTRAP_PHP}:/homeboy-extension/scripts/lib/playground-bootstrap.php")
 
 # Rig-private workloads are host paths supplied by homeboy core through a
 # PATH-style list. Mount each file into Playground and let the PHP runner tag
@@ -416,7 +425,7 @@ if echo "$BENCH_LOG" | grep -qE '^STAGE_(FAIL|FATAL):'; then
     FAILURE_OUTPUT="$FAILED_STAGE_LINE"
     dump_diagnostics "BOOTSTRAP FAILURE: $FAILED_STAGE_DETAIL"
     rm -f "$RESULT_LOG"
-    exit ${playground_exit:-1}
+    exit 2
 fi
 
 # Case 2: PHP crashed before the runner could write to the result file.
@@ -425,7 +434,7 @@ if [ $playground_exit -ne 0 ] && echo "$BENCH_STDOUT" | grep -qE '^(PHP Parse er
     FAILURE_OUTPUT=$(echo "$BENCH_STDOUT" | grep -E '^(PHP Parse error|Parse error:|PHP Fatal error|Fatal error:)' | head -5)
     dump_diagnostics "PHP CRASH"
     rm -f "$RESULT_LOG" "$RESULT_JSON"
-    exit $playground_exit
+    exit 2
 fi
 
 # Case 3: playground exited non-zero, no structured failure visible.
@@ -433,7 +442,7 @@ if [ $playground_exit -ne 0 ]; then
     FAILED_STEP="Playground exited with code $playground_exit (unclassified)"
     dump_diagnostics "UNCLASSIFIED PLAYGROUND FAILURE (exit=$playground_exit)"
     rm -f "$RESULT_LOG" "$RESULT_JSON"
-    exit $playground_exit
+    exit 2
 fi
 
 # Case 4: the JSON envelope wasn't written. That's a runner bug.
@@ -441,7 +450,7 @@ if [ ! -f "$RESULT_JSON" ]; then
     dump_diagnostics "BENCH RUN COMPLETED BUT WROTE NO RESULTS"
     FAILED_STEP="Bench completed but no .pg-bench-results.json emitted"
     rm -f "$RESULT_LOG"
-    exit 1
+    exit 2
 fi
 
 # Surface non-fatal NOTICEs even on success — they're often the early
