@@ -70,13 +70,22 @@ elif [ -n "${HOMEBOY_LINT_GLOB:-}" ]; then
     MATCHED_FILES=()
     eval 'for f in '"${HOMEBOY_LINT_GLOB}"'; do [ -e "$f" ] && MATCHED_FILES+=("$f"); done'
 
-    if [ ${#MATCHED_FILES[@]} -eq 0 ]; then
-        echo "No JS files match pattern: ${HOMEBOY_LINT_GLOB}"
+    JS_MATCHED_FILES=()
+    for f in "${MATCHED_FILES[@]}"; do
+        case "$f" in
+            *.js|*.jsx|*.ts|*.tsx)
+                JS_MATCHED_FILES+=("$f")
+                ;;
+        esac
+    done
+
+    if [ ${#JS_MATCHED_FILES[@]} -eq 0 ]; then
+        echo "No JS/TS files match pattern: ${HOMEBOY_LINT_GLOB}"
         exit 0
     fi
 
-    echo "Linting ${#MATCHED_FILES[@]} files matching: ${HOMEBOY_LINT_GLOB}"
-    LINT_FILES=("${MATCHED_FILES[@]}")
+    echo "Linting ${#JS_MATCHED_FILES[@]} JS/TS files matching: ${HOMEBOY_LINT_GLOB}"
+    LINT_FILES=("${JS_MATCHED_FILES[@]}")
     cd - > /dev/null
 else
     echo "Running JavaScript linting..."
