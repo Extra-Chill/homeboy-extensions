@@ -166,12 +166,23 @@ fi
 PHPSTAN_TARGETS=("$PLUGIN_PATH")
 PHPSTAN_SCOPED=0
 
+resolve_phpstan_scope_path() {
+    local target="$1"
+
+    if [[ "$target" = /* ]]; then
+        printf '%s\n' "$target"
+    else
+        printf '%s\n' "${PLUGIN_PATH}/${target}"
+    fi
+}
+
 resolve_phpstan_targets() {
     local matched=()
     local target
+    local resolved_target
 
     if [ -n "${HOMEBOY_LINT_FILE:-}" ]; then
-        target="${PLUGIN_PATH}/${HOMEBOY_LINT_FILE}"
+        target=$(resolve_phpstan_scope_path "$HOMEBOY_LINT_FILE")
         if [ -f "$target" ] && [[ "$target" == *.php ]]; then
             matched+=("$target")
         fi
@@ -180,10 +191,11 @@ resolve_phpstan_targets() {
             cd "$PLUGIN_PATH"
             eval 'for f in '"${HOMEBOY_LINT_GLOB}"'; do [ -e "$f" ] && printf "%s\0" "$f"; done'
         ) | while IFS= read -r -d '' target; do
-            if [ -f "${PLUGIN_PATH}/${target}" ] && [[ "$target" == *.php ]]; then
-                printf '%s\0' "${PLUGIN_PATH}/${target}"
-            elif [ -d "${PLUGIN_PATH}/${target}" ]; then
-                find "${PLUGIN_PATH}/${target}" -type f -name '*.php' \
+            resolved_target=$(resolve_phpstan_scope_path "$target")
+            if [ -f "$resolved_target" ] && [[ "$resolved_target" == *.php ]]; then
+                printf '%s\0' "$resolved_target"
+            elif [ -d "$resolved_target" ]; then
+                find "$resolved_target" -type f -name '*.php' \
                     -not -path "*/vendor/*" \
                     -not -path "*/vendor_prefixed/*" \
                     -not -path "*/node_extensions/*" \

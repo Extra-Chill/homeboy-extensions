@@ -71,10 +71,18 @@ HOMEBOY_LINT_FILE="main.php" run_phpstan
 assert_contains "${COMPONENT_DIR}/main.php" "single-file scope passes the requested PHP file to PHPStan"
 assert_not_contains "$COMPONENT_DIR " "single-file scope does not pass the whole component root"
 
+HOMEBOY_LINT_FILE="${COMPONENT_DIR}/tests/FooTest.php" run_phpstan
+assert_contains "${COMPONENT_DIR}/tests/FooTest.php" "absolute single-file scope passes the requested PHP file to PHPStan"
+assert_not_contains "${COMPONENT_DIR}/${COMPONENT_DIR}" "absolute single-file scope is not prefixed with the component root"
+
 HOMEBOY_LINT_GLOB='{main.php,assets/app.js,tests/FooTest.php}' run_phpstan
 assert_contains "${COMPONENT_DIR}/main.php" "glob scope includes matching PHP source file"
 assert_contains "${COMPONENT_DIR}/tests/FooTest.php" "glob scope includes matching PHP test file"
 assert_not_contains "assets/app.js" "glob scope ignores non-PHP files"
+
+HOMEBOY_LINT_GLOB="${COMPONENT_DIR}/tests/*.php" run_phpstan
+assert_contains "${COMPONENT_DIR}/tests/FooTest.php" "absolute glob scope includes matching PHP test file"
+assert_not_contains "${COMPONENT_DIR}/${COMPONENT_DIR}" "absolute glob scope is not prefixed with the component root"
 
 : > "$ARGS_FILE"
 printf '0\n' > "$CALLS_FILE"
