@@ -119,6 +119,7 @@ generate_dependency_config() {
     local tmpfile
     local has_dependencies=0
     local has_baseline=0
+    local has_component_context=0
 
     tmpfile=$(homeboy_mktemp 'phpstan-dependencies.XXXXXX.neon')
 
@@ -138,6 +139,11 @@ generate_dependency_config() {
         printf '%s\n' 'parameters:'
         printf '%s\n' '    scanDirectories:'
 
+        if [ -n "${HOMEBOY_LINT_FILE:-}" ] || [ -n "${HOMEBOY_LINT_GLOB:-}" ]; then
+            has_component_context=1
+            printf '        - %s\n' "$PLUGIN_PATH"
+        fi
+
         while IFS= read -r dependency_path; do
             [ -z "$dependency_path" ] && continue
             has_dependencies=1
@@ -145,7 +151,7 @@ generate_dependency_config() {
         done < <(homeboy_resolve_validation_dependency_paths "$PLUGIN_PATH")
     } > "$tmpfile"
 
-    if [ "$has_dependencies" -eq 1 ] || [ "$has_baseline" -eq 1 ]; then
+    if [ "$has_dependencies" -eq 1 ] || [ "$has_baseline" -eq 1 ] || [ "$has_component_context" -eq 1 ]; then
         printf '%s\n' "$tmpfile"
     else
         rm -f "$tmpfile"
