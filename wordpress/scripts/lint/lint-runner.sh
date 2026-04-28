@@ -49,6 +49,28 @@ if [ "${HOMEBOY_DEBUG:-}" = "1" ]; then
     echo "HOMEBOY_CATEGORY=${HOMEBOY_CATEGORY:-NOT_SET}"
 fi
 
+wordpress_lint_role_for_path() {
+    local rel_path="$1"
+
+    case "$rel_path" in
+        scoper.inc.php|scoper.php|*.scoper.inc.php)
+            printf '%s\n' 'scoper_config'
+            ;;
+        tools/*|bin/*)
+            printf '%s\n' 'tooling'
+            ;;
+        tests/*-smoke.php|tests/smoke-*.php|*/smoke-*.php|*/*-smoke.php)
+            printf '%s\n' 'smoke_harness'
+            ;;
+        tests/*Test.php|tests/*TestCase.php|*/tests/*Test.php|*/tests/*TestCase.php)
+            printf '%s\n' 'phpunit_test'
+            ;;
+        *)
+            printf '%s\n' 'production'
+            ;;
+    esac
+}
+
 # Category to sniff mappings
 declare -A CATEGORY_SNIFFS
 CATEGORY_SNIFFS["security"]="WordPress.Security.EscapeOutput,WordPress.Security.NonceVerification,WordPress.Security.ValidatedSanitizedInput,WordPress.DB.PreparedSQL,WordPress.DB.PreparedSQLPlaceholders"
@@ -161,6 +183,18 @@ if [ "${HOMEBOY_DEBUG:-}" = "1" ]; then
     echo "Plugin path: $PLUGIN_PATH"
     echo "Lint files: ${LINT_FILES[*]}"
     echo "Fix-only: ${HOMEBOY_FIX_ONLY:-0}"
+fi
+
+WORDPRESS_LINT_ROLE="production"
+if [ -n "${HOMEBOY_WORDPRESS_LINT_ROLE:-}" ]; then
+    WORDPRESS_LINT_ROLE="$HOMEBOY_WORDPRESS_LINT_ROLE"
+elif [ -n "${HOMEBOY_LINT_FILE:-}" ]; then
+    WORDPRESS_LINT_ROLE=$(wordpress_lint_role_for_path "$HOMEBOY_LINT_FILE")
+fi
+export HOMEBOY_WORDPRESS_LINT_ROLE="$WORDPRESS_LINT_ROLE"
+
+if [ "$WORDPRESS_LINT_ROLE" != "production" ]; then
+    echo "WordPress lint role: ${WORDPRESS_LINT_ROLE}"
 fi
 
 PHPCS_BIN="${EXTENSION_PATH}/vendor/bin/phpcs"
@@ -528,6 +562,12 @@ fixable_count=0
 # Build base phpcs arguments
 phpcs_base_args=(--standard="$PHPCS_CONFIG")
 phpcs_base_args+=(--ignore='*/vendor/*,*/vendor_prefixed/*,*/node_modules/*,*/build/*,*/dist/*')
+
+if [ "$WORDPRESS_LINT_ROLE" = "scoper_config" ]; then
+    phpcs_base_args+=(--sniffs=Generic.PHP.Syntax)
+elif [ "$WORDPRESS_LINT_ROLE" = "tooling" ]; then
+    phpcs_base_args+=(--exclude=WordPress.WP.AlternativeFunctions,WordPress.PHP.DevelopmentFunctions,WordPress.Security.EscapeOutput)
+fi
 
 # Auto-detect parallelism from available CPU cores
 if [ -z "${PARALLEL_PROCS:-}" ]; then
