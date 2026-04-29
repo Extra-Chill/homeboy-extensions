@@ -98,88 +98,40 @@ if (is_array($bench_env)) {
     }
 }
 
-/**
- * Snapshot currently-registered callback IDs for a WordPress hook.
- *
- * Post-install activation can register callbacks after WordPress already fired
- * the hook during wp-phpunit install. Snapshot before activation so the runner
- * can replay only newly-added callbacks and avoid duplicate registrations from
- * callbacks that already ran during the initial bootstrap.
- */
-function pg_snapshot_hook_callback_ids(string $hook_name): array {
-    global $wp_filter;
-
-    $snapshot = [];
-    if (!isset($wp_filter[$hook_name]) || !isset($wp_filter[$hook_name]->callbacks)) {
-        return $snapshot;
-    }
-
-    foreach ($wp_filter[$hook_name]->callbacks as $priority => $callbacks) {
-        foreach (array_keys($callbacks) as $callback_id) {
-            $snapshot[$priority . ':' . $callback_id] = true;
-        }
-    }
-
-    return $snapshot;
-}
-
-/**
- * Replay callbacks added to a hook since pg_snapshot_hook_callback_ids().
- */
-function pg_replay_new_hook_callbacks(string $hook_name, array $before, array $args = []): void {
-    global $wp_filter;
-
-    if (!isset($wp_filter[$hook_name]) || !isset($wp_filter[$hook_name]->callbacks)) {
-        return;
-    }
-
-    foreach ($wp_filter[$hook_name]->callbacks as $priority => $callbacks) {
-        foreach ($callbacks as $callback_id => $callback) {
-            if (isset($before[$priority . ':' . $callback_id])) {
-                continue;
-            }
-
-            $accepted_args = isset($callback['accepted_args']) ? (int) $callback['accepted_args'] : count($args);
-            call_user_func_array($callback['function'], array_slice($args, 0, $accepted_args));
-        }
-    }
-}
-
 // Load the component during WordPress bootstrap, not after wp-settings.php has
 // finished. Plugins that register hooks for core bootstrap events (for example
 // wp_abilities_api_init) need to be present before those events fire.
+$pre_component_init_callbacks = pg_snapshot_wordpress_hook_callbacks('init');
+$pre_component_shutdown_callbacks = pg_snapshot_wordpress_hook_callbacks('shutdown');
+$deferred_install_init_callbacks = [];
 require_once "$tests_dir/includes/functions.php";
-tests_add_filter('muplugins_loaded', function () use ($plugin_path) {
+tests_add_filter('muplugins_loaded', function () use ($plugin_path, $pre_component_init_callbacks, &$deferred_install_init_callbacks) {
     pg_run_load_deps_stage(['dep_mounts' => '{{PLAYGROUND_DEP_MOUNTS}}']);
     pg_run_load_component_stage(['plugin_path' => $plugin_path, 'activate' => false]);
+
+    // Let plugins attach early-bootstrap callbacks before lazy core registries
+    // initialize, but defer component-added init callbacks until install.php has
+    // created the wptests_* tables. This preserves registration order without
+    // letting DB-touching runtime callbacks run against a half-installed site.
+    tests_add_filter('plugins_loaded', function () use ($pre_component_init_callbacks, &$deferred_install_init_callbacks) {
+        $deferred_install_init_callbacks = pg_defer_new_wordpress_hook_callbacks('init', $pre_component_init_callbacks);
+    }, PHP_INT_MAX);
 });
 
 // Stage: install — wp-phpunit install.php creates WP tables in-process.
 pg_run_install_stage(['config_path' => $config_path, 'tests_dir' => $tests_dir]);
 
+// The early component load above preserves core bootstrap ordering for lazy
+// registries, but request-end callbacks added during wp-phpunit install can do
+// runtime database work before activation has created plugin tables. Suppress
+// only callbacks the component added during that install bootstrap; activation
+// below remains the post-table seam for install-time side effects.
+pg_remove_new_wordpress_hook_callbacks('shutdown', $pre_component_shutdown_callbacks);
+pg_run_deferred_wordpress_hook_callbacks($deferred_install_init_callbacks);
+
 // Run activation hooks after wp-phpunit has created database tables. The plugin
 // file was already required during muplugins_loaded, so require_once is a no-op.
-// If activation registered new ability callbacks after wp-phpunit already
-// initialized the registry, replay those callbacks before tests run.
-$ability_category_callbacks = pg_snapshot_hook_callback_ids('wp_abilities_api_categories_init');
-$ability_callbacks = pg_snapshot_hook_callback_ids('wp_abilities_api_init');
 pg_run_load_component_stage(['plugin_path' => $plugin_path]);
-
-if (class_exists('WP_Ability_Categories_Registry') && did_action('wp_abilities_api_categories_init')) {
-    pg_replay_new_hook_callbacks(
-        'wp_abilities_api_categories_init',
-        $ability_category_callbacks,
-        [WP_Ability_Categories_Registry::get_instance()]
-    );
-}
-
-if (class_exists('WP_Abilities_Registry') && did_action('wp_abilities_api_init')) {
-    pg_replay_new_hook_callbacks(
-        'wp_abilities_api_init',
-        $ability_callbacks,
-        [WP_Abilities_Registry::get_instance()]
-    );
-}
 
 // ---------------------------------------------------------------------------
 // Stage: load_fixtures (test case classes, mock mailer, harness filters)
