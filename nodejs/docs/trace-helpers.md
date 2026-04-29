@@ -31,3 +31,10 @@ const { launchProcess, captureProcessTree, waitForExit } = await import(`${helpe
   `skipped` or `unknown` evidence when unavailable.
 
 Helpers are intentionally generic and contain no target-app-specific behavior.
+
+## Fixture
+
+`scripts/trace/fixtures/helper.trace.mjs` is a runnable sample scenario. It
+launches a dummy Node process, records timeline events and assertions, captures
+a process tree artifact, performs best-effort visible-window observation, and
+writes a valid Homeboy trace envelope.

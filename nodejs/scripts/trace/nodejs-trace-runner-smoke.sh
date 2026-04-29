@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EXTENSION_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 MANIFEST="${EXTENSION_DIR}/nodejs.json"
 RUNNER="${SCRIPT_DIR}/trace-runner.sh"
+HELPER_FIXTURE="${SCRIPT_DIR}/fixtures/helper.trace.mjs"
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/homeboy-node-trace.XXXXXX")"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
@@ -109,31 +110,7 @@ if (data.artifacts[0].path !== "trace.txt") throw new Error("artifact path not p
 
 HELPER_PROJECT="$(make_project helper-scenario)"
 mkdir -p "$HELPER_PROJECT/traces"
-cat > "$HELPER_PROJECT/traces/helper.trace.mjs" <<'EOF'
-import { pathToFileURL } from 'node:url';
-
-const helperDir = process.env.HOMEBOY_TRACE_HELPER_DIR;
-const { createTraceRecorder } = await import(pathToFileURL(`${helperDir}/timeline.mjs`).href);
-const { launchProcess, waitForExit, captureProcessTree } = await import(pathToFileURL(`${helperDir}/process.mjs`).href);
-const { observeVisibleWindows } = await import(pathToFileURL(`${helperDir}/desktop.mjs`).href);
-
-const recorder = createTraceRecorder();
-await recorder.recordEvent('scenario', 'helper.start', { helperDir: Boolean(helperDir) });
-
-const child = launchProcess('node', {
-  args: ['-e', 'setTimeout(() => process.exit(0), 50)'],
-  shell: false,
-  recorder,
-});
-await captureProcessTree(child.pid, 'process-tree.txt', { recorder });
-const exit = await waitForExit(child);
-await recorder.recordEvent('process', 'process.exit', exit);
-recorder.recordAssertion('dummy-process-exited', exit.code === 0 ? 'pass' : 'fail', `dummy process exited with ${exit.code}`);
-
-const windows = await observeVisibleWindows();
-recorder.recordAssertion('window-observation-best-effort', ['captured', 'skipped', 'unknown'].includes(windows.status) ? 'pass' : 'fail', `window observation returned ${windows.status}`);
-await recorder.writeTraceResults({ summary: 'helper scenario passed' });
-EOF
+cp "$HELPER_FIXTURE" "$HELPER_PROJECT/traces/helper.trace.mjs"
 HELPER_RESULTS="$TMP_DIR/helper-results.json"
 HELPER_ARTIFACTS="$TMP_DIR/helper-artifacts"
 run_trace "$HELPER_PROJECT" "helper" "$HELPER_RESULTS" "$HELPER_ARTIFACTS" >/dev/null
