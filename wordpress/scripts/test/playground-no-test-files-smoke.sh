@@ -79,9 +79,16 @@ assert_contains "$failure_output" "PHPUnit config exists, but no files matched t
 assert_not_contains "$failure_output" "UNCLASSIFIED PLAYGROUND FAILURE"
 assert_not_contains "$failure_output" "Skipping PHPUnit tests: no files matched"
 
+assert_contains "$RUNNER_SRC" "pg_run_install_stage(['config_path' => \$config_path, 'tests_dir' => \$tests_dir]);"
+assert_contains "$RUNNER_SRC" "function pg_snapshot_hook_callback_ids"
+assert_contains "$RUNNER_SRC" "function pg_replay_new_hook_callbacks"
 assert_contains "$RUNNER_SRC" "tests_add_filter('muplugins_loaded'"
 assert_contains "$RUNNER_SRC" "'activate' => false"
-assert_contains "$RUNNER_SRC" "pg_run_install_stage(['config_path' => \$config_path, 'tests_dir' => \$tests_dir]);"
+assert_contains "$RUNNER_SRC" "\$ability_category_callbacks = pg_snapshot_hook_callback_ids('wp_abilities_api_categories_init');"
+assert_contains "$RUNNER_SRC" "\$ability_callbacks = pg_snapshot_hook_callback_ids('wp_abilities_api_init');"
+assert_contains "$RUNNER_SRC" "pg_replay_new_hook_callbacks("
+assert_contains "$RUNNER_SRC" "'wp_abilities_api_init',"
+assert_contains "$RUNNER_SRC" "[WP_Abilities_Registry::get_instance()]"
 assert_contains "$BOOTSTRAP_SRC" "\$cfg['activate'] ?? true"
 
-echo "Playground no-test-files smoke passed (13 assertions)"
+echo "Playground no-test-files smoke passed (20 assertions)"
