@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EXTENSION_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 MANIFEST="${EXTENSION_DIR}/nodejs.json"
 RUNNER="${SCRIPT_DIR}/trace-runner.sh"
+FIXTURE="${SCRIPT_DIR}/fixtures/desktop-helpers.trace.mjs"
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/homeboy-node-trace.XXXXXX")"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
@@ -51,8 +52,30 @@ for (const token of [
   'HOMEBOY_TRACE_LIST_ONLY',
   'HOMEBOY_TRACE_ARTIFACT_DIR',
   'HOMEBOY_RUN_DIR',
+  'HOMEBOY_EXTENSION_PATH',
 ]) {
   if (!runner.includes(token)) throw new Error(`runner missing env contract token ${token}`);
+}
+NODE
+
+node - "$SCRIPT_DIR/lib/timeline.mjs" "$SCRIPT_DIR/lib/desktop.mjs" "$SCRIPT_DIR/lib/process.sh" "$SCRIPT_DIR/lib/artifacts.sh" <<'NODE'
+const fs = require('fs');
+const [timeline, desktop, processHelper, artifactsHelper] = process.argv.slice(2);
+const timelineSource = fs.readFileSync(timeline, 'utf8');
+const desktopSource = fs.readFileSync(desktop, 'utf8');
+const processSource = fs.readFileSync(processHelper, 'utf8');
+const artifactsSource = fs.readFileSync(artifactsHelper, 'utf8');
+for (const token of ['recordEvent', 'recordAssertion', 'recordArtifact', 'writeTraceResults']) {
+  if (!timelineSource.includes(token)) throw new Error(`timeline helper missing ${token}`);
+}
+for (const token of ['captureWindowState', 'captureScreenshot', 'skipped']) {
+  if (!desktopSource.includes(token)) throw new Error(`desktop helper missing ${token}`);
+}
+for (const token of ['trace_launch', 'trace_process_tree', 'trace_cleanup']) {
+  if (!processSource.includes(token)) throw new Error(`process helper missing ${token}`);
+}
+for (const token of ['trace_artifact_path', 'trace_tail_log']) {
+  if (!artifactsSource.includes(token)) throw new Error(`artifact helper missing ${token}`);
 }
 NODE
 
@@ -104,6 +127,23 @@ assert_json "$TRACE_RESULTS" '
 if (data.status !== "pass") throw new Error("named traces scenario did not pass");
 if (data.summary !== "custom result") throw new Error("runner overwrote scenario result envelope");
 if (data.artifacts[0].path !== "trace.txt") throw new Error("artifact path not preserved");
+'
+
+HELPER_PROJECT="$(make_project helper-fixture)"
+mkdir -p "$HELPER_PROJECT/traces"
+cp "$FIXTURE" "$HELPER_PROJECT/traces/desktop-helpers.trace.mjs"
+HELPER_RESULTS="$TMP_DIR/helper-results.json"
+HELPER_ARTIFACTS="$TMP_DIR/helper-artifacts"
+run_trace "$HELPER_PROJECT" "desktop-helpers" "$HELPER_RESULTS" "$HELPER_ARTIFACTS" >/dev/null
+if [ ! -f "$HELPER_ARTIFACTS/process-tree.txt" ]; then
+    echo "expected process tree artifact to be written" >&2
+    exit 1
+fi
+assert_json "$HELPER_RESULTS" '
+if (data.status !== "pass") throw new Error("helper fixture did not pass");
+if (!data.timeline.find((entry) => entry.event === "launched" && entry.source === "process")) throw new Error("helper fixture missing process launch event");
+if (!data.assertions.find((assertion) => assertion.id === "dummy-process-launched" && assertion.status === "pass")) throw new Error("helper fixture missing passing assertion");
+if (!data.artifacts.find((artifact) => artifact.path === "process-tree.txt")) throw new Error("helper fixture missing process tree artifact");
 '
 
 SCRIPT_PROJECT="$(make_project scripts-scenario)"
