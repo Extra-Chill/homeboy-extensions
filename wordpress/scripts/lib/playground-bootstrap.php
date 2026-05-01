@@ -66,6 +66,22 @@ function pg_log($msg) {
 }
 
 /**
+ * Return compact bootstrap context for diagnostics emitted from inside WP hooks.
+ */
+function pg_diagnostic_context(): string {
+    global $current_stage;
+
+    $hook = function_exists('current_filter') ? current_filter() : null;
+    if (!is_string($hook) || $hook === '') {
+        $hook = 'none';
+    }
+
+    $installing = function_exists('wp_installing') && wp_installing() ? 'true' : 'false';
+
+    return 'stage=' . ($current_stage ?: 'unknown') . ' hook=' . $hook . ' wp_installing=' . $installing;
+}
+
+/**
  * Module-scope stage timing storage.
  *
  * Stores `hrtime(true)` start times in `_starts_ns` keyed by stage name,
@@ -168,7 +184,7 @@ function pg_install_diagnostics_handlers() {
             E_USER_DEPRECATED => 'USER_DEPRECATED',
             E_STRICT => 'STRICT',
         ][$severity] ?? "E_$severity";
-        pg_log("NOTICE:$label: $message at $file:$line");
+        pg_log("NOTICE:$label: $message at $file:$line context=" . pg_diagnostic_context());
         return false;
     });
 
@@ -179,6 +195,113 @@ function pg_install_diagnostics_handlers() {
             pg_log("STAGE_FATAL:$current_stage:{$error['message']} at {$error['file']}:{$error['line']}");
         }
     });
+}
+
+/**
+ * Snapshot currently-registered callback IDs for a WordPress hook.
+ *
+ * Runners can load the component before wp-phpunit install so plugins attach
+ * callbacks before lazy core registries initialize. Some request-end callbacks
+ * registered by that early load are unsafe before activation creates plugin
+ * tables, so callers can snapshot a hook before early load and remove only the
+ * callbacks added by the component during install.
+ */
+function pg_snapshot_wordpress_hook_callbacks(string $hook_name): array {
+    global $wp_filter;
+
+    $snapshot = [];
+    if (!isset($wp_filter[$hook_name]) || !isset($wp_filter[$hook_name]->callbacks)) {
+        return $snapshot;
+    }
+
+    foreach ($wp_filter[$hook_name]->callbacks as $priority => $callbacks) {
+        foreach (array_keys($callbacks) as $callback_id) {
+            $snapshot[$priority . ':' . $callback_id] = true;
+        }
+    }
+
+    return $snapshot;
+}
+
+/**
+ * Remove callbacks added to a WordPress hook since a prior snapshot.
+ */
+function pg_remove_new_wordpress_hook_callbacks(string $hook_name, array $before): void {
+    global $wp_filter;
+
+    if (!isset($wp_filter[$hook_name]) || !isset($wp_filter[$hook_name]->callbacks)) {
+        return;
+    }
+
+    foreach ($wp_filter[$hook_name]->callbacks as $priority => $callbacks) {
+        foreach (array_keys($callbacks) as $callback_id) {
+            if (isset($before[$priority . ':' . $callback_id])) {
+                continue;
+            }
+
+            unset($wp_filter[$hook_name]->callbacks[$priority][$callback_id]);
+        }
+
+        if (empty($wp_filter[$hook_name]->callbacks[$priority])) {
+            unset($wp_filter[$hook_name]->callbacks[$priority]);
+        }
+    }
+}
+
+/**
+ * Extract and remove callbacks added to a WordPress hook since a snapshot.
+ *
+ * The returned callback records can be run later with
+ * pg_run_deferred_wordpress_hook_callbacks(). This is intentionally for normal
+ * lifecycle hooks whose callbacks are unsafe during wp-phpunit install, not for
+ * one-shot lazy registries such as the Abilities API hooks.
+ */
+function pg_defer_new_wordpress_hook_callbacks(string $hook_name, array $before): array {
+    global $wp_filter;
+
+    $deferred = [];
+    if (!isset($wp_filter[$hook_name]) || !isset($wp_filter[$hook_name]->callbacks)) {
+        return $deferred;
+    }
+
+    foreach ($wp_filter[$hook_name]->callbacks as $priority => $callbacks) {
+        foreach ($callbacks as $callback_id => $callback) {
+            if (isset($before[$priority . ':' . $callback_id])) {
+                continue;
+            }
+
+            $deferred[] = [
+                'priority' => (int) $priority,
+                'callback' => $callback,
+            ];
+            unset($wp_filter[$hook_name]->callbacks[$priority][$callback_id]);
+        }
+
+        if (empty($wp_filter[$hook_name]->callbacks[$priority])) {
+            unset($wp_filter[$hook_name]->callbacks[$priority]);
+        }
+    }
+
+    usort($deferred, static function (array $left, array $right): int {
+        return $left['priority'] <=> $right['priority'];
+    });
+
+    return $deferred;
+}
+
+/**
+ * Run callbacks extracted by pg_defer_new_wordpress_hook_callbacks().
+ */
+function pg_run_deferred_wordpress_hook_callbacks(array $deferred, array $args = []): void {
+    foreach ($deferred as $entry) {
+        $callback = $entry['callback'] ?? null;
+        if (!is_array($callback) || !isset($callback['function'])) {
+            continue;
+        }
+
+        $accepted_args = isset($callback['accepted_args']) ? (int) $callback['accepted_args'] : count($args);
+        call_user_func_array($callback['function'], array_slice($args, 0, $accepted_args));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -381,6 +504,7 @@ function pg_run_load_deps_stage(array $cfg) {
                 foreach ($dep_files as $df) {
                     if (strpos(file_get_contents($df), 'Plugin Name:') !== false) {
                         require_once $df;
+                        pg_activate_plugin_file($df);
                         break;
                     }
                 }
@@ -430,7 +554,15 @@ function pg_run_load_component_stage(array $cfg) {
                 }
                 if (strpos(file_get_contents($mf), 'Plugin Name:') !== false) {
                     pg_log("PLUGIN_DETECTED " . basename($mf));
+                    pg_log(
+                        'PLUGIN_LOAD_CONTEXT ' . basename($mf)
+                        . ' activate=' . ((($cfg['activate'] ?? true) !== false) ? 'true' : 'false')
+                        . ' ' . pg_diagnostic_context()
+                    );
                     require_once $mf;
+                    if (($cfg['activate'] ?? true) !== false) {
+                        pg_activate_plugin_file($mf);
+                    }
                     $loaded = true;
                     break;
                 }
@@ -444,4 +576,97 @@ function pg_run_load_component_stage(array $cfg) {
         pg_stage_fail('load_component', $e);
         exit(1);
     }
+}
+
+/**
+ * Run activation hooks for a plugin entry file after loading it.
+ *
+ * The Playground backend boots WordPress from wp-phpunit and then requires the
+ * plugin file directly. Direct loading registers `register_activation_hook()`
+ * callbacks, but it does not fire them. Running the corresponding activation
+ * action gives plugins the same schema-preparation seam their normal PHPUnit
+ * bootstrap relies on without routing through wp-admin redirects.
+ */
+function pg_activate_plugin_file(string $plugin_file): void {
+    if (!function_exists('plugin_basename') || !function_exists('do_action')) {
+        pg_log("NOTICE:cannot activate plugin entry before WordPress plugin API is available: $plugin_file");
+        return;
+    }
+
+    $plugin_basename = plugin_basename($plugin_file);
+    pg_log("PLUGIN_ACTIVATE $plugin_basename");
+    pg_log("PLUGIN_ACTIVATE_BEGIN $plugin_basename " . pg_diagnostic_context());
+
+    do_action("activate_$plugin_basename", false);
+    do_action('activated_plugin', $plugin_basename, false);
+
+    pg_log("PLUGIN_ACTIVATE_OK $plugin_basename " . pg_diagnostic_context());
+}
+
+/**
+ * Restrict discovered PHPUnit files to HOMEBOY_CHANGED_TEST_FILES.
+ *
+ * Homeboy core passes changed test files as component-relative paths. The
+ * Playground runner discovers tests in the VFS, so compare normalized
+ * component-relative paths and keep the broad discovery path as the fallback
+ * when no scoped list was supplied.
+ */
+function pg_filter_changed_test_files(array $test_files, string $changed_files_json, string $plugin_path): array {
+    $decoded = json_decode($changed_files_json, true);
+    if (!is_array($decoded) || empty($decoded)) {
+        return $test_files;
+    }
+
+    $wanted = [];
+    foreach ($decoded as $entry) {
+        if (!is_scalar($entry)) {
+            continue;
+        }
+        $normalized = pg_normalize_changed_test_file((string) $entry, $plugin_path);
+        if ($normalized !== '') {
+            $wanted[$normalized] = true;
+        }
+    }
+
+    if (empty($wanted)) {
+        pg_log('NOTICE:HOMEBOY_CHANGED_TEST_FILES did not contain usable test paths');
+        return [];
+    }
+
+    $filtered = [];
+    foreach ($test_files as $file) {
+        $relative = pg_component_relative_path((string) $file, $plugin_path);
+        if (isset($wanted[$relative])) {
+            $filtered[] = $file;
+        }
+    }
+
+    pg_log('SCOPED_TEST_FILES requested=' . count($wanted) . ' matched=' . count($filtered));
+    return $filtered;
+}
+
+function pg_normalize_changed_test_file(string $path, string $plugin_path): string {
+    $path = trim(str_replace('\\', '/', $path));
+    if ($path === '') {
+        return '';
+    }
+
+    return pg_component_relative_path($path, $plugin_path);
+}
+
+function pg_component_relative_path(string $path, string $plugin_path): string {
+    $path = trim(str_replace('\\', '/', $path));
+    $plugin_path = rtrim(str_replace('\\', '/', $plugin_path), '/');
+
+    if (strpos($path, $plugin_path . '/') === 0) {
+        $path = substr($path, strlen($plugin_path) + 1);
+    } elseif (strpos($path, '/tests/') !== false) {
+        $path = substr($path, strpos($path, '/tests/') + 1);
+    }
+
+    while (strpos($path, './') === 0) {
+        $path = substr($path, 2);
+    }
+
+    return ltrim($path, '/');
 }

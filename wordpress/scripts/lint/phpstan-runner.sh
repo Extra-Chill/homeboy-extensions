@@ -119,6 +119,7 @@ PHPSTAN_BASE_CONFIG="$PHPSTAN_CONFIG"
 COMPONENT_BASELINE="${PLUGIN_PATH}/phpstan-baseline.neon"
 COMPOSITE_AUTOLOAD=""
 DEPENDENCY_CONFIG=""
+SCOPED_CONTEXT_CONFIG=""
 
 homeboy_mktemp() {
     local template="$1"
@@ -174,6 +175,9 @@ generate_dependency_config() {
     local tmpfile
     local has_dependencies=0
     local has_baseline=0
+    local has_component_context=0
+    local context_path
+    local scan_file_count=0
 
     tmpfile=$(homeboy_mktemp 'phpstan-dependencies.XXXXXX.neon')
 
@@ -198,9 +202,27 @@ generate_dependency_config() {
             has_dependencies=1
             printf '        - %s\n' "$dependency_path"
         done < <(homeboy_resolve_validation_dependency_paths "$PLUGIN_PATH")
+
+        if [ -n "${HOMEBOY_LINT_FILE:-}" ] || [ -n "${HOMEBOY_LINT_GLOB:-}" ]; then
+            while IFS= read -r context_path; do
+                [ -z "$context_path" ] && continue
+                has_component_context=1
+                printf '        - %s\n' "$context_path"
+            done < <(homeboy_resolve_phpstan_context_directories "$PLUGIN_PATH")
+
+            while IFS= read -r context_path; do
+                [ -z "$context_path" ] && continue
+                if [ "$scan_file_count" -eq 0 ]; then
+                    printf '%s\n' '    scanFiles:'
+                fi
+                scan_file_count=$((scan_file_count + 1))
+                has_component_context=1
+                printf '        - %s\n' "$context_path"
+            done < <(homeboy_resolve_phpstan_context_files "$PLUGIN_PATH")
+        fi
     } > "$tmpfile"
 
-    if [ "$has_dependencies" -eq 1 ] || [ "$has_baseline" -eq 1 ]; then
+    if [ "$has_dependencies" -eq 1 ] || [ "$has_baseline" -eq 1 ] || [ "$has_component_context" -eq 1 ]; then
         printf '%s\n' "$tmpfile"
     else
         rm -f "$tmpfile"
@@ -208,9 +230,88 @@ generate_dependency_config() {
     fi
 }
 
+homeboy_resolve_phpstan_context_directories() {
+    local component_path="$1"
+    local candidate
+
+    find "$component_path" -mindepth 1 -maxdepth 1 -type d \
+        -not -name 'vendor' \
+        -not -name 'vendor_prefixed' \
+        -not -name 'node_modules' \
+        -not -name 'build' \
+        -not -name 'dist' \
+        -not -name 'tests' \
+        -print 2>/dev/null | while IFS= read -r candidate; do
+            if find "$candidate" -type f -name '*.php' -print -quit 2>/dev/null | grep -q .; then
+                printf '%s\n' "$candidate"
+            fi
+        done
+
+    if [ -d "${component_path}/vendor_prefixed" ]; then
+        printf '%s\n' "${component_path}/vendor_prefixed"
+    fi
+}
+
+homeboy_resolve_phpstan_context_files() {
+    local component_path="$1"
+
+    find "$component_path" -mindepth 1 -maxdepth 1 -type f -name '*.php' -print 2>/dev/null
+}
+
 cleanup_dependency_config() {
     [ -n "$DEPENDENCY_CONFIG" ] && rm -f "$DEPENDENCY_CONFIG"
     DEPENDENCY_CONFIG=""
+}
+
+generate_scoped_context_config() {
+    local tmpfile
+    local context_file
+    local has_context_files=0
+    local has_scan_directories=0
+
+    tmpfile=$(homeboy_mktemp 'phpstan-scoped-context.XXXXXX.neon')
+
+    {
+        printf '%s\n' 'includes:'
+        printf '    - %s\n' "$PHPSTAN_BASE_CONFIG"
+        printf '%s\n' ''
+        printf '%s\n' 'parameters:'
+
+        while IFS= read -r -d '' context_file; do
+            if [ "$has_context_files" -eq 0 ]; then
+                printf '%s\n' '    scanFiles:'
+                has_context_files=1
+            fi
+            printf '        - %s\n' "$(printf '%s' "$context_file" | jq -Rsa .)"
+        done < <(find "$PLUGIN_PATH" -type f -name '*.php' \
+            -not -path "*/vendor/*" \
+            -not -path "*/vendor_prefixed/*" \
+            -not -path "*/node_extensions/*" \
+            -not -path "*/node_modules/*" \
+            -not -path "*/build/*" \
+            -not -path "*/dist/*" \
+            -not -path "*/tests/*" \
+            -not -path "*/tools/*" \
+            -print0)
+
+        if [ -d "${PLUGIN_PATH}/vendor_prefixed" ]; then
+            printf '%s\n' '    scanDirectories:'
+            printf '        - %s\n' "$(printf '%s' "${PLUGIN_PATH}/vendor_prefixed" | jq -Rsa .)"
+            has_scan_directories=1
+        fi
+    } > "$tmpfile"
+
+    if [ "$has_context_files" -eq 1 ] || [ "$has_scan_directories" -eq 1 ]; then
+        printf '%s\n' "$tmpfile"
+    else
+        rm -f "$tmpfile"
+        printf '%s\n' ''
+    fi
+}
+
+cleanup_scoped_context_config() {
+    [ -n "$SCOPED_CONTEXT_CONFIG" ] && rm -f "$SCOPED_CONTEXT_CONFIG"
+    SCOPED_CONTEXT_CONFIG=""
 }
 
 DEPENDENCY_CONFIG=$(generate_dependency_config)
@@ -218,32 +319,72 @@ if [ -n "$DEPENDENCY_CONFIG" ] && [ -f "$DEPENDENCY_CONFIG" ]; then
     PHPSTAN_BASE_CONFIG="$DEPENDENCY_CONFIG"
 fi
 
-PHPSTAN_TARGETS=("$PLUGIN_PATH")
+PHPSTAN_TARGETS=()
 PHPSTAN_SCOPED=0
+
+homeboy_phpstan_relpath() {
+    local path="$1"
+    path="${path#$PLUGIN_PATH/}"
+    path="${path#./}"
+    printf '%s\n' "$path"
+}
+
+homeboy_phpstan_abspath() {
+    local path="$1"
+
+    case "$path" in
+        /*)
+            printf '%s\n' "$path"
+            ;;
+        *)
+            printf '%s\n' "${PLUGIN_PATH}/${path#./}"
+            ;;
+    esac
+}
+
+homeboy_phpstan_runtime_file() {
+    local rel_path="$1"
+
+    case "$rel_path" in
+        scoper.inc.php|tools/*|tests/*|vendor_prefixed/*|vendor/*)
+            return 1
+            ;;
+    esac
+
+    return 0
+}
 
 resolve_phpstan_targets() {
     local matched=()
     local target
+    local target_path
+    local target_rel
 
     if [ -n "${HOMEBOY_LINT_FILE:-}" ]; then
-        target="${PLUGIN_PATH}/${HOMEBOY_LINT_FILE}"
-        if [ -f "$target" ] && [[ "$target" == *.php ]]; then
-            matched+=("$target")
+        target_path=$(homeboy_phpstan_abspath "$HOMEBOY_LINT_FILE")
+        target_rel=$(homeboy_phpstan_relpath "$target_path")
+        if [ -f "$target_path" ] && [[ "$target_path" == *.php ]] && homeboy_phpstan_runtime_file "$target_rel"; then
+            matched+=("$target_path")
         fi
     elif [ -n "${HOMEBOY_LINT_GLOB:-}" ]; then
         (
             cd "$PLUGIN_PATH"
             eval 'for f in '"${HOMEBOY_LINT_GLOB}"'; do [ -e "$f" ] && printf "%s\0" "$f"; done'
         ) | while IFS= read -r -d '' target; do
-            if [ -f "${PLUGIN_PATH}/${target}" ] && [[ "$target" == *.php ]]; then
-                printf '%s\0' "${PLUGIN_PATH}/${target}"
-            elif [ -d "${PLUGIN_PATH}/${target}" ]; then
-                find "${PLUGIN_PATH}/${target}" -type f -name '*.php' \
+            target_path=$(homeboy_phpstan_abspath "$target")
+            target_rel=$(homeboy_phpstan_relpath "$target_path")
+            if [ -f "$target_path" ] && [[ "$target_path" == *.php ]] && homeboy_phpstan_runtime_file "$target_rel"; then
+                printf '%s\0' "$target_path"
+            elif [ -d "$target_path" ]; then
+                find "$target_path" -type f -name '*.php' \
                     -not -path "*/vendor/*" \
                     -not -path "*/vendor_prefixed/*" \
                     -not -path "*/node_extensions/*" \
                     -not -path "*/build/*" \
                     -not -path "*/dist/*" \
+                    -not -path "*/tools/*" \
+                    -not -path "*/tests/*" \
+                    -not -name "scoper.inc.php" \
                     -print0
             fi
         done
@@ -253,6 +394,25 @@ resolve_phpstan_targets() {
     if [ "${#matched[@]}" -gt 0 ]; then
         printf '%s\0' "${matched[@]}"
     fi
+}
+
+resolve_phpstan_full_targets() {
+    local target_path
+    local target_rel
+
+    while IFS= read -r -d '' target_path; do
+        target_rel=$(homeboy_phpstan_relpath "$target_path")
+        if homeboy_phpstan_runtime_file "$target_rel"; then
+            printf '%s\0' "$target_path"
+        fi
+    done < <(find "$PLUGIN_PATH" -type f -name '*.php' \
+        -not -path "*/vendor/*" \
+        -not -path "*/vendor_prefixed/*" \
+        -not -path "*/node_extensions/*" \
+        -not -path "*/node_modules/*" \
+        -not -path "*/build/*" \
+        -not -path "*/dist/*" \
+        -print0)
 }
 
 if [ -n "${HOMEBOY_LINT_FILE:-}" ] || [ -n "${HOMEBOY_LINT_GLOB:-}" ]; then
@@ -266,21 +426,19 @@ if [ -n "${HOMEBOY_LINT_FILE:-}" ] || [ -n "${HOMEBOY_LINT_GLOB:-}" ]; then
         echo "PHPStan scoped lint: no PHP files in requested scope, skipping static analysis"
         exit 0
     fi
+
+    SCOPED_CONTEXT_CONFIG=$(generate_scoped_context_config)
+    if [ -n "$SCOPED_CONTEXT_CONFIG" ] && [ -f "$SCOPED_CONTEXT_CONFIG" ]; then
+        PHPSTAN_BASE_CONFIG="$SCOPED_CONTEXT_CONFIG"
+    fi
+else
+    while IFS= read -r -d '' phpstan_target; do
+        PHPSTAN_TARGETS+=("$phpstan_target")
+    done < <(resolve_phpstan_full_targets)
 fi
 
 # Check if the selected PHPStan target set has PHP files.
-if [ "$PHPSTAN_SCOPED" -eq 1 ]; then
-    php_file_count="${#PHPSTAN_TARGETS[@]}"
-else
-    php_file_count=$(find "$PLUGIN_PATH" -type f -name "*.php" \
-        -not -path "*/vendor/*" \
-        -not -path "*/vendor_prefixed/*" \
-        -not -path "*/node_extensions/*" \
-        -not -path "*/build/*" \
-        -not -path "*/dist/*" \
-        -not -path "*/tests/*" \
-        2>/dev/null | wc -l | tr -d ' ')
-fi
+php_file_count="${#PHPSTAN_TARGETS[@]}"
 
 if [ "$php_file_count" -eq 0 ]; then
     if [ "${HOMEBOY_DEBUG:-}" = "1" ]; then
@@ -325,6 +483,7 @@ fi
 generate_composite_autoload() {
     local tmpfile
     local component_autoload="${PLUGIN_PATH}/vendor/autoload.php"
+    local component_prefixed_autoload="${PLUGIN_PATH}/vendor_prefixed/autoload.php"
 
     tmpfile=$(homeboy_mktemp 'homeboy-phpstan-autoload.XXXXXX')
 
@@ -335,13 +494,21 @@ generate_composite_autoload() {
         while IFS= read -r dependency_path; do
             [ -z "$dependency_path" ] && continue
             local dependency_autoload="${dependency_path}/vendor/autoload.php"
+            local dependency_prefixed_autoload="${dependency_path}/vendor_prefixed/autoload.php"
             if [ -f "$dependency_autoload" ]; then
                 printf '    %s,\n' "$(printf '%s' "$dependency_autoload" | jq -Rsa .)"
+            fi
+            if [ -f "$dependency_prefixed_autoload" ]; then
+                printf '    %s,\n' "$(printf '%s' "$dependency_prefixed_autoload" | jq -Rsa .)"
             fi
         done < <(homeboy_resolve_validation_dependency_paths "$PLUGIN_PATH")
 
         if [ -f "$component_autoload" ]; then
             printf '    %s,\n' "$(printf '%s' "$component_autoload" | jq -Rsa .)"
+        fi
+
+        if [ -f "$component_prefixed_autoload" ]; then
+            printf '    %s,\n' "$(printf '%s' "$component_prefixed_autoload" | jq -Rsa .)"
         fi
 
         printf '%s\n' '];'
@@ -432,7 +599,7 @@ cleanup_phpstan_config() {
     [ -n "$PHPSTAN_TMPCONFIG" ] && rm -f "$PHPSTAN_TMPCONFIG"
     PHPSTAN_TMPCONFIG=""
 }
-trap 'cleanup_phpstan_config; cleanup_composite_autoload; cleanup_dependency_config' EXIT
+trap 'cleanup_phpstan_config; cleanup_composite_autoload; cleanup_dependency_config; cleanup_scoped_context_config' EXIT
 
 # Generate a temp config when we need to override parallel processes or phpVersion.
 if [ -n "$PHPSTAN_MAX_PROCESSES" ] || [ -n "$PHPSTAN_PHP_VERSION" ]; then
@@ -737,6 +904,14 @@ if [[ "${HOMEBOY_SUMMARY_MODE:-}" == "1" ]]; then
             }
             $componentPath = $argv[1] ?? "";
             $findings = [];
+            $readExcerpt = static function ($path, $line) {
+                if (!$path || !$line || !is_readable($path)) {
+                    return null;
+                }
+
+                $lines = @file($path, FILE_IGNORE_NEW_LINES);
+                return $lines[$line - 1] ?? null;
+            };
             foreach ($json["files"] as $filePath => $data) {
                 $relPath = $filePath;
                 if ($componentPath && strpos($filePath, $componentPath) === 0) {
@@ -745,11 +920,22 @@ if [[ "${HOMEBOY_SUMMARY_MODE:-}" == "1" ]]; then
                 foreach ($data["messages"] ?? [] as $msg) {
                     $identifier = $msg["identifier"] ?? "unknown";
                     $line = $msg["line"] ?? 0;
-                    $message = $msg["message"] ?? "Unknown";
+                    $code = "phpstan." . $identifier;
+                    $id = $relPath . "::" . $code . "::" . $line;
+                    $message = ($msg["message"] ?? "Unknown") . " (" . $code . ")";
                     $findings[] = [
-                        "id" => $relPath . "::phpstan." . $identifier . "::" . $line,
-                        "message" => $message . " (phpstan." . $identifier . ")",
+                        "id" => $id,
+                        "file" => $relPath,
+                        "line" => $line,
+                        "column" => null,
+                        "severity" => "error",
+                        "source" => "phpstan",
+                        "code" => $code,
                         "category" => "phpstan",
+                        "message" => $message,
+                        "fixable" => false,
+                        "fingerprint" => sha1($id),
+                        "excerpt" => $readExcerpt($filePath, $line),
                     ];
                 }
             }

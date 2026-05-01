@@ -18,6 +18,9 @@
  *   STAGE_FATAL:<stage>:<msg>    - uncatchable fatal (from shutdown handler)
  *   NOTICE:<msg>                 - PHP warning/notice that escaped silencing
  *   PLUGIN_DETECTED <basename>   - loaded plugin entry file
+ *   PLUGIN_LOAD_CONTEXT <...>    - load stage/hook/installing/activation context
+ *   PLUGIN_ACTIVATE_BEGIN <...>  - post-install activation hook dispatch begins
+ *   PLUGIN_ACTIVATE_OK <...>     - post-install activation hook dispatch ended
  *   THEME_DETECTED               - loaded theme (style.css + functions.php)
  *   NO_TEST_FILES                - discovery found no candidates
  *   RUNNING <n> TEST FILES       - starting PHPUnit
@@ -30,14 +33,20 @@
  *   install          - wp-phpunit install.php (creates WP + tables)
  *   load_fixtures    - test case classes, mock mailer, harness filters
  *   load_deps        - dependency plugin bootstrap files (if any)
- *   load_component   - plugin/theme under test
- *   discover_tests   - glob test files
+ *   load_component   - plugin/theme under test + plugin activation hook
+ *   discover_tests   - glob test files, then apply changed-file scope
  *   load_tests       - require_once each test file
  *   run_tests        - PHPUnit execution
  *
  * The bash runner's job: if playground_exit != 0 AND no STAGE_FAIL/FATAL/
  * SOME TESTS FAILED line exists, surface the raw stdout/stderr — something
  * crashed before we could even write to the result file.
+ *
+ * Plugin lifecycle contract: plugin files are loaded during WordPress bootstrap
+ * with activation disabled, while wp_installing() may still be true and test DB
+ * tables may not be ready. Runtime callbacks must guard install-time table
+ * access. Activation hooks are dispatched later by the runner after the
+ * wp-phpunit install stage has created the test tables.
  */
 
 // Report everything. Warnings/notices inside WP bootstrap have historically
@@ -61,6 +70,10 @@ pg_install_diagnostics_handlers();
 
 $tests_dir = '/homeboy-extension/vendor/wp-phpunit/wp-phpunit';
 $plugin_path = '/wordpress/wp-content/plugins/{{PLUGIN_SLUG}}';
+$selected_test_file = base64_decode('{{PHPUNIT_TEST_FILE_B64}}', true);
+if (!is_string($selected_test_file)) {
+    $selected_test_file = '';
+}
 
 // Stage: boot — render wp-tests-config.php + load composer autoload.
 //
@@ -94,8 +107,40 @@ if (is_array($bench_env)) {
     }
 }
 
+// Load the component during WordPress bootstrap, not after wp-settings.php has
+// finished. Plugins that register hooks for core bootstrap events (for example
+// wp_abilities_api_init) need to be present before those events fire.
+$pre_component_init_callbacks = pg_snapshot_wordpress_hook_callbacks('init');
+$pre_component_shutdown_callbacks = pg_snapshot_wordpress_hook_callbacks('shutdown');
+$deferred_install_init_callbacks = [];
+require_once "$tests_dir/includes/functions.php";
+tests_add_filter('muplugins_loaded', function () use ($plugin_path, $pre_component_init_callbacks, &$deferred_install_init_callbacks) {
+    pg_run_load_deps_stage(['dep_mounts' => '{{PLAYGROUND_DEP_MOUNTS}}']);
+    pg_run_load_component_stage(['plugin_path' => $plugin_path, 'activate' => false]);
+
+    // Let plugins attach early-bootstrap callbacks before lazy core registries
+    // initialize, but defer component-added init callbacks until install.php has
+    // created the wptests_* tables. This preserves registration order without
+    // letting DB-touching runtime callbacks run against a half-installed site.
+    tests_add_filter('plugins_loaded', function () use ($pre_component_init_callbacks, &$deferred_install_init_callbacks) {
+        $deferred_install_init_callbacks = pg_defer_new_wordpress_hook_callbacks('init', $pre_component_init_callbacks);
+    }, PHP_INT_MAX);
+});
+
 // Stage: install — wp-phpunit install.php creates WP tables in-process.
 pg_run_install_stage(['config_path' => $config_path, 'tests_dir' => $tests_dir]);
+
+// The early component load above preserves core bootstrap ordering for lazy
+// registries, but request-end callbacks added during wp-phpunit install can do
+// runtime database work before activation has created plugin tables. Suppress
+// only callbacks the component added during that install bootstrap; activation
+// below remains the post-table seam for install-time side effects.
+pg_remove_new_wordpress_hook_callbacks('shutdown', $pre_component_shutdown_callbacks);
+pg_run_deferred_wordpress_hook_callbacks($deferred_install_init_callbacks);
+
+// Run activation hooks after wp-phpunit has created database tables. The plugin
+// file was already required during muplugins_loaded, so require_once is a no-op.
+pg_run_load_component_stage(['plugin_path' => $plugin_path]);
 
 // ---------------------------------------------------------------------------
 // Stage: load_fixtures (test case classes, mock mailer, harness filters)
@@ -144,12 +189,6 @@ try {
     exit(1);
 }
 
-// Stage: load_deps — load Plugin-Name-headed entry files for declared deps.
-pg_run_load_deps_stage(['dep_mounts' => '{{PLAYGROUND_DEP_MOUNTS}}']);
-
-// Stage: load_component — load the plugin or theme under test.
-pg_run_load_component_stage(['plugin_path' => $plugin_path]);
-
 // ---------------------------------------------------------------------------
 // Stage: discover_tests
 //
@@ -185,6 +224,18 @@ try {
     );
 
     $test_files = pg_discover_tests($directories, $suffixes, $prefixes, $excludes);
+    $test_files = pg_filter_changed_test_files($test_files, '{{CHANGED_TEST_FILES_JSON}}', $plugin_path);
+
+    if ($selected_test_file !== '') {
+        $selected_abs = $plugin_path . '/' . ltrim($selected_test_file, '/');
+        if (!in_array($selected_abs, $test_files, true)) {
+            pg_log("NO_TEST_FILES");
+            pg_log("NOTICE:requested PHPUnit test file not discovered: $selected_test_file");
+            pg_stage_ok('discover_tests');
+            exit(1);
+        }
+        $test_files = [$selected_abs];
+    }
 
     pg_log("DISCOVERY: dirs=" . implode(',', $directories)
         . " suffixes=" . implode(',', $suffixes)
@@ -407,21 +458,105 @@ foreach ($new_classes as $class_name) {
 }
 pg_stage_ok('load_tests');
 
-// ---------------------------------------------------------------------------
-// Stage: run_tests
-// ---------------------------------------------------------------------------
-pg_stage_begin('run_tests');
-pg_log("RUNNING " . count($test_files) . " TEST FILES");
-try {
-    $runner = new PHPUnit\TextUI\TestRunner();
-    $result = $runner->run($suite, [
+/**
+ * Parse the narrow PHPUnit CLI arguments Homeboy forwards into Playground.
+ *
+ * The host runner passes arguments after `/runner.php`, so `$argv` mirrors the
+ * user-facing `homeboy test <component> -- <args>` contract. Keep this parser
+ * intentionally small: unknown arguments are logged instead of silently changing
+ * the run shape, while the common targeting flags reach PHPUnit's TestRunner.
+ */
+function pg_parse_phpunit_args(array $argv) {
+    $arguments = [
         'colors' => 'never',
         'testdox' => true,
         'verbose' => false,
         // PHPUnit 9.6 reads $arguments['extensions'] unconditionally (line 1074
         // in TestRunner.php). Omit it and you get two warnings per run.
         'extensions' => [],
-    ]);
+    ];
+
+    $args = array_slice($argv, 1);
+    for ($i = 0; $i < count($args); $i++) {
+        $arg = $args[$i];
+        if ($arg === '--filter') {
+            if (isset($args[$i + 1])) {
+                $arguments['filter'] = $args[++$i];
+                pg_log('NOTICE:phpunit filter applied: ' . $arguments['filter']);
+            } else {
+                pg_log('NOTICE:phpunit --filter ignored because no value was provided');
+            }
+            continue;
+        }
+        if (strpos($arg, '--filter=') === 0) {
+            $arguments['filter'] = substr($arg, strlen('--filter='));
+            pg_log('NOTICE:phpunit filter applied: ' . $arguments['filter']);
+            continue;
+        }
+        if ($arg === '--list-tests') {
+            $arguments['listTests'] = true;
+            pg_log('NOTICE:phpunit list-tests enabled');
+            continue;
+        }
+        if ($arg === '--testdox') {
+            $arguments['testdox'] = true;
+            continue;
+        }
+        if ($arg === '--no-testdox') {
+            $arguments['testdox'] = false;
+            continue;
+        }
+        if ($arg === '--verbose' || $arg === '-v') {
+            $arguments['verbose'] = true;
+            continue;
+        }
+        if ($arg === '--colors=always') {
+            $arguments['colors'] = 'always';
+            continue;
+        }
+        if ($arg === '--colors=never') {
+            $arguments['colors'] = 'never';
+            continue;
+        }
+        pg_log('NOTICE:unsupported phpunit argument ignored by Playground runner: ' . $arg);
+    }
+
+    return $arguments;
+}
+
+/**
+ * Print PHPUnit-style test names from a TestSuite tree for --list-tests.
+ */
+function pg_print_test_list($test) {
+    if ($test instanceof PHPUnit\Framework\TestSuite) {
+        foreach ($test->tests() as $child) {
+            pg_print_test_list($child);
+        }
+        return;
+    }
+
+    if ($test instanceof PHPUnit\Framework\TestCase) {
+        echo get_class($test) . '::' . $test->getName() . PHP_EOL;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Stage: run_tests
+// ---------------------------------------------------------------------------
+pg_stage_begin('run_tests');
+pg_log("RUNNING " . count($test_files) . " TEST FILES");
+try {
+    $phpunit_args = pg_parse_phpunit_args($argv ?? []);
+    if (!empty($phpunit_args['listTests'])) {
+        pg_print_test_list($suite);
+        pg_log('ALL TESTS PASSED');
+        pg_log('TESTS: ' . $suite->count() . ' FAILURES: 0 ERRORS: 0');
+        pg_stage_ok('run_tests');
+        exit(0);
+    }
+
+    $runner = new PHPUnit\TextUI\TestRunner();
+    $result = $runner->run($suite, $phpunit_args);
     pg_log($result->wasSuccessful() ? "ALL TESTS PASSED" : "SOME TESTS FAILED");
     pg_log("TESTS: " . $result->count() . " FAILURES: " . count($result->failures()) . " ERRORS: " . count($result->errors()));
     pg_stage_ok('run_tests');

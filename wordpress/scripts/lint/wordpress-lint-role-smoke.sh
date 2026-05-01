@@ -142,12 +142,12 @@ run_lint_file() {
 }
 
 run_lint_file 'scoper.inc.php'
-assert_contains '--sniffs=Generic.PHP.Syntax' "$PHPCS_ARGS_FILE" 'scoper config uses syntax-only PHPCS role'
+assert_equals '' "$(cat "$PHPCS_ARGS_FILE")" 'scoper config skips production PHPCS profile'
 assert_equals '0' "$(cat "$PHPSTAN_CALLS_FILE")" 'scoper config skips PHPStan runtime autoload analysis'
 
 run_lint_file 'tools/build-autoloader.php'
 assert_contains '--exclude=WordPress.WP.AlternativeFunctions,WordPress.PHP.DevelopmentFunctions,WordPress.Security.EscapeOutput' "$PHPCS_ARGS_FILE" 'tooling role excludes WordPress runtime-only PHPCS sniffs'
-assert_equals '1' "$(cat "$PHPSTAN_CALLS_FILE")" 'tooling role keeps PHPStan static analysis'
+assert_equals '0' "$(cat "$PHPSTAN_CALLS_FILE")" 'tooling role skips PHPStan runtime static analysis'
 
 run_lint_file 'tests/BFBConversionUnitTest.php'
 assert_equals '0' "$(cat "$PHPSTAN_CALLS_FILE")" 'WordPress PHPUnit test role skips unsupported host PHPStan context'

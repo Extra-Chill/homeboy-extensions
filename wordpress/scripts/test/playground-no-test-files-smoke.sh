@@ -8,7 +8,13 @@ trap 'rm -rf "$TMPDIR"' EXIT
 
 EXTENSION_PATH="${TMPDIR}/extension"
 PLUGIN_PATH="${TMPDIR}/component"
+BIN_PATH="${TMPDIR}/bin"
+mkdir -p "${BIN_PATH}"
+export PATH="${BIN_PATH}:${PATH}"
 mkdir -p "${EXTENSION_PATH}/node_modules/.bin" "${PLUGIN_PATH}/tests"
+
+RUNNER_SRC="$(cat "${SCRIPT_DIR}/playground-runner.php")"
+BOOTSTRAP_SRC="$(cat "${SCRIPT_DIR}/../lib/playground-bootstrap.php")"
 
 cat > "${EXTENSION_PATH}/node_modules/.bin/wp-playground-cli" <<'SH'
 #!/usr/bin/env bash
@@ -22,6 +28,14 @@ LOG
 exit 1
 SH
 chmod +x "${EXTENSION_PATH}/node_modules/.bin/wp-playground-cli"
+
+cat > "${BIN_PATH}/composer" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+echo "composer:$PWD:$*" >> "${HOMEBOY_COMPOSER_CALLS_FILE}"
+echo "Composer smoke script ran"
+SH
+chmod +x "${BIN_PATH}/composer"
 
 assert_contains() {
     local haystack="$1"
@@ -60,6 +74,31 @@ assert_contains "$skip_output" "Skipping PHPUnit tests: no files matched the Wor
 assert_contains "$skip_output" "ending in Test.php or starting with test-."
 assert_not_contains "$skip_output" "UNCLASSIFIED PLAYGROUND FAILURE"
 
+cat > "${PLUGIN_PATH}/composer.json" <<'JSON'
+{
+  "scripts": {
+    "test": "php tests/smoke.php"
+  }
+}
+JSON
+COMPOSER_CALLS_FILE="${TMPDIR}/composer-calls.log"
+set +e
+composer_output=$(HOMEBOY_EXTENSION_PATH="$EXTENSION_PATH" HOMEBOY_COMPONENT_PATH="$PLUGIN_PATH" HOMEBOY_COMPONENT_ID="example" HOMEBOY_COMPOSER_CALLS_FILE="$COMPOSER_CALLS_FILE" bash "$RUNNER" 2>&1)
+composer_status=$?
+set -e
+
+if [ "$composer_status" -ne 0 ]; then
+    echo "Expected no-files run with composer scripts.test to run composer and pass; got $composer_status" >&2
+    echo "$composer_output" >&2
+    exit 1
+fi
+assert_contains "$composer_output" "NO PHPUNIT TEST FILES DISCOVERED"
+assert_contains "$composer_output" "Running Composer test script..."
+assert_contains "$composer_output" "Backend: composer-script"
+assert_contains "$composer_output" "Composer smoke script ran"
+assert_contains "$(cat "$COMPOSER_CALLS_FILE")" "composer:${PLUGIN_PATH}:test"
+rm -f "${PLUGIN_PATH}/composer.json"
+
 touch "${PLUGIN_PATH}/phpunit.xml.dist"
 set +e
 failure_output=$(HOMEBOY_EXTENSION_PATH="$EXTENSION_PATH" HOMEBOY_COMPONENT_PATH="$PLUGIN_PATH" HOMEBOY_COMPONENT_ID="example" bash "$RUNNER" 2>&1)
@@ -76,4 +115,25 @@ assert_contains "$failure_output" "PHPUnit config exists, but no files matched t
 assert_not_contains "$failure_output" "UNCLASSIFIED PLAYGROUND FAILURE"
 assert_not_contains "$failure_output" "Skipping PHPUnit tests: no files matched"
 
-echo "Playground no-test-files smoke passed (9 assertions)"
+assert_contains "$RUNNER_SRC" "pg_run_install_stage(['config_path' => \$config_path, 'tests_dir' => \$tests_dir]);"
+assert_contains "$RUNNER_SRC" "tests_add_filter('muplugins_loaded'"
+assert_contains "$RUNNER_SRC" "'activate' => false"
+assert_contains "$RUNNER_SRC" "pg_run_load_component_stage(['plugin_path' => \$plugin_path, 'activate' => false]);"
+assert_contains "$RUNNER_SRC" "\$pre_component_init_callbacks = pg_snapshot_wordpress_hook_callbacks('init');"
+assert_contains "$RUNNER_SRC" "tests_add_filter('plugins_loaded'"
+assert_contains "$RUNNER_SRC" "\$deferred_install_init_callbacks = pg_defer_new_wordpress_hook_callbacks('init', \$pre_component_init_callbacks);"
+assert_contains "$RUNNER_SRC" "PHP_INT_MAX"
+assert_contains "$RUNNER_SRC" "pg_run_deferred_wordpress_hook_callbacks(\$deferred_install_init_callbacks);"
+assert_contains "$RUNNER_SRC" "\$pre_component_shutdown_callbacks = pg_snapshot_wordpress_hook_callbacks('shutdown');"
+assert_contains "$RUNNER_SRC" "pg_remove_new_wordpress_hook_callbacks('shutdown', \$pre_component_shutdown_callbacks);"
+assert_contains "$BOOTSTRAP_SRC" "function pg_snapshot_wordpress_hook_callbacks"
+assert_contains "$BOOTSTRAP_SRC" "function pg_remove_new_wordpress_hook_callbacks"
+assert_contains "$BOOTSTRAP_SRC" "function pg_defer_new_wordpress_hook_callbacks"
+assert_contains "$BOOTSTRAP_SRC" "function pg_run_deferred_wordpress_hook_callbacks"
+assert_not_contains "$RUNNER_SRC" "pg_snapshot_hook_callback_ids"
+assert_not_contains "$RUNNER_SRC" "pg_replay_new_hook_callbacks"
+assert_not_contains "$RUNNER_SRC" "wp_abilities_api_categories_init"
+assert_not_contains "$RUNNER_SRC" "WP_Abilities_Registry::get_instance()"
+assert_contains "$BOOTSTRAP_SRC" "\$cfg['activate'] ?? true"
+
+echo "Playground no-test-files smoke passed (34 assertions)"

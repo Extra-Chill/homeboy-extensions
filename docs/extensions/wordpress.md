@@ -11,6 +11,37 @@ Homeboy core may pass `HOMEBOY_COMPONENT_SHAPE=core-dev` for registered componen
 
 The core-dev runner expects WordPress core's own dependencies and config. It installs missing npm/composer dependencies, builds `src/` into `build/`, and runs PHPUnit through core's `vendor/bin/phpunit`. If `wp-tests-config.php` is missing, set `HOMEBOY_WP_TESTS_DB_NAME`, `HOMEBOY_WP_TESTS_DB_USER`, `HOMEBOY_WP_TESTS_DB_PASSWORD`, and optionally `HOMEBOY_WP_TESTS_DB_HOST` so the runner can write it from the sample config.
 
+## Test failure sidecar
+
+When Homeboy sets `HOMEBOY_TEST_FAILURES_FILE`, the WordPress PHPUnit runners write a JSON sidecar with parsed failure details. Existing Homeboy analysis fields are preserved, and each failure also includes normalized sidecar fields for cross-runner consumers:
+
+```json
+{
+  "total": 4,
+  "passed": 3,
+  "failures": [
+    {
+      "test_name": "Vendor\\Package\\ExampleTest::test_example",
+      "test_file": "tests/ExampleTest.php",
+      "error_type": "AssertionFailedError",
+      "message": "Failed asserting that false is true.",
+      "source_file": "src/Example.php",
+      "source_line": 42,
+      "test_id": "Vendor\\Package\\ExampleTest::test_example",
+      "suite": "phpunit",
+      "file": "src/Example.php",
+      "line": 42,
+      "failure_type": "AssertionFailedError",
+      "fingerprint": "...",
+      "stdout_excerpt": "Vendor\\Package\\ExampleTest::test_example\nFailed asserting that false is true.",
+      "stderr_excerpt": ""
+    }
+  ]
+}
+```
+
+`file` and `line` point to the parsed source location when available, falling back to the test file and line `0`. `fingerprint` is a stable SHA-256 grouping key based on the test id, normalized location, failure type, and first message line.
+
 ## Validation dependencies
 
 Some WordPress plugins are intentionally layered on top of other local plugins.
@@ -43,3 +74,26 @@ Each dependency entry may be either:
 
 - a registered Homeboy component ID
 - an absolute path to another local plugin checkout
+
+## Lint findings sidecar
+
+When `HOMEBOY_LINT_FINDINGS_FILE` is set, the WordPress lint runner writes a
+JSON array of lint finding records for Homeboy baseline and observation storage.
+PHPCS, ESLint, and PHPStan findings are merged into the same sidecar.
+
+The sidecar contract is version 1. Records preserve the original minimal fields
+(`id`, `message`, `category`, and `fixable` when known) and include normalized
+fields where each tool reports them:
+
+- `id` — stable finding identity using `file::code::line`.
+- `file` — component-relative path when the file is inside the component.
+- `line` / `column` — 1-based location when reported by the linter.
+- `severity` — normalized `error` or `warning`.
+- `source` — linter name, such as `phpcs`, `eslint`, or `phpstan`.
+- `code` — tool-specific rule, sniff, or identifier.
+- `category` — broad grouping used by Homeboy reports.
+- `message` — human-readable linter message, including the tool code.
+- `fixable` — whether the linter reports an automatic fix for the finding.
+- `fingerprint` — stable SHA-1 hash of the finding `id`.
+- `excerpt` — source line text when the file is readable locally; otherwise
+  `null`.

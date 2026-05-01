@@ -2,6 +2,127 @@
 
 All notable changes to the **wordpress** extension will be documented in this file.
 
+## [2.39.0] - 2026-05-01
+
+### Added
+- normalize test failure sidecar
+
+## [2.38.0] - 2026-05-01
+
+### Added
+- enrich lint findings sidecar
+
+## [2.37.1] - 2026-05-01
+
+### Fixed
+- run composer tests when PHPUnit discovery is empty
+
+## [2.37.0] - 2026-04-30
+
+### Added
+- add fingerprint metadata to grammars
+
+## [2.36.0] - 2026-04-30
+
+### Added
+- declare manifest routing metadata
+
+## [2.35.0] - 2026-04-30
+
+### Added
+- own requested audit detectors
+
+## [2.34.2] - 2026-04-30
+
+### Fixed
+- tighten PHPStan API stubs
+
+## [2.34.1] - 2026-04-30
+
+### Fixed
+- exclude non-runtime files from full PHPStan lint
+
+## [2.34.0] - 2026-04-30
+
+### Added
+- emit browser bench target metadata
+
+## [2.33.0] - 2026-04-29
+
+### Added
+- declare deploy safety policy
+
+### Fixed
+- emit runtime dispatch metadata
+
+## [2.32.0] - 2026-04-29
+
+### Added
+- provide dead-guard known symbols
+
+## [2.31.0] - 2026-04-29
+
+### Added
+- add trace runner support
+
+## [2.30.15] - 2026-04-29
+
+### Fixed
+- route changed smoke files to host backend
+
+## [2.30.14] - 2026-04-29
+
+### Fixed
+- log playground install diagnostics
+- defer install-time plugin callbacks
+
+## [2.30.13] - 2026-04-29
+
+### Fixed
+- load playground test plugins during bootstrap
+
+## [2.30.12] - 2026-04-29
+
+### Changed
+- cover scoped eslint file filtering
+
+## [2.30.11] - 2026-04-29
+
+### Fixed
+- route standalone smoke files
+
+## [2.30.10] - 2026-04-29
+
+### Fixed
+- prepare Playground test schema
+
+## [2.30.9] - 2026-04-29
+
+### Fixed
+- forward PHPUnit args in Playground tests
+
+## [2.30.8] - 2026-04-29
+
+### Fixed
+- skip non-js scoped eslint files
+
+## [2.30.7] - 2026-04-29
+
+### Fixed
+- handle absolute PHPStan scope paths
+- preserve PHPStan context for scoped lint
+
+## [2.30.6] - 2026-04-28
+
+### Fixed
+- respect scoped lint and test files
+
+## [2.30.5] - 2026-04-28
+
+### Fixed
+- load runtime context for scoped PHPStan
+- scope lint profile to runtime files
+
 ## [2.30.4] - 2026-04-28
 
 ### Fixed

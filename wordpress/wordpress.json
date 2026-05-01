@@ -1,6 +1,6 @@
 {
   "name": "WordPress",
-  "version": "2.30.4",
+  "version": "2.39.0",
   "icon": "w.circle.fill",
   "description": "WordPress project type with WP-CLI integration",
   "author": "Extra Chill",
@@ -121,6 +121,22 @@
     ]
   },
   "deploy": {
+    "protected_path_suffixes": [
+      "/plugins",
+      "/themes",
+      "/mu-plugins",
+      "/wp-content",
+      "/wp-content/uploads",
+      "/wp-content/plugins",
+      "/wp-content/themes",
+      "/wp-content/mu-plugins"
+    ],
+    "owner_hints": [
+      {
+        "path_contains": "wp-content/",
+        "suggested_owner": "www-data:www-data"
+      }
+    ],
     "remote_path_inference": [
       {
         "when_file_contains": { "file": "{{dir_name}}.php", "text": "Plugin Name:" },
@@ -173,6 +189,123 @@
   },
   "audit": {
     "setup_references": "scripts/audit/setup-references.sh",
+    "detector_rules": {
+      "known_symbols": {
+        "header_versions": [
+          {
+            "file_marker": "Plugin Name:",
+            "version_header": "Requires at least:",
+            "symbols": [
+              { "name": "get_post_type_object", "kind": "function", "introduced": "3.0" },
+              { "name": "wp_json_encode", "kind": "function", "introduced": "4.4" },
+              { "name": "wp_generate_uuid4", "kind": "function", "introduced": "4.7" },
+              { "name": "register_rest_route", "kind": "function", "introduced": "4.4" },
+              { "name": "register_block_type", "kind": "function", "introduced": "5.0" },
+              { "name": "has_blocks", "kind": "function", "introduced": "5.0" },
+              { "name": "parse_blocks", "kind": "function", "introduced": "5.0" },
+              { "name": "wp_timezone_string", "kind": "function", "introduced": "5.1" },
+              { "name": "wp_timezone", "kind": "function", "introduced": "5.3" },
+              { "name": "wp_date", "kind": "function", "introduced": "5.3" },
+              { "name": "wp_get_environment_type", "kind": "function", "introduced": "5.5" },
+              { "name": "WP_REST_Server", "kind": "class", "introduced": "4.4" },
+              { "name": "WP_REST_Request", "kind": "class", "introduced": "4.4" },
+              { "name": "WP_REST_Response", "kind": "class", "introduced": "4.4" },
+              { "name": "WP_Block_Type_Registry", "kind": "class", "introduced": "5.0" },
+              { "name": "WP_Block", "kind": "class", "introduced": "5.1" },
+              { "name": "WP_HTML_Tag_Processor", "kind": "class", "introduced": "6.2" },
+              { "name": "WP_Ability", "kind": "class", "introduced": "6.9" },
+              { "name": "REST_REQUEST", "kind": "constant", "introduced": "4.4" }
+            ]
+          }
+        ],
+        "composer_packages": [
+          {
+            "package": "woocommerce/action-scheduler",
+            "symbols": [
+              { "name": "as_schedule_single_action", "kind": "function" },
+              { "name": "as_schedule_recurring_action", "kind": "function" },
+              { "name": "as_schedule_cron_action", "kind": "function" },
+              { "name": "as_enqueue_async_action", "kind": "function" },
+              { "name": "as_unschedule_action", "kind": "function" },
+              { "name": "as_unschedule_all_actions", "kind": "function" },
+              { "name": "as_next_scheduled_action", "kind": "function" },
+              { "name": "as_has_scheduled_action", "kind": "function" },
+              { "name": "as_get_scheduled_actions", "kind": "function" },
+              { "name": "ActionScheduler", "kind": "class" },
+              { "name": "ActionScheduler_Action", "kind": "class" },
+              { "name": "ActionScheduler_Store", "kind": "class" },
+              { "name": "ActionScheduler_Versions", "kind": "class" }
+            ]
+          }
+        ],
+        "bootstrap_paths": [
+          {
+            "path_contains": "action-scheduler/action-scheduler.php",
+            "symbols": [
+              { "name": "as_schedule_single_action", "kind": "function" },
+              { "name": "as_schedule_recurring_action", "kind": "function" },
+              { "name": "as_schedule_cron_action", "kind": "function" },
+              { "name": "as_enqueue_async_action", "kind": "function" },
+              { "name": "as_unschedule_action", "kind": "function" },
+              { "name": "as_unschedule_all_actions", "kind": "function" },
+              { "name": "as_next_scheduled_action", "kind": "function" },
+              { "name": "as_has_scheduled_action", "kind": "function" },
+              { "name": "as_get_scheduled_actions", "kind": "function" },
+              { "name": "ActionScheduler", "kind": "class" },
+              { "name": "ActionScheduler_Action", "kind": "class" },
+              { "name": "ActionScheduler_Store", "kind": "class" },
+              { "name": "ActionScheduler_Versions", "kind": "class" }
+            ]
+          }
+        ]
+      },
+      "requested_detectors": [
+        {
+          "id": "wordpress-json-like-exact-match",
+          "type": "regex",
+          "kind": "json_like_exact_match",
+          "severity": "warning",
+          "convention": "requested_detectors",
+          "language": "php",
+          "file_extensions": ["php"],
+          "exclude_path_contains": ["/vendor/", "vendor/", "/node_modules/", "node_modules/"],
+          "pattern": "(?is)\\b(?P<column>metadata|engine_data|config|payload)\\b\\s+LIKE\\s+[^;\\n]*(?:\\\\?['\\\"]|%)(?:\\\\?\\\")(?P<field>[A-Za-z_][A-Za-z0-9_\\-]*)(?:\\\\?\\\")\\s*:",
+          "description": "SQL LIKE exact-match against JSON blob `{column}` at line {line} for key `{field}`",
+          "suggestion": "Avoid semantic matching inside `{column}` with LIKE. Decode candidate rows or promote `{field}` to a first-class indexed column before exact matching."
+        },
+        {
+          "id": "wordpress-constant-backed-slug-literal",
+          "type": "derived_literal",
+          "kind": "constant_backed_slug_literal",
+          "severity": "info",
+          "convention": "requested_detectors",
+          "language": "php",
+          "file_extensions": ["php"],
+          "exclude_path_contains": ["/vendor/", "vendor/", "/node_modules/", "node_modules/"],
+          "source_pattern": "(?s)\\b(?:final\\s+|abstract\\s+)?class\\s+(?P<class>[A-Za-z_][A-Za-z0-9_]*)\\b.*?\\b(?:(?:public|protected|private)\\s+)?const\\s+(?P<const>[A-Z][A-Z0-9_]*)\\s*=\\s*['\\\"](?P<value>[a-z][a-z0-9]*(?:[-_/:][a-z0-9]+)+)['\\\"]",
+          "value_capture": "value",
+          "label": "{class}::{const}",
+          "literal_pattern": "['\\\"]{value}['\\\"]",
+          "description": "Raw slug literal `{value}` at line {line} duplicates constant {label}",
+          "suggestion": "Use {label} instead of repeating the literal slug so the constant remains the source of truth."
+        },
+        {
+          "id": "wordpress-option-scope-drift",
+          "type": "comment_regex",
+          "kind": "option_scope_drift",
+          "severity": "warning",
+          "convention": "requested_detectors",
+          "language": "php",
+          "file_extensions": ["php"],
+          "exclude_path_contains": ["/vendor/", "vendor/", "/node_modules/", "node_modules/"],
+          "comment_pattern": "(?i)\\b(network option|site option|multisite|shared across subsites|shared across sites)\\b",
+          "comment_exclude_pattern": "(?i)\\b(not a network option|single-site option)\\b",
+          "pattern": "\\b(?P<call>get_option|update_option|delete_option)\\s*\\(",
+          "description": "Option scope drift at line {line}: docs mention network/site-option storage but implementation calls `{call}`",
+          "suggestion": "Use the matching site-option call or update the storage contract so multisite behaviour is explicit."
+        }
+      ]
+    },
     "ignore_claim_patterns": [
       "/wp-json/**",
       "/*-auth/**",
@@ -340,7 +473,17 @@
     ]
   },
   "lint": {
-    "extension_script": "scripts/lint/lint-runner.sh"
+    "extension_script": "scripts/lint/lint-runner.sh",
+    "changed_file_routes": [
+      {
+        "extensions": ["php"],
+        "step": "phpcs,phpstan"
+      },
+      {
+        "extensions": ["js", "jsx", "ts", "tsx"],
+        "step": "eslint"
+      }
+    ]
   },
   "test": {
     "drift": {
@@ -353,6 +496,9 @@
   },
   "bench": {
     "extension_script": "scripts/bench/bench-runner.sh"
+  },
+  "trace": {
+    "extension_script": "scripts/trace/trace-runner.sh"
   },
   "testing": {
     "backend": "playground",
@@ -407,6 +553,13 @@
       "type": "string",
       "default": "fresh",
       "description": "WordPress bench boot shape. 'fresh' preserves the historical wp-phpunit install stage. 'installed' requires HOMEBOY_BENCH_SHARED_STATE, mounts its wordpress/ subdirectory at /wordpress before Playground install, prepares that persisted site on the first run, skips wp-phpunit install.php, and boots the site with wp-load.php for warm installed-site runs."
+    },
+    {
+      "id": "bench_browser_target",
+      "label": "Bench browser target handoff",
+      "type": "object",
+      "default": {},
+      "description": "Optional browser bench target descriptor. Set {\"enabled\": true} to write HOMEBOY_BENCH_SHARED_STATE/browser-target.json. Include baseUrl/adminUrl for an already-running site; otherwise the file is metadata-only because the Playground PHP bench runner exits after workloads complete. Login supports method plus username/password or password_env; raw target files are handoff artifacts and must not be published in reports."
     },
     {
       "id": "playground_wordpress_install_mode",

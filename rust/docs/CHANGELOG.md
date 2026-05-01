@@ -2,6 +2,16 @@
 
 All notable changes to the **rust** extension will be documented in this file.
 
+## [1.14.0] - 2026-04-30
+
+### Added
+- add fingerprint metadata to grammars
+
+## [1.13.1] - 2026-04-29
+
+### Fixed
+- avoid grep in test result parser
+
 ## [1.13.0] - 2026-04-27
 
 ### Added

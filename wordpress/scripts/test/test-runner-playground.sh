@@ -79,6 +79,27 @@ else
 fi
 
 SETTINGS_JSON="${HOMEBOY_SETTINGS_JSON:-}"
+SELECTED_TEST_FILE="${HOMEBOY_WORDPRESS_PHPUNIT_TEST_FILE:-}"
+PASSTHROUGH_ARGS=()
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --file)
+            shift
+            if [ "$#" -eq 0 ] || [ -z "${1:-}" ]; then
+                echo "ERROR: --file requires a path" >&2
+                exit 2
+            fi
+            SELECTED_TEST_FILE="$1"
+            ;;
+        --file=*)
+            SELECTED_TEST_FILE="${1#--file=}"
+            ;;
+        *)
+            PASSTHROUGH_ARGS+=("$1")
+            ;;
+    esac
+    shift
+done
 
 if [ "${HOMEBOY_DEBUG:-}" = "1" ]; then
     echo "DEBUG: [playground] Extension path: $EXTENSION_PATH"
@@ -96,8 +117,41 @@ if [ ! -f "$PLAYGROUND_CLI" ]; then
     exit 1
 fi
 
+component_has_composer_test_script() {
+    [ -f "${PLUGIN_PATH}/composer.json" ] || return 1
+
+    php -r '
+        $composer = json_decode(file_get_contents($argv[1]), true);
+        exit(is_array($composer) && isset($composer["scripts"]["test"]) ? 0 : 1);
+    ' "${PLUGIN_PATH}/composer.json" 2>/dev/null
+}
+
+run_composer_test_script() {
+    echo ""
+    echo "Running Composer test script..."
+    echo "  Plugin: ${PLUGIN_SLUG} (${PLUGIN_PATH})"
+    echo "  Backend: composer-script"
+
+    if ! command -v composer >/dev/null 2>&1; then
+        echo "ERROR: composer.json declares scripts.test, but composer is not available on PATH." >&2
+        FAILED_STEP="Composer test script setup"
+        return 1
+    fi
+
+    if [ "${#PASSTHROUGH_ARGS[@]}" -gt 0 ]; then
+        ( cd "${PLUGIN_PATH}" && composer test -- "${PASSTHROUGH_ARGS[@]}" )
+    else
+        ( cd "${PLUGIN_PATH}" && composer test )
+    fi
+}
+
 TEST_DIR="${PLUGIN_PATH}/tests"
 if [ ! -d "$TEST_DIR" ]; then
+    if component_has_composer_test_script; then
+        run_composer_test_script
+        exit $?
+    fi
+
     echo ""
     echo "⚠ Warning: No tests directory found at ${TEST_DIR}"
     echo "  Skipping PHPUnit tests."
@@ -155,6 +209,40 @@ if [ -n "${HOMEBOY_SETTINGS_JSON:-}" ] && [ "${HOMEBOY_SETTINGS_JSON}" != "{}" ]
         BENCH_ENV_JSON="$extracted"
     fi
 fi
+
+# Homeboy core sends changed test paths as newline-delimited component-relative
+# paths. Playground PHP cannot reliably read host env directly, so substitute a
+# JSON array into the runner template and let it filter VFS-discovered tests.
+CHANGED_TEST_FILES_JSON="[]"
+if [ -n "${HOMEBOY_CHANGED_TEST_FILES:-}" ]; then
+    CHANGED_TEST_FILES_JSON=$(printf '%s' "${HOMEBOY_CHANGED_TEST_FILES}" | php -r '
+        $files = array_values(array_filter(array_map("trim", explode("\n", stream_get_contents(STDIN)))));
+        echo json_encode($files, JSON_UNESCAPED_SLASHES);
+    ' 2>/dev/null || printf '[]')
+fi
+
+SELECTED_TEST_FILE_REL=""
+if [ -n "$SELECTED_TEST_FILE" ]; then
+    if [ "${SELECTED_TEST_FILE#/}" != "$SELECTED_TEST_FILE" ]; then
+        selected_abs="$SELECTED_TEST_FILE"
+    else
+        selected_abs="${PLUGIN_PATH}/${SELECTED_TEST_FILE}"
+    fi
+    if [ ! -f "$selected_abs" ]; then
+        echo "ERROR: requested PHPUnit test file not found: ${SELECTED_TEST_FILE}" >&2
+        exit 2
+    fi
+    case "$selected_abs" in
+        "${PLUGIN_PATH}"/tests/*.php)
+            SELECTED_TEST_FILE_REL="${selected_abs#"${PLUGIN_PATH}/"}"
+            ;;
+        *)
+            echo "ERROR: requested PHPUnit test file must live under tests/: ${SELECTED_TEST_FILE}" >&2
+            exit 2
+            ;;
+    esac
+fi
+SELECTED_TEST_FILE_B64=$(printf '%s' "$SELECTED_TEST_FILE_REL" | base64 | tr -d '\n')
 
 # PLUGIN_SLUG is the wp-content/plugins/ path segment Playground uses to
 # mount the component-under-test. When homeboy core tells us the canonical
@@ -242,8 +330,10 @@ WP_CONFIG_DEFINES_DELIM=$(printf '\1')
 sed \
     -e "s|{{PLUGIN_SLUG}}|${PLUGIN_SLUG}|g" \
     -e "s|{{PLAYGROUND_DEP_MOUNTS}}|${PLAYGROUND_DEP_MOUNTS}|g" \
+    -e "s|{{PHPUNIT_TEST_FILE_B64}}|${SELECTED_TEST_FILE_B64}|g" \
     -e "s${WP_CONFIG_DEFINES_DELIM}{{WP_CONFIG_DEFINES_JSON}}${WP_CONFIG_DEFINES_DELIM}${WP_CONFIG_DEFINES_JSON}${WP_CONFIG_DEFINES_DELIM}g" \
     -e "s${WP_CONFIG_DEFINES_DELIM}{{BENCH_ENV_JSON}}${WP_CONFIG_DEFINES_DELIM}${BENCH_ENV_JSON}${WP_CONFIG_DEFINES_DELIM}g" \
+    -e "s${WP_CONFIG_DEFINES_DELIM}{{CHANGED_TEST_FILES_JSON}}${WP_CONFIG_DEFINES_DELIM}${CHANGED_TEST_FILES_JSON}${WP_CONFIG_DEFINES_DELIM}g" \
     "$TEMPLATE" > "$WRAPPER_TMPFILE"
 
 echo "Running PHPUnit tests via WordPress Playground..."
@@ -268,7 +358,7 @@ set +e
     "--mount" "${WRAPPER_TMPFILE}:/runner.php" \
     --wp=6.9 \
     --verbosity=normal \
-    -- /runner.php \
+    -- /runner.php "$@" \
     2>&1 | homeboy_filter_playground_cleanup_noise | tee "$PHPUNIT_TMPFILE"
 playground_exit=${PIPESTATUS[0]}
 set -e
@@ -284,23 +374,23 @@ fi
 
 # Also capture PHPUnit stdout from the tee'd output
 PHPUNIT_STDOUT=$(cat "$PHPUNIT_TMPFILE")
-rm -f "$PHPUNIT_TMPFILE"
 
 # Parse test results for homeboy core (best-effort, non-blocking)
 PARSE_RESULTS="${EXTENSION_PATH}/scripts/test/parse-test-results.sh"
 PARSE_FAILURES="${EXTENSION_PATH}/scripts/test/parse-test-failures.sh"
 if [ -n "${HOMEBOY_TEST_RESULTS_FILE:-}" ] && [ -f "$PARSE_RESULTS" ]; then
     if [ -n "$PHPUNIT_STDOUT" ]; then
-        echo "$PHPUNIT_STDOUT" | bash "$PARSE_RESULTS" || true
+        bash "$PARSE_RESULTS" "$PHPUNIT_TMPFILE" || true
     elif [ -n "$PHPUNIT_OUTPUT" ]; then
-        echo "$PHPUNIT_OUTPUT" | bash "$PARSE_RESULTS" || true
+        bash "$PARSE_RESULTS" "$RESULT_FILE" || true
     fi
 fi
 if [ -n "${HOMEBOY_TEST_FAILURES_FILE:-}" ] && [ -f "$PARSE_FAILURES" ]; then
     if [ -n "$PHPUNIT_STDOUT" ]; then
-        echo "$PHPUNIT_STDOUT" | bash "$PARSE_FAILURES" "${PLUGIN_PATH:-}" || true
+        bash "$PARSE_FAILURES" "$PHPUNIT_TMPFILE" "${PLUGIN_PATH:-}" || true
     fi
 fi
+rm -f "$PHPUNIT_TMPFILE"
 
 # ----------------------------------------------------------------------------
 # Failure classification
@@ -389,6 +479,12 @@ fi
 # discovery cannot become a false green.
 if echo "$PHPUNIT_OUTPUT" | grep -q "^NO_TEST_FILES"; then
     dump_diagnostics "NO PHPUNIT TEST FILES DISCOVERED"
+    if component_has_composer_test_script; then
+        rm -f "$RESULT_FILE"
+        run_composer_test_script
+        exit $?
+    fi
+
     if [ -f "${PLUGIN_PATH}/phpunit.xml" ] || [ -f "${PLUGIN_PATH}/phpunit.xml.dist" ]; then
         echo ""
         echo "PHPUnit config exists, but no files matched the WordPress runner discovery contract."

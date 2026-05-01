@@ -178,13 +178,6 @@ else
     echo "Running PHP linting..."
 fi
 
-if [ "${HOMEBOY_DEBUG:-}" = "1" ]; then
-    echo "Extension path: $EXTENSION_PATH"
-    echo "Plugin path: $PLUGIN_PATH"
-    echo "Lint files: ${LINT_FILES[*]}"
-    echo "Fix-only: ${HOMEBOY_FIX_ONLY:-0}"
-fi
-
 WORDPRESS_LINT_ROLE="production"
 if [ -n "${HOMEBOY_WORDPRESS_LINT_ROLE:-}" ]; then
     WORDPRESS_LINT_ROLE="$HOMEBOY_WORDPRESS_LINT_ROLE"
@@ -195,6 +188,101 @@ export HOMEBOY_WORDPRESS_LINT_ROLE="$WORDPRESS_LINT_ROLE"
 
 if [ "$WORDPRESS_LINT_ROLE" != "production" ]; then
     echo "WordPress lint role: ${WORDPRESS_LINT_ROLE}"
+fi
+
+if [ "${HOMEBOY_DEBUG:-}" = "1" ]; then
+    echo "Extension path: $EXTENSION_PATH"
+    echo "Plugin path: $PLUGIN_PATH"
+    echo "Lint files: ${LINT_FILES[*]}"
+    echo "Fix-only: ${HOMEBOY_FIX_ONLY:-0}"
+fi
+
+homeboy_lint_relpath() {
+    local path="$1"
+    path="${path#$PLUGIN_PATH/}"
+    path="${path#./}"
+    printf '%s\n' "$path"
+}
+
+homeboy_wordpress_runtime_lint_file() {
+    local rel_path="$1"
+    local lint_role
+
+    case "$rel_path" in
+        vendor_prefixed/*|vendor/*)
+            return 1
+            ;;
+    esac
+
+    lint_role=$(wordpress_lint_role_for_path "$rel_path")
+    case "$lint_role" in
+        scoper_config|smoke_harness|phpunit_test)
+            return 1
+            ;;
+    esac
+
+    return 0
+}
+
+homeboy_php_syntax_check() {
+    local syntax_errors=0
+    local lint_target php_file rel_path
+
+    for lint_target in "$@"; do
+        if [ -d "$lint_target" ]; then
+            while IFS= read -r -d '' php_file; do
+                rel_path=$(homeboy_lint_relpath "$php_file")
+                if ! homeboy_wordpress_runtime_lint_file "$rel_path"; then
+                    if ! php -l "$php_file" > /dev/null 2>&1; then
+                        php -l "$php_file" || true
+                        syntax_errors=$((syntax_errors + 1))
+                    fi
+                fi
+            done < <(find "$lint_target" -type f -name '*.php' -print0)
+        elif [ -f "$lint_target" ] && [[ "$lint_target" == *.php ]]; then
+            if ! php -l "$lint_target" > /dev/null 2>&1; then
+                php -l "$lint_target" || true
+                syntax_errors=$((syntax_errors + 1))
+            fi
+        fi
+    done
+
+    if [ "$syntax_errors" -gt 0 ]; then
+        echo "PHP syntax check failed for ${syntax_errors} non-runtime file(s)"
+        return 1
+    fi
+
+    return 0
+}
+
+# The WordPress lint profile targets production plugin/theme runtime files. Keep
+# php-scoper config, build tooling, smoke harnesses, PHPUnit tests, and generated
+# vendored code out of that profile; syntax checking is enough for those roles.
+if [ -n "${HOMEBOY_LINT_FILE:-}" ] || [ -n "${HOMEBOY_LINT_GLOB:-}" ]; then
+    RUNTIME_LINT_FILES=()
+    NON_RUNTIME_LINT_FILES=()
+
+    for lint_target in "${LINT_FILES[@]}"; do
+        rel_target=$(homeboy_lint_relpath "$lint_target")
+        if [ -f "$lint_target" ] && ! homeboy_wordpress_runtime_lint_file "$rel_target"; then
+            NON_RUNTIME_LINT_FILES+=("$lint_target")
+        else
+            RUNTIME_LINT_FILES+=("$lint_target")
+        fi
+    done
+
+    if [ "${#NON_RUNTIME_LINT_FILES[@]}" -gt 0 ]; then
+        echo "Non-runtime WordPress lint profile: syntax-checking ${#NON_RUNTIME_LINT_FILES[@]} file(s)"
+        homeboy_php_syntax_check "${NON_RUNTIME_LINT_FILES[@]}"
+    fi
+
+    if [ "${#RUNTIME_LINT_FILES[@]}" -eq 0 ]; then
+        echo "Skipping production WordPress lint profile for non-runtime file scope"
+        echo "Linting passed"
+        exit 0
+    fi
+
+    LINT_FILES=("${RUNTIME_LINT_FILES[@]}")
 fi
 
 PHPCS_BIN="${EXTENSION_PATH}/vendor/bin/phpcs"
@@ -561,7 +649,7 @@ fixable_count=0
 
 # Build base phpcs arguments
 phpcs_base_args=(--standard="$PHPCS_CONFIG")
-phpcs_base_args+=(--ignore='*/vendor/*,*/vendor_prefixed/*,*/node_modules/*,*/build/*,*/dist/*')
+phpcs_base_args+=(--ignore='*/vendor/*,*/vendor_prefixed/*,*/node_modules/*,*/build/*,*/dist/*,*/tools/*,*/scoper.inc.php')
 
 if [ "$WORDPRESS_LINT_ROLE" = "scoper_config" ]; then
     phpcs_base_args+=(--sniffs=Generic.PHP.Syntax)
@@ -722,33 +810,61 @@ if [ -n "$json_output" ] && command -v php &> /dev/null; then
                 "PHPCompatibility" => "compatibility",
             ];
             $findings = [];
+            $readExcerpt = static function ($path, $line) {
+                if (!$path || !$line || !is_readable($path)) {
+                    return null;
+                }
+
+                $lines = @file($path, FILE_IGNORE_NEW_LINES);
+                return $lines[$line - 1] ?? null;
+            };
             foreach ($json["files"] as $filePath => $data) {
                 $relPath = $filePath;
                 if ($componentPath && strpos($filePath, $componentPath) === 0) {
                     $relPath = ltrim(substr($filePath, strlen($componentPath)), "/");
                 }
                 foreach ($data["messages"] ?? [] as $msg) {
-                    $source = $msg["source"] ?? "unknown";
+                    $code = $msg["source"] ?? "unknown";
                     $line = $msg["line"] ?? 0;
+                    $column = $msg["column"] ?? null;
+                    $id = $relPath . "::" . $code . "::" . $line;
+                    $message = ($msg["message"] ?? "Unknown") . " (" . $code . ")";
                     // Derive category from source namespace
                     $category = "other";
                     foreach ($categoryMap as $prefix => $cat) {
-                        if (strpos($source, $prefix) === 0) {
+                        if (strpos($code, $prefix) === 0) {
                             $category = $cat;
                             break;
                         }
                     }
                     $findings[] = [
-                        "id" => $relPath . "::" . $source . "::" . $line,
-                        "message" => ($msg["message"] ?? "Unknown") . " (" . $source . ")",
+                        "id" => $id,
+                        "file" => $relPath,
+                        "line" => $line,
+                        "column" => $column,
+                        "severity" => strtolower($msg["type"] ?? "error"),
+                        "source" => "phpcs",
+                        "code" => $code,
                         "category" => $category,
+                        "message" => $message,
                         "fixable" => (bool) ($msg["fixable"] ?? false),
+                        "fingerprint" => sha1($id),
+                        "excerpt" => $readExcerpt($filePath, $line),
                     ];
                 }
             }
             file_put_contents($argv[2], json_encode($findings, JSON_UNESCAPED_SLASHES) . "\n");
         ' "$PLUGIN_PATH" "${HOMEBOY_LINT_FINDINGS_FILE}" 2>/dev/null || true
     fi
+fi
+
+# Create temp files for per-tool findings before ESLint/PHPStan run. PHPCS writes
+# directly to HOMEBOY_LINT_FINDINGS_FILE; the other tools are merged later.
+_ESLINT_FINDINGS_TMPFILE=""
+_PHPSTAN_FINDINGS_TMPFILE=""
+if [ -n "${HOMEBOY_LINT_FINDINGS_FILE:-}" ]; then
+    _ESLINT_FINDINGS_TMPFILE=$(homeboy_mktemp 'eslint-findings.XXXXXX')
+    _PHPSTAN_FINDINGS_TMPFILE=$(homeboy_mktemp 'phpstan-findings.XXXXXX')
 fi
 
 # Summary mode: show summary header + top violations, skip full report
@@ -810,7 +926,8 @@ if [[ "${HOMEBOY_SUMMARY_MODE:-}" == "1" ]]; then
     elif [ -f "$ESLINT_RUNNER" ]; then
         echo ""
         set +e
-        bash "$ESLINT_RUNNER"
+        _HOMEBOY_ESLINT_FINDINGS_FILE="${_ESLINT_FINDINGS_TMPFILE:-}" \
+            bash "$ESLINT_RUNNER"
         ESLINT_EXIT=$?
         set -e
 
@@ -850,20 +967,18 @@ if [[ "${HOMEBOY_SUMMARY_MODE:-}" == "1" ]]; then
         return 0
     }
 
-    # Create temp file for PHPStan findings if baseline sidecar is active
-    _PHPSTAN_FINDINGS_TMPFILE=""
-    if [ -n "${HOMEBOY_LINT_FINDINGS_FILE:-}" ]; then
-        _PHPSTAN_FINDINGS_TMPFILE=$(homeboy_mktemp 'phpstan-findings.XXXXXX')
-    fi
-
     # Run PHPStan after PHPCS/ESLint so the caller gets the full lint signal
     # before the aggregate exit code is computed.
     PHPSTAN_PASSED=1
     run_phpstan_summary || PHPSTAN_PASSED=0
 
-    # Merge PHPCS + PHPStan findings into the final baseline sidecar.
-    # PHPCS writes directly to HOMEBOY_LINT_FINDINGS_FILE; PHPStan writes
-    # to the temp file. Merge both so the identity-based ratchet sees all errors.
+    # Merge PHPCS + ESLint + PHPStan findings into the final baseline sidecar.
+    # PHPCS writes directly to HOMEBOY_LINT_FINDINGS_FILE; other tools write
+    # to temp files. Merge all so the identity-based ratchet sees all errors.
+    if [ -n "${HOMEBOY_LINT_FINDINGS_FILE:-}" ] && [ -n "$_ESLINT_FINDINGS_TMPFILE" ] && [ -f "$_ESLINT_FINDINGS_TMPFILE" ]; then
+        merge_findings_into_sidecar "$_ESLINT_FINDINGS_TMPFILE"
+        rm -f "$_ESLINT_FINDINGS_TMPFILE"
+    fi
     if [ -n "${HOMEBOY_LINT_FINDINGS_FILE:-}" ] && [ -n "$_PHPSTAN_FINDINGS_TMPFILE" ] && [ -f "$_PHPSTAN_FINDINGS_TMPFILE" ]; then
         merge_findings_into_sidecar "$_PHPSTAN_FINDINGS_TMPFILE"
         rm -f "$_PHPSTAN_FINDINGS_TMPFILE"
@@ -903,7 +1018,8 @@ if ! should_run_step "eslint"; then
 elif [ -f "$ESLINT_RUNNER" ]; then
     echo ""
     set +e
-    bash "$ESLINT_RUNNER"
+    _HOMEBOY_ESLINT_FINDINGS_FILE="${_ESLINT_FINDINGS_TMPFILE:-}" \
+        bash "$ESLINT_RUNNER"
     ESLINT_EXIT=$?
     set -e
 
@@ -944,18 +1060,16 @@ run_phpstan() {
     return 0
 }
 
-# Create temp file for PHPStan findings if baseline sidecar is active
-_PHPSTAN_FINDINGS_TMPFILE=""
-if [ -n "${HOMEBOY_LINT_FINDINGS_FILE:-}" ]; then
-    _PHPSTAN_FINDINGS_TMPFILE=$(homeboy_mktemp 'phpstan-findings.XXXXXX')
-fi
-
 # Run PHPStan after PHPCS/ESLint so the caller gets the full lint signal
 # before the aggregate exit code is computed.
 PHPSTAN_PASSED=1
 run_phpstan || PHPSTAN_PASSED=0
 
-# Merge PHPCS + PHPStan findings into the final baseline sidecar
+# Merge PHPCS + ESLint + PHPStan findings into the final baseline sidecar
+if [ -n "${HOMEBOY_LINT_FINDINGS_FILE:-}" ] && [ -n "$_ESLINT_FINDINGS_TMPFILE" ] && [ -f "$_ESLINT_FINDINGS_TMPFILE" ]; then
+    merge_findings_into_sidecar "$_ESLINT_FINDINGS_TMPFILE"
+    rm -f "$_ESLINT_FINDINGS_TMPFILE"
+fi
 if [ -n "${HOMEBOY_LINT_FINDINGS_FILE:-}" ] && [ -n "$_PHPSTAN_FINDINGS_TMPFILE" ] && [ -f "$_PHPSTAN_FINDINGS_TMPFILE" ]; then
     merge_findings_into_sidecar "$_PHPSTAN_FINDINGS_TMPFILE"
     rm -f "$_PHPSTAN_FINDINGS_TMPFILE"
