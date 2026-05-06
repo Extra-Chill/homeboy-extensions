@@ -228,14 +228,17 @@ function pg_bench_configured_workloads(string $raw): array {
                 throw new RuntimeException("playground_workloads[$index].run[$step_index] must be an object");
             }
             $type = $step['type'] ?? '';
-            if (!in_array($type, ['php', 'wp-cli'], true)) {
-                throw new RuntimeException("playground_workloads[$index].run[$step_index].type must be 'php' or 'wp-cli'");
+            if (!in_array($type, ['php', 'wp-cli', 'ability'], true)) {
+                throw new RuntimeException("playground_workloads[$index].run[$step_index].type must be 'php', 'wp-cli', or 'ability'");
             }
             if ($type === 'php' && !isset($step['code']) && !isset($step['file'])) {
                 throw new RuntimeException("playground_workloads[$index].run[$step_index] php step requires code or file");
             }
             if ($type === 'wp-cli' && !isset($step['command'])) {
                 throw new RuntimeException("playground_workloads[$index].run[$step_index] wp-cli step requires command");
+            }
+            if ($type === 'ability' && !isset($step['ability'])) {
+                throw new RuntimeException("playground_workloads[$index].run[$step_index] ability step requires `ability`");
             }
         }
 
@@ -367,6 +370,81 @@ function pg_bench_run_wp_cli_step(array $step) {
     return ['metadata' => ['stdout' => $stdout]];
 }
 
+function pg_bench_run_ability_step(array $step) {
+    if (!function_exists('wp_get_ability')) {
+        throw new RuntimeException('ability workload steps require the WordPress Abilities API (wp_get_ability) to be loaded inside the Playground PHP process');
+    }
+
+    if (!isset($step['ability']) || !is_scalar($step['ability'])) {
+        throw new RuntimeException('ability step requires a string `ability` name');
+    }
+    $name = trim((string) $step['ability']);
+    if ($name === '') {
+        throw new RuntimeException('ability step `ability` must not be empty');
+    }
+
+    // The Abilities API requires registrations to happen on the canonical
+    // init actions. wp-phpunit's install path boots wp-settings.php under
+    // WP_INSTALLING, which short-circuits the lazy registry init. Fire both
+    // actions once, idempotently, before resolving so plugin-declared
+    // categories and abilities land in the registry. Categories must register
+    // before abilities (core enforces the dependency).
+    if (function_exists('did_action') && function_exists('do_action')) {
+        if (!did_action('wp_abilities_api_categories_init')) {
+            do_action('wp_abilities_api_categories_init');
+        }
+        if (!did_action('wp_abilities_api_init')) {
+            do_action('wp_abilities_api_init');
+        }
+    }
+
+    $ability = wp_get_ability($name);
+    if (!$ability) {
+        throw new RuntimeException("ability not registered: $name");
+    }
+
+    $input = $step['input'] ?? [];
+    if ($input !== null && !is_array($input)) {
+        throw new RuntimeException('ability step `input` must be an object');
+    }
+
+    if (isset($step['user'])) {
+        if (!function_exists('get_user_by') || !function_exists('wp_set_current_user')) {
+            throw new RuntimeException('ability step `user` requires WordPress user functions to be loaded');
+        }
+        $candidate = $step['user'];
+        $user = false;
+        if (is_numeric($candidate)) {
+            $user = get_user_by('id', (int) $candidate);
+        } elseif (is_string($candidate) && $candidate !== '') {
+            $user = get_user_by('login', $candidate) ?: get_user_by('email', $candidate) ?: get_user_by('slug', $candidate);
+        }
+        if (!$user) {
+            throw new RuntimeException('ability step user not found: ' . var_export($candidate, true));
+        }
+        wp_set_current_user($user->ID);
+    }
+
+    if (method_exists($ability, 'execute')) {
+        $result = $ability->execute($input ?? []);
+    } elseif (is_callable($ability)) {
+        $result = $ability($input ?? []);
+    } else {
+        throw new RuntimeException("ability $name is not executable");
+    }
+
+    if (function_exists('is_wp_error') && is_wp_error($result)) {
+        $message = method_exists($result, 'get_error_message') ? $result->get_error_message() : 'wp_error';
+        throw new RuntimeException("ability $name returned WP_Error: $message");
+    }
+
+    if (is_array($result) && (isset($result['metrics']) || isset($result['artifacts']) || isset($result['metadata']))) {
+        return $result;
+    }
+
+    return ['metadata' => ['return' => $result]];
+}
+
 function pg_bench_run_configured_workload(array $workload, string $plugin_path): array {
     $metrics = [];
     $artifacts = [];
@@ -376,9 +454,19 @@ function pg_bench_run_configured_workload(array $workload, string $plugin_path):
 
     foreach ($workload['run'] as $step) {
         $type = $step['type'];
-        $result = $type === 'php'
-            ? pg_bench_run_php_step($step, $plugin_path)
-            : pg_bench_run_wp_cli_step($step);
+        switch ($type) {
+            case 'php':
+                $result = pg_bench_run_php_step($step, $plugin_path);
+                break;
+            case 'wp-cli':
+                $result = pg_bench_run_wp_cli_step($step);
+                break;
+            case 'ability':
+                $result = pg_bench_run_ability_step($step);
+                break;
+            default:
+                throw new RuntimeException("unsupported step type: $type");
+        }
         pg_bench_merge_workload_payload($result, $metrics, $artifacts, $metadata);
     }
 

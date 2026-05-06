@@ -119,6 +119,13 @@ Supported step types:
 
 - `php` with `file` or `code`: runs inside the Playground PHP process. Files are
   resolved relative to the mounted component path unless absolute.
+- `ability` with `ability` (and optional `input`, `user`): resolves the named
+  ability via `wp_get_ability()` (WordPress core 6.9+) and executes it inside
+  the Playground PHP process. The runner fires `wp_abilities_api_categories_init`
+  and `wp_abilities_api_init` before the first ability call so plugin-declared
+  categories and abilities land in the registry. Use this for plugins that
+  expose their entry points as abilities so workloads don't need a WP-CLI
+  command surface.
 - `wp-cli` with `command`: runs through `WP_CLI::runcommand()` when WP-CLI is
   available in the Playground PHP process. The command may include or omit the
   leading `wp` token.
@@ -127,6 +134,36 @@ Workloads and steps may return `{ "metrics", "artifacts", "metadata" }`.
 Numeric metrics are aggregated across measured iterations with the same
 mean/p50/p95/p99/min/max suffixes used by PHP bench files. Artifacts and metadata
 are carried into the Homeboy BenchResults scenario envelope.
+
+Example: drive a plugin's pipeline through an Abilities API entry point.
+
+```json
+{
+  "extensions": {
+    "wordpress": {
+      "settings": {
+        "playground_blueprint": {
+          "steps": [
+            { "step": "installPlugin", "pluginData": { "resource": "wordpress.org/plugins", "slug": "data-machine" } }
+          ]
+        },
+        "playground_workloads": [
+          {
+            "id": "smoke-pipeline",
+            "run": [
+              {
+                "type": "ability",
+                "ability": "datamachine/run-pipeline",
+                "input": { "pipeline_id": 42 }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  }
+}
+```
 
 ## Lint findings sidecar
 
