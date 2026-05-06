@@ -75,6 +75,59 @@ Each dependency entry may be either:
 - a registered Homeboy component ID
 - an absolute path to another local plugin checkout
 
+## Configurable Playground Bench Workloads
+
+WordPress bench runs can declare Playground workloads in extension settings when
+the workload should be configured by the repo instead of living under
+`tests/bench/*.php`. Configured workloads run after the existing Playground
+bootstrap, `playground_blueprint`, dependency mounts, and component load.
+
+```json
+{
+  "extensions": {
+    "wordpress": {
+      "settings": {
+        "playground_workloads": [
+          {
+            "id": "generated-site-preview",
+            "label": "Generated site preview",
+            "run": [
+              {
+                "type": "php",
+                "file": "workloads/generated-site-preview.php"
+              }
+            ],
+            "artifacts": {
+              "import_report": {
+                "path": "wp-content/themes/example/import-report.json",
+                "kind": "json",
+                "label": "Import report"
+              }
+            },
+            "metadata": {
+              "preview_url": "https://example.test/preview"
+            }
+          }
+        ]
+      }
+    }
+  }
+}
+```
+
+Supported step types:
+
+- `php` with `file` or `code`: runs inside the Playground PHP process. Files are
+  resolved relative to the mounted component path unless absolute.
+- `wp-cli` with `command`: runs through `WP_CLI::runcommand()` when WP-CLI is
+  available in the Playground PHP process. The command may include or omit the
+  leading `wp` token.
+
+Workloads and steps may return `{ "metrics", "artifacts", "metadata" }`.
+Numeric metrics are aggregated across measured iterations with the same
+mean/p50/p95/p99/min/max suffixes used by PHP bench files. Artifacts and metadata
+are carried into the Homeboy BenchResults scenario envelope.
+
 ## Lint findings sidecar
 
 When `HOMEBOY_LINT_FINDINGS_FILE` is set, the WordPress lint runner writes a
