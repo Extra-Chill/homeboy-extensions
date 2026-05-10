@@ -59,6 +59,10 @@ name: Data Machine Agent CI (reusable)
         description: Empty string disables transcript artifact upload.
         type: string
         default: ""
+      artifact_export_config:
+        description: JSON config for exporting job artifacts back to the target repo. Empty object uses the reusable workflow defaults.
+        type: string
+        default: "{}"
       comment_pr_summary:
         type: boolean
         default: false
@@ -227,6 +231,7 @@ jobs:
           MAX_TURNS: ${{ inputs.max_turns }}
           STEP_BUDGET: ${{ inputs.step_budget }}
           TIME_BUDGET_MS: ${{ inputs.time_budget_ms }}
+          ARTIFACT_EXPORT_CONFIG: ${{ inputs.artifact_export_config }}
           DRY_RUN: ${{ inputs.dry_run }}
           GITHUB_TOKEN_VALUE: ${{ steps.app-token.outputs.token || github.token }}
           OPENAI_API_KEY_VALUE: ${{ secrets.OPENAI_API_KEY }}
@@ -239,6 +244,7 @@ jobs:
           jq -n \
             --arg componentPath "$GITHUB_WORKSPACE" \
             --arg bundlePath "$bundle_abs" \
+            --arg bundlePathInRepo "$BUNDLE_PATH" \
             --arg agentSlug "$AGENT_SLUG" \
             --arg pipelineSlug "$PIPELINE_SLUG" \
             --arg flowSlug "$FLOW_SLUG" \
@@ -250,6 +256,7 @@ jobs:
             --arg githubToken "$GITHUB_TOKEN_VALUE" \
             --arg openaiKey "$OPENAI_API_KEY_VALUE" \
             --argjson validationDependencies "$validation_json" \
+            --argjson artifactExportConfig "$ARTIFACT_EXPORT_CONFIG" \
             --argjson successRequiresPr "$SUCCESS_REQUIRES_PR" \
             --argjson maxTurns "$MAX_TURNS" \
             --argjson stepBudget "$STEP_BUDGET" \
@@ -270,7 +277,7 @@ jobs:
                 }
               ],
               bundle_path: $bundlePath,
-              bundle_path_in_repo: $bundlePath,
+              bundle_path_in_repo: $bundlePathInRepo,
               agent_slug: $agentSlug,
               pipeline_slug: $pipelineSlug,
               flow_slug: $flowSlug,
@@ -287,6 +294,16 @@ jobs:
               step_budget: $stepBudget,
               time_budget_ms: $timeBudgetMs,
               success_requires_pr: $successRequiresPr,
+              artifact_export: ({
+                enabled: true,
+                only_when_no_pr: true,
+                repo: $targetRepo,
+                path_prefix: $bundlePathInRepo,
+                branch_template: "agent-artifacts/{agent_slug}-{run_id}-{job_id}",
+                commit_message_template: "chore: persist {type} artifact",
+                pr_title_template: "Persist agent run artifacts",
+                pr_body_template: "## Summary\n- Persist bundle-file run artifacts from Data Machine agent job {job_id}.\n\n## Artifacts\n{paths}\n"
+              } * $artifactExportConfig),
               dry_run: $dryRun,
               transcript_dir: ("/wordpress/wp-content/plugins/datamachine-agent-ci-driver/artifacts/" + $agentSlug),
               bench_env: {
