@@ -321,13 +321,13 @@ jobs:
               workload_label: ("Run " + $agentSlug + " Data Machine agent"),
               validation_dependencies: $validationDependencies,
               playground_wordpress_version: $playgroundWordPress,
-              playground_file_mounts: [
+              playground_file_mounts: ([
                 {
                   from_dependency: "homeboy-extensions",
                   from: "wordpress/tests/fixtures/datamachine-agent-ci-driver/datamachine-agent-ci-driver.php",
                   to: "/wordpress/wp-content/plugins/datamachine-agent-ci-driver/datamachine-agent-ci-driver.php"
                 }
-              ] + $extraPlaygroundFileMounts,
+              ] + $extraPlaygroundFileMounts),
               wp_config_defines: $extraWpConfigDefines,
               workload_run_before: $workloadRunBefore,
               required_abilities: (["datamachine/import-agent", "datamachine/run-flow", "datamachine/drain-job"] + $extraRequiredAbilities | reduce .[] as $ability ([]; if index($ability) then . else . + [$ability] end)),
