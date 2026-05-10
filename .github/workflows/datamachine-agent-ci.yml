@@ -270,6 +270,7 @@ jobs:
                 }
               ],
               bundle_path: $bundlePath,
+              bundle_path_in_repo: $bundlePath,
               agent_slug: $agentSlug,
               pipeline_slug: $pipelineSlug,
               flow_slug: $flowSlug,
