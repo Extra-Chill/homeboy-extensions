@@ -80,9 +80,9 @@ name: Data Machine Agent CI (reusable)
         default: false
     secrets:
       HOMEBOY_APP_ID:
-        required: true
+        required: false
       HOMEBOY_APP_PRIVATE_KEY:
-        required: true
+        required: false
       OPENAI_API_KEY:
         required: true
     outputs:
@@ -112,9 +112,22 @@ jobs:
       - name: Checkout consumer repo
         uses: actions/checkout@v4
 
+      - name: Detect Homeboy app credentials
+        id: homeboy-app-creds
+        env:
+          HOMEBOY_APP_ID: ${{ secrets.HOMEBOY_APP_ID }}
+          HOMEBOY_APP_PRIVATE_KEY: ${{ secrets.HOMEBOY_APP_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -n "$HOMEBOY_APP_ID" ] && [ -n "$HOMEBOY_APP_PRIVATE_KEY" ]; then
+            printf 'available=true\n' >> "$GITHUB_OUTPUT"
+          else
+            printf 'available=false\n' >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Resolve Homeboy app token scope
         id: token-scope
-        if: ${{ ! inputs.dry_run }}
+        if: ${{ ! inputs.dry_run && steps.homeboy-app-creds.outputs.available == 'true' }}
         env:
           APP_TOKEN_REPOS: ${{ inputs.app_token_repos }}
           TARGET_REPO: ${{ inputs.target_repo }}
@@ -149,7 +162,7 @@ jobs:
 
       - name: Generate Homeboy app token
         id: app-token
-        if: ${{ ! inputs.dry_run }}
+        if: ${{ ! inputs.dry_run && steps.homeboy-app-creds.outputs.available == 'true' }}
         uses: actions/create-github-app-token@v1
         with:
           app-id: ${{ secrets.HOMEBOY_APP_ID }}
