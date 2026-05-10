@@ -165,6 +165,38 @@ if ( ! function_exists( 'homeboy_datamachine_agent_slug_fragment' ) ) {
     }
 }
 
+if ( ! function_exists( 'homeboy_datamachine_agent_bundle_artifacts' ) ) {
+    function homeboy_datamachine_agent_bundle_artifacts( array $artifacts ): array {
+        $bundle_artifacts = array();
+
+        foreach ( $artifacts as $artifact_group ) {
+            if ( ! is_array( $artifact_group ) ) {
+                continue;
+            }
+
+            foreach ( $artifact_group as $artifact ) {
+                if ( ! is_array( $artifact ) ) {
+                    continue;
+                }
+
+                $relative_path = trim( (string) ( $artifact['bundle_relative_path'] ?? '' ), '/' );
+                $content       = (string) ( $artifact['content'] ?? '' );
+                if ( '' === $relative_path || '' === $content || str_contains( $relative_path, '..' ) ) {
+                    continue;
+                }
+
+                $bundle_artifacts[] = array(
+                    'type'          => (string) ( $artifact['type'] ?? 'artifact' ),
+                    'relative_path' => $relative_path,
+                    'content'       => $content,
+                );
+            }
+        }
+
+        return $bundle_artifacts;
+    }
+}
+
 if ( ! function_exists( 'homeboy_datamachine_agent_export_bundle_artifacts' ) ) {
     function homeboy_datamachine_agent_export_bundle_artifacts( int $job_id, array $config, bool $pr_opened ): array {
         if ( $job_id <= 0 || $pr_opened || ! class_exists( JobArtifacts::class ) || ! function_exists( 'wp_get_ability' ) ) {
@@ -179,8 +211,8 @@ if ( ! function_exists( 'homeboy_datamachine_agent_export_bundle_artifacts' ) ) 
 
         $artifact_result = ( new JobArtifacts() )->get( $job_id );
         $artifacts       = is_array( $artifact_result['artifacts'] ?? null ) ? $artifact_result['artifacts'] : array();
-        $daily_memory    = is_array( $artifacts['daily_memory_artifacts'] ?? null ) ? $artifacts['daily_memory_artifacts'] : array();
-        if ( empty( $daily_memory ) ) {
+        $bundle_artifacts = homeboy_datamachine_agent_bundle_artifacts( $artifacts );
+        if ( empty( $bundle_artifacts ) ) {
             return array();
         }
 
@@ -195,24 +227,14 @@ if ( ! function_exists( 'homeboy_datamachine_agent_export_bundle_artifacts' ) ) 
         $branch     = 'agent-artifacts/' . $agent_slug . '-' . $run_id . '-' . $job_id;
         $written    = array();
 
-        foreach ( $daily_memory as $artifact ) {
-            if ( ! is_array( $artifact ) || 'agent_daily_memory' !== (string) ( $artifact['type'] ?? '' ) ) {
-                continue;
-            }
-
-            $relative_path = trim( (string) ( $artifact['bundle_relative_path'] ?? '' ), '/' );
-            $content       = (string) ( $artifact['content'] ?? '' );
-            if ( '' === $relative_path || '' === $content || str_contains( $relative_path, '..' ) ) {
-                continue;
-            }
-
-            $repo_path = $bundle_path . '/' . $relative_path;
+        foreach ( $bundle_artifacts as $artifact ) {
+            $repo_path = $bundle_path . '/' . $artifact['relative_path'];
             $result    = $file_ability->execute(
                 array(
                     'repo'           => $target_repo,
                     'file_path'      => $repo_path,
-                    'content'        => $content,
-                    'commit_message' => 'chore: persist agent run artifact',
+                    'content'        => $artifact['content'],
+                    'commit_message' => 'chore: persist ' . $artifact['type'] . ' artifact',
                     'branch'         => $branch,
                 )
             );
