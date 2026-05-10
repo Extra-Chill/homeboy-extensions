@@ -59,6 +59,7 @@ namespace {
             array(
                 'tool_name' => 'create_or_update_github_file',
                 'success'   => true,
+                'file_path' => 'docs/index.md',
                 'url'       => 'https://github.com/owner/repo/commit/abc123',
             ),
         ),
@@ -71,6 +72,20 @@ namespace {
 
     if ( homeboy_datamachine_agent_pr_opened( $write_without_pr, $config ) ) {
         fwrite( STDERR, "Did not expect commit-only result to count as pr_opened.\n" );
+        exit( 1 );
+    }
+
+    if ( array( 'docs/index.md' ) !== homeboy_datamachine_agent_written_paths( $write_without_pr, $config ) ) {
+        fwrite( STDERR, "Expected successful file-write result to expose written paths.\n" );
+        exit( 1 );
+    }
+
+    $missing_paths = homeboy_datamachine_agent_missing_required_written_paths(
+        $write_without_pr,
+        array( 'required_written_paths' => array( 'docs/index.md', 'docs/coverage-map.md' ) )
+    );
+    if ( array( 'docs/coverage-map.md' ) !== $missing_paths ) {
+        fwrite( STDERR, "Expected missing required written paths to be reported.\n" );
         exit( 1 );
     }
 
@@ -100,6 +115,7 @@ namespace {
                 array(
                     'tool_name' => 'create_or_update_github_file',
                     'success'   => true,
+                    'file_path' => 'docs/coverage-map.md',
                     'url'       => 'https://github.com/owner/repo/commit/def456',
                 ),
                 array(

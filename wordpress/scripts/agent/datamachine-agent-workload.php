@@ -166,6 +166,47 @@ if ( ! function_exists( 'homeboy_datamachine_agent_file_written' ) ) {
     }
 }
 
+if ( ! function_exists( 'homeboy_datamachine_agent_written_paths' ) ) {
+    function homeboy_datamachine_agent_written_paths( array $engine_data, array $config ): array {
+        $paths = array();
+
+        foreach ( homeboy_datamachine_agent_tool_results( $engine_data, $config ) as $tool_result ) {
+            if ( ! is_array( $tool_result ) || empty( $tool_result['success'] ) ) {
+                continue;
+            }
+            if ( 'create_or_update_github_file' !== (string) ( $tool_result['tool_name'] ?? '' ) ) {
+                continue;
+            }
+
+            $file_path = trim( (string) ( $tool_result['file_path'] ?? '' ), '/' );
+            if ( '' !== $file_path ) {
+                $paths[] = $file_path;
+            }
+        }
+
+        return array_values( array_unique( $paths ) );
+    }
+
+    function homeboy_datamachine_agent_missing_required_written_paths( array $engine_data, array $config ): array {
+        $required_paths = is_array( $config['required_written_paths'] ?? null ) ? $config['required_written_paths'] : array();
+        $required_paths = array_values(
+            array_filter(
+                array_map(
+                    static fn( $path ) => is_scalar( $path ) ? trim( (string) $path, '/' ) : '',
+                    $required_paths
+                ),
+                static fn( string $path ) => '' !== $path
+            )
+        );
+
+        if ( array() === $required_paths ) {
+            return array();
+        }
+
+        return array_values( array_diff( $required_paths, homeboy_datamachine_agent_written_paths( $engine_data, $config ) ) );
+    }
+}
+
 if ( ! function_exists( 'homeboy_datamachine_agent_completion_outcome_satisfied' ) ) {
     function homeboy_datamachine_agent_completion_outcome_satisfied( array $engine_data, array $config ): bool {
         $allowed_outcomes = is_array( $config['success_completion_outcomes'] ?? null ) ? $config['success_completion_outcomes'] : array();
@@ -554,6 +595,7 @@ if ( ! class_exists( 'Homeboy_Datamachine_Agent_Tool_Recorder' ) ) {
                     'tool_name' => (string) ( $tool_def['tool_name'] ?? '' ),
                     'success'   => ! empty( $response['success'] ),
                     'repo'      => (string) ( $parameters['repo'] ?? '' ),
+                    'file_path' => (string) ( $parameters['file_path'] ?? '' ),
                     'url'       => homeboy_datamachine_agent_first_url( $response ),
                     'error'     => (string) ( $response['error'] ?? '' ),
                     'message'   => (string) ( $response['message'] ?? '' ),
@@ -1118,6 +1160,8 @@ $transcript_dir = homeboy_datamachine_agent_scalar( $config, 'transcript_dir' );
 $transcript_artifacts = homeboy_datamachine_agent_export_transcript( $job_id, $engine_data, $transcript_dir );
 $pr_opened = homeboy_datamachine_agent_pr_opened( $engine_data, $config );
 $file_written = homeboy_datamachine_agent_file_written( $engine_data, $config );
+$written_paths = homeboy_datamachine_agent_written_paths( $engine_data, $config );
+$missing_required_written_paths = homeboy_datamachine_agent_missing_required_written_paths( $engine_data, $config );
 $fallback_pull_request = array( 'opened' => false );
 $success_requires_pr = ! empty( $config['success_requires_pr'] );
 if ( $success_requires_pr && $file_written && ! $pr_opened ) {
@@ -1144,10 +1188,12 @@ $metadata += array(
     'error_message'         => (string) ( $engine_data['error_message'] ?? '' ),
     'success_status'        => $success_status,
     'success_requires_pr'   => $success_requires_pr,
-    'fallback_pull_request' => $fallback_pull_request,
-    'completion_outcome_satisfied' => $completion_outcome_satisfied,
-    'file_written'          => $file_written,
-    'job_artifact_exports'    => $job_artifact_exports,
+    'fallback_pull_request'          => $fallback_pull_request,
+    'completion_outcome_satisfied'   => $completion_outcome_satisfied,
+    'file_written'                   => $file_written,
+    'written_paths'                  => $written_paths,
+    'missing_required_written_paths' => $missing_required_written_paths,
+    'job_artifact_exports'           => $job_artifact_exports,
 );
 
 if ( $file_written && ! $pr_opened ) {
@@ -1161,6 +1207,14 @@ if ( ! empty( $job_artifact_exports['error'] ) ) {
 
 if ( $success_requires_pr && ! $pr_opened && ! $completion_outcome_satisfied ) {
     return homeboy_datamachine_agent_result( array( 'pr_opened' => 0 ), $metadata, 'Agent completed without opening a pull request' );
+}
+
+if ( array() !== $missing_required_written_paths ) {
+    return homeboy_datamachine_agent_result(
+        array( 'required_written_paths_present' => 0 ),
+        $metadata,
+        'Agent did not write required paths: ' . implode( ', ', $missing_required_written_paths )
+    );
 }
 
 return homeboy_datamachine_agent_result(
@@ -1178,9 +1232,10 @@ return homeboy_datamachine_agent_result(
         'run_elapsed_ms'              => $run_elapsed_ms,
         'drain_succeeded'             => is_array( $drain_result ) && ! empty( $drain_result['success'] ) ? 1 : 0,
         'drain_elapsed_ms'            => $drain_elapsed_ms,
-        'job_completed'               => 'completed' === $job_status ? 1 : 0,
-        'file_written'                => $file_written ? 1 : 0,
-        'pr_opened'                   => $pr_opened ? 1 : 0,
+        'job_completed'                  => 'completed' === $job_status ? 1 : 0,
+        'file_written'                   => $file_written ? 1 : 0,
+        'required_written_paths_present' => 1,
+        'pr_opened'                      => $pr_opened ? 1 : 0,
         'completion_outcome_satisfied' => $completion_outcome_satisfied ? 1 : 0,
         'no_changes'                  => ! $file_written && ! $pr_opened && ! $completion_outcome_satisfied ? 1 : 0,
         'job_artifact_exported'       => ! empty( $job_artifact_exports['pr_url'] ) ? 1 : 0,
