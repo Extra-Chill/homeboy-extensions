@@ -1164,7 +1164,7 @@ $written_paths = homeboy_datamachine_agent_written_paths( $engine_data, $config 
 $missing_required_written_paths = homeboy_datamachine_agent_missing_required_written_paths( $engine_data, $config );
 $fallback_pull_request = array( 'opened' => false );
 $success_requires_pr = ! empty( $config['success_requires_pr'] );
-if ( $success_requires_pr && $file_written && ! $pr_opened ) {
+if ( $success_requires_pr && $file_written && ! $pr_opened && array() === $missing_required_written_paths ) {
     $fallback_pull_request = homeboy_datamachine_agent_open_fallback_pr( $engine_data, $config );
     if ( ! empty( $fallback_pull_request['opened'] ) && is_array( $fallback_pull_request['engine_data'] ?? null ) ) {
         $engine_data = $fallback_pull_request['engine_data'];
@@ -1196,6 +1196,14 @@ $metadata += array(
     'job_artifact_exports'           => $job_artifact_exports,
 );
 
+if ( array() !== $missing_required_written_paths ) {
+    return homeboy_datamachine_agent_result(
+        array( 'required_written_paths_present' => 0 ),
+        $metadata,
+        'Agent did not write required paths: ' . implode( ', ', $missing_required_written_paths )
+    );
+}
+
 if ( $file_written && ! $pr_opened ) {
     $metadata['success_status'] = 'write_without_pr';
     return homeboy_datamachine_agent_result( array( 'file_written' => 1, 'pr_opened' => 0 ), $metadata, 'Agent wrote files without opening a pull request' );
@@ -1207,14 +1215,6 @@ if ( ! empty( $job_artifact_exports['error'] ) ) {
 
 if ( $success_requires_pr && ! $pr_opened && ! $completion_outcome_satisfied ) {
     return homeboy_datamachine_agent_result( array( 'pr_opened' => 0 ), $metadata, 'Agent completed without opening a pull request' );
-}
-
-if ( array() !== $missing_required_written_paths ) {
-    return homeboy_datamachine_agent_result(
-        array( 'required_written_paths_present' => 0 ),
-        $metadata,
-        'Agent did not write required paths: ' . implode( ', ', $missing_required_written_paths )
-    );
 }
 
 return homeboy_datamachine_agent_result(
