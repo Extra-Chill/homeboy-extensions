@@ -98,7 +98,7 @@ knobs to `run-datamachine-agent.sh`:
 - Bundle location: `bundle_path`, `bundle_repo`, `bundle_ref`, `bundle_path_in_repo`.
 - Agent selection: `agent_slug`, `pipeline_slug`, `flow_slug`, `prompt`, `provider`, `model`.
 - WordPress runtime: `playground_wordpress`, `extra_wp_config_defines`, `extra_playground_file_mounts`, `workload_run_before`.
-- GitHub access: `target_repo`, `app_token_repos`, `allowed_repos`.
+- GitHub access: `target_repo`, `app_token_repos`, `allowed_repos`, `engine_key`, `tool_results_key`.
 - Agent limits: `max_turns`, `step_budget`, `time_budget_ms`.
 - Assertions and outputs: `success_requires_pr`, `success_completion_outcomes`, `engine_data_outputs`, `artifact_export_config`, `transcript_artifact_name`.
 - Extension points: `extra_required_abilities`, `ability_tools`, `tool_recorders`, `pipeline_step_patches`, `flow_step_patches`, `fallback_pull_request`.
