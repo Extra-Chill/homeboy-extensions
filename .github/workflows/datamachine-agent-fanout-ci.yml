@@ -1,0 +1,277 @@
+# Reusable fan-out wrapper for Data Machine agent CI runs.
+#
+# Callers provide a JSON array of item objects. Each item runs the existing
+# single-item Data Machine agent workflow in an isolated matrix job.
+name: Data Machine Agent Fan-out CI (reusable)
+
+'on':
+  workflow_call:
+    inputs:
+      fanout_items:
+        description: JSON array of item objects. Each item must include id and prompt; target_repo is optional.
+        type: string
+        required: true
+      bundle_path:
+        type: string
+        required: true
+      bundle_repo:
+        type: string
+        default: ""
+      bundle_ref:
+        type: string
+        default: ""
+      bundle_path_in_repo:
+        type: string
+        default: ""
+      agent_slug:
+        type: string
+        required: true
+      pipeline_slug:
+        type: string
+        required: true
+      flow_slug:
+        type: string
+        required: true
+      target_repo:
+        type: string
+        required: true
+      provider:
+        type: string
+        default: openai
+      provider_plugin:
+        type: string
+        default: "{}"
+      model:
+        type: string
+        default: gpt-5.5
+      validation_dependencies:
+        type: string
+        default: ""
+      include_agent_runtime_dependencies:
+        type: boolean
+        default: true
+      agents_api_ref:
+        type: string
+        default: main
+      data_machine_ref:
+        type: string
+        default: main
+      data_machine_code_ref:
+        type: string
+        default: main
+      openai_provider_ref:
+        type: string
+        default: trunk
+      playground_wordpress:
+        type: string
+        default: "7.0"
+      success_requires_pr:
+        type: boolean
+        default: true
+      success_completion_outcomes:
+        type: string
+        default: "[]"
+      max_turns:
+        type: number
+        default: 12
+      step_budget:
+        type: number
+        default: 16
+      time_budget_ms:
+        type: number
+        default: 600000
+      engine_data_outputs:
+        type: string
+        default: "{}"
+      transcript_artifact_prefix:
+        description: Empty string disables transcript artifact upload.
+        type: string
+        default: ""
+      replay_bundle_artifact_prefix:
+        description: Empty string disables replay bundle artifact upload.
+        type: string
+        default: ""
+      artifact_export_config:
+        type: string
+        default: "{}"
+      comment_pr_summary:
+        type: boolean
+        default: false
+      bundle_validator_spec:
+        type: string
+        default: ""
+      app_token_repos:
+        type: string
+        default: ""
+      allowed_repos:
+        type: string
+        default: "[]"
+      engine_key:
+        type: string
+        default: ""
+      tool_results_key:
+        type: string
+        default: github_tool_results
+      dry_run:
+        type: boolean
+        default: false
+      extra_wp_config_defines:
+        type: string
+        default: "{}"
+      extra_playground_file_mounts:
+        type: string
+        default: "[]"
+      workload_run_before:
+        type: string
+        default: "[]"
+      workload_run_after:
+        type: string
+        default: "[]"
+      daily_memory_enabled:
+        type: boolean
+        default: false
+      extra_required_abilities:
+        type: string
+        default: "[]"
+      ability_tools:
+        type: string
+        default: "[]"
+      tool_recorders:
+        type: string
+        default: "[]"
+      pipeline_step_patches:
+        type: string
+        default: "[]"
+      flow_step_patches:
+        type: string
+        default: "[]"
+      runner_workspace:
+        type: string
+        default: "{}"
+      fallback_pull_request:
+        type: string
+        default: "{}"
+    secrets:
+      HOMEBOY_APP_ID:
+        required: false
+      HOMEBOY_APP_PRIVATE_KEY:
+        required: false
+      OPENAI_API_KEY:
+        required: false
+      PROVIDER_SECRET_1:
+        required: false
+      PROVIDER_SECRET_2:
+        required: false
+      PROVIDER_SECRET_3:
+        required: false
+      PROVIDER_SECRET_4:
+        required: false
+      PROVIDER_SECRET_5:
+        required: false
+
+jobs:
+  validate-items:
+    runs-on: ubuntu-latest
+    outputs:
+      items: ${{ steps.items.outputs.items }}
+      count: ${{ steps.items.outputs.count }}
+    steps:
+      - name: Validate fan-out items
+        id: items
+        env:
+          FANOUT_ITEMS: ${{ inputs.fanout_items }}
+        run: |
+          set -euo pipefail
+          items=$(printf '%s' "$FANOUT_ITEMS" | jq -c '
+            if type != "array" then error("fanout_items must be a JSON array") else . end
+            | map(if type != "object" then error("fanout item must be an object") else . end)
+            | map(.id = ((.id // "") | tostring) | .prompt = ((.prompt // "") | tostring))
+            | map(select(.id != "" and .prompt != ""))
+          ')
+          count=$(jq 'length' <<< "$items")
+          if [ "$count" -eq 0 ]; then
+            echo "fanout_items did not contain any items with non-empty id and prompt" >&2
+            exit 1
+          fi
+          {
+            printf 'items=%s\n' "$items"
+            printf 'count=%s\n' "$count"
+          } >> "$GITHUB_OUTPUT"
+
+  run-item:
+    needs: validate-items
+    strategy:
+      fail-fast: false
+      matrix:
+        item: ${{ fromJSON(needs.validate-items.outputs.items) }}
+    name: Run item / ${{ matrix.item.id }}
+    uses: Extra-Chill/homeboy-extensions/.github/workflows/datamachine-agent-ci.yml@main
+    with:
+      bundle_path: ${{ inputs.bundle_path }}
+      bundle_repo: ${{ inputs.bundle_repo }}
+      bundle_ref: ${{ inputs.bundle_ref }}
+      bundle_path_in_repo: ${{ inputs.bundle_path_in_repo }}
+      agent_slug: ${{ inputs.agent_slug }}
+      pipeline_slug: ${{ inputs.pipeline_slug }}
+      flow_slug: ${{ inputs.flow_slug }}
+      target_repo: ${{ matrix.item.target_repo || inputs.target_repo }}
+      prompt: ${{ matrix.item.prompt }}
+      provider: ${{ inputs.provider }}
+      provider_plugin: ${{ inputs.provider_plugin }}
+      model: ${{ inputs.model }}
+      validation_dependencies: ${{ inputs.validation_dependencies }}
+      include_agent_runtime_dependencies: ${{ inputs.include_agent_runtime_dependencies }}
+      agents_api_ref: ${{ inputs.agents_api_ref }}
+      data_machine_ref: ${{ inputs.data_machine_ref }}
+      data_machine_code_ref: ${{ inputs.data_machine_code_ref }}
+      openai_provider_ref: ${{ inputs.openai_provider_ref }}
+      playground_wordpress: ${{ inputs.playground_wordpress }}
+      success_requires_pr: ${{ inputs.success_requires_pr }}
+      success_completion_outcomes: ${{ inputs.success_completion_outcomes }}
+      max_turns: ${{ inputs.max_turns }}
+      step_budget: ${{ inputs.step_budget }}
+      time_budget_ms: ${{ inputs.time_budget_ms }}
+      engine_data_outputs: ${{ inputs.engine_data_outputs }}
+      transcript_artifact_name: ${{ inputs.transcript_artifact_prefix != '' && format('{0}-{1}', inputs.transcript_artifact_prefix, matrix.item.id) || '' }}
+      replay_bundle_artifact_name: ${{ inputs.replay_bundle_artifact_prefix != '' && format('{0}-{1}', inputs.replay_bundle_artifact_prefix, matrix.item.id) || '' }}
+      artifact_export_config: ${{ inputs.artifact_export_config }}
+      comment_pr_summary: ${{ inputs.comment_pr_summary }}
+      bundle_validator_spec: ${{ inputs.bundle_validator_spec }}
+      app_token_repos: ${{ inputs.app_token_repos }}
+      allowed_repos: ${{ inputs.allowed_repos }}
+      engine_key: ${{ inputs.engine_key }}
+      tool_results_key: ${{ inputs.tool_results_key }}
+      dry_run: ${{ inputs.dry_run }}
+      extra_wp_config_defines: ${{ inputs.extra_wp_config_defines }}
+      extra_playground_file_mounts: ${{ inputs.extra_playground_file_mounts }}
+      workload_run_before: ${{ inputs.workload_run_before }}
+      workload_run_after: ${{ inputs.workload_run_after }}
+      daily_memory_enabled: ${{ inputs.daily_memory_enabled }}
+      extra_required_abilities: ${{ inputs.extra_required_abilities }}
+      ability_tools: ${{ inputs.ability_tools }}
+      tool_recorders: ${{ inputs.tool_recorders }}
+      pipeline_step_patches: ${{ inputs.pipeline_step_patches }}
+      flow_step_patches: ${{ inputs.flow_step_patches }}
+      runner_workspace: ${{ inputs.runner_workspace }}
+      fallback_pull_request: ${{ inputs.fallback_pull_request }}
+    secrets: inherit
+
+  summarize:
+    runs-on: ubuntu-latest
+    needs:
+      - validate-items
+      - run-item
+    if: ${{ always() }}
+    steps:
+      - name: Summarize fan-out result
+        env:
+          ITEM_COUNT: ${{ needs.validate-items.outputs.count }}
+          RUN_RESULT: ${{ needs.run-item.result }}
+        run: |
+          set -euo pipefail
+          {
+            printf '## Data Machine Agent Fan-out\n\n'
+            printf -- '- Items: `%s`\n' "$ITEM_COUNT"
+            printf -- '- Matrix result: `%s`\n' "$RUN_RESULT"
+          } >> "$GITHUB_STEP_SUMMARY"
+          [ "$RUN_RESULT" = "success" ]
