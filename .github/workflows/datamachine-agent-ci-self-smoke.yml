@@ -47,11 +47,11 @@ jobs:
           "path": ".",
           "register_function": "",
           "credentials": {
-            "connectors_ai_example_api_key": "PROVIDER_SECRET_1"
+            "connectors_ai_example_api_key": "PROVIDER_API_KEY"
           }
         }
       engine_data_outputs: '{}'
     secrets:
       HOMEBOY_APP_ID: ${{ secrets.HOMEBOY_APP_ID }}
       HOMEBOY_APP_PRIVATE_KEY: ${{ secrets.HOMEBOY_APP_PRIVATE_KEY }}
-      PROVIDER_SECRET_1: ${{ secrets.PROVIDER_SECRET_1 }}
+      PROVIDER_API_KEY: ${{ secrets.PROVIDER_API_KEY }}

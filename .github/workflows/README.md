@@ -171,8 +171,9 @@ jobs:
 ```
 
 Non-OpenAI providers supply the plugin checkout and Data Machine credential
-mapping explicitly. Map each Data Machine option to one of the generic provider
-secret env names, then pass that secret in the reusable workflow call:
+mapping explicitly. Map the primary Data Machine option to `PROVIDER_API_KEY`,
+or use `PROVIDER_SECRET_1` through `PROVIDER_SECRET_5` when a provider needs
+multiple credentials:
 
 ```yaml
 jobs:
@@ -193,9 +194,9 @@ jobs:
           "path": ".",
           "register_function": "Example\\AiProvider\\register_provider",
           "credentials": {
-            "connectors_ai_example_api_key": "PROVIDER_SECRET_1"
+            "connectors_ai_example_api_key": "PROVIDER_API_KEY"
           }
         }
     secrets:
-      PROVIDER_SECRET_1: ${{ secrets.EXAMPLE_PROVIDER_API_KEY }}
+      PROVIDER_API_KEY: ${{ secrets.EXAMPLE_PROVIDER_API_KEY }}
 ```

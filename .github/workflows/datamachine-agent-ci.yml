@@ -216,6 +216,8 @@ name: Data Machine Agent CI (reusable)
         required: false
       OPENAI_API_KEY:
         required: false
+      PROVIDER_API_KEY:
+        required: false
       PROVIDER_SECRET_1:
         required: false
       PROVIDER_SECRET_2:
@@ -505,6 +507,7 @@ jobs:
           PROVIDER_PLUGIN: ${{ inputs.provider_plugin }}
           OPENAI_PROVIDER_REF: ${{ inputs.openai_provider_ref }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          PROVIDER_API_KEY: ${{ secrets.PROVIDER_API_KEY }}
           PROVIDER_SECRET_1: ${{ secrets.PROVIDER_SECRET_1 }}
           PROVIDER_SECRET_2: ${{ secrets.PROVIDER_SECRET_2 }}
           PROVIDER_SECRET_3: ${{ secrets.PROVIDER_SECRET_3 }}
@@ -701,6 +704,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          PROVIDER_API_KEY: ${{ secrets.PROVIDER_API_KEY }}
           PROVIDER_SECRET_1: ${{ secrets.PROVIDER_SECRET_1 }}
           PROVIDER_SECRET_2: ${{ secrets.PROVIDER_SECRET_2 }}
           PROVIDER_SECRET_3: ${{ secrets.PROVIDER_SECRET_3 }}

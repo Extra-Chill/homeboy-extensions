@@ -161,8 +161,9 @@ with:
 secrets: inherit
 ```
 
-Generic providers should provide a full plugin object and map Data Machine option
-names to generic provider secret env names:
+Generic providers should provide a full plugin object and map the primary Data
+Machine option to `PROVIDER_API_KEY`. Additional provider credentials can use
+`PROVIDER_SECRET_1` through `PROVIDER_SECRET_5`.
 
 ```yaml
 with:
@@ -175,11 +176,11 @@ with:
       "path": ".",
       "register_function": "Example\\AiProvider\\register_provider",
       "credentials": {
-        "connectors_ai_example_api_key": "PROVIDER_SECRET_1"
+        "connectors_ai_example_api_key": "PROVIDER_API_KEY"
       }
     }
 secrets:
-  PROVIDER_SECRET_1: ${{ secrets.EXAMPLE_PROVIDER_API_KEY }}
+  PROVIDER_API_KEY: ${{ secrets.EXAMPLE_PROVIDER_API_KEY }}
 ```
 
 ## Outputs and assertions
