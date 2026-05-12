@@ -348,10 +348,21 @@ namespace {
         ),
     );
     $runner_capture = homeboy_datamachine_agent_capture_runner_workspace(
-        array(),
+        array( 'status' => 'runner-workspace-status' ),
         array(
             'target_repo'              => 'owner/repo',
+            'task_id'                  => 'runner-task',
+            'task_label'               => 'Runner task',
+            'provider'                 => 'openai',
+            'model'                    => 'gpt-smoke',
+            'agent_slug'               => 'runner-agent',
             'tool_results_key'         => 'github_tool_results',
+            'artifact_export'          => array(
+                'pr_title_template'  => '[{agent_slug}] {task_id} - {workspace_branch} - {result_label}',
+                'pr_body_template'   => "## Runner Workspace\nBranch: {workspace_branch}\nHandle: {workspace_handle}\nStatus: {engine_status}\nCustom: {custom_label}\n",
+                'pr_template_values' => array( 'custom_label' => 'custom fallback value' ),
+                'pr_template_paths'  => array( 'engine_status' => 'engine_data.status' ),
+            ),
             'runner_workspace'         => array(
                 'enabled'         => true,
                 'expose_to_agent' => false,
@@ -361,7 +372,8 @@ namespace {
                 'handle'  => 'repo@hidden-run',
                 'branch'  => 'agent/hidden-run',
             ),
-        )
+        ),
+        43
     );
 
     if ( empty( $runner_capture['changed'] ) || empty( $runner_capture['fallback_pull_request']['opened'] ) ) {
@@ -372,8 +384,52 @@ namespace {
         fwrite( STDERR, "Expected runner workspace capture fallback PR to use the captured branch.\n" );
         exit( 1 );
     }
+    if ( '[runner-agent] runner-task - agent/hidden-run - pr_opened' !== ( $fallback_pr_input['title'] ?? '' ) ) {
+        fwrite( STDERR, "Expected runner workspace fallback PR to use the artifact PR title template.\n" );
+        exit( 1 );
+    }
+    foreach ( array( 'Branch: agent/hidden-run', 'Handle: repo@hidden-run', 'Status: runner-workspace-status', 'Custom: custom fallback value' ) as $expected_fallback_body_fragment ) {
+        if ( ! str_contains( (string) ( $fallback_pr_input['body'] ?? '' ), $expected_fallback_body_fragment ) ) {
+            fwrite( STDERR, "Expected runner workspace fallback PR body to include {$expected_fallback_body_fragment}.\n" );
+            exit( 1 );
+        }
+    }
     if ( 'repo@hidden-run' !== ( $runner_capture_calls[0]['input']['name'] ?? null ) || array( 'docs/generated.md' ) !== ( $runner_capture_calls[1]['input']['paths'] ?? null ) ) {
         fwrite( STDERR, "Expected runner workspace capture to inspect and stage the provisioned handle.\n" );
+        exit( 1 );
+    }
+
+    $fallback_pr_input = array();
+    $explicit_runner_capture = homeboy_datamachine_agent_capture_runner_workspace(
+        array(),
+        array(
+            'target_repo'              => 'owner/repo',
+            'tool_results_key'         => 'github_tool_results',
+            'fallback_pull_request'    => array(
+                'title' => 'Explicit fallback title',
+                'body'  => 'Explicit fallback body',
+            ),
+            'artifact_export'          => array(
+                'pr_title_template' => 'Templated {task_id}',
+                'pr_body_template'  => 'Templated {workspace_branch}',
+            ),
+            'runner_workspace'         => array(
+                'enabled'         => true,
+                'expose_to_agent' => false,
+            ),
+            'runner_workspace_result'  => array(
+                'success' => true,
+                'handle'  => 'repo@explicit-run',
+                'branch'  => 'agent/explicit-run',
+            ),
+        )
+    );
+    if ( empty( $explicit_runner_capture['fallback_pull_request']['opened'] ) ) {
+        fwrite( STDERR, "Expected explicit runner workspace fallback PR to open.\n" );
+        exit( 1 );
+    }
+    if ( 'Explicit fallback title' !== ( $fallback_pr_input['title'] ?? '' ) || 'Explicit fallback body' !== ( $fallback_pr_input['body'] ?? '' ) ) {
+        fwrite( STDERR, "Expected explicit runner workspace fallback PR title/body to take precedence over artifact templates.\n" );
         exit( 1 );
     }
 

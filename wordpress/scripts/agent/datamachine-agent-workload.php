@@ -458,7 +458,7 @@ if ( ! function_exists( 'homeboy_datamachine_agent_markdown_cell' ) ) {
             'error_message'     => $error_message,
             'workflow_run_url'  => $workflow_url,
             'workspace_branch'  => (string) ( $runner_workspace['branch'] ?? '' ),
-            'workspace_handle'  => (string) ( $runner_workspace['name'] ?? '' ),
+            'workspace_handle'  => (string) ( $runner_workspace['handle'] ?? $runner_workspace['name'] ?? '' ),
             'workspace_changed' => ! empty( $run_context['runner_workspace_capture']['changed'] ) ? 'yes' : 'no',
             'result_table'      => homeboy_datamachine_agent_markdown_table( array( 'Field', 'Value' ), $result_rows ),
             'checks_table'      => homeboy_datamachine_agent_markdown_table( array( 'Check', 'Passed', 'Score', 'Max', 'Message' ), $check_rows ),
@@ -963,7 +963,7 @@ if ( ! function_exists( 'homeboy_datamachine_agent_execute_workspace_ability' ) 
 }
 
 if ( ! function_exists( 'homeboy_datamachine_agent_runner_workspace_fallback_config' ) ) {
-    function homeboy_datamachine_agent_runner_workspace_fallback_config( array $config, array $runner_workspace ): array {
+    function homeboy_datamachine_agent_runner_workspace_fallback_config( array $config, array $runner_workspace, array $engine_data = array(), int $job_id = 0 ): array {
         $fallback = is_array( $config['fallback_pull_request'] ?? null ) ? $config['fallback_pull_request'] : array();
         $repo     = homeboy_datamachine_agent_scalar( $fallback, 'repo', homeboy_datamachine_agent_scalar( $config, 'target_repo' ) );
         $branch   = (string) ( $runner_workspace['branch'] ?? '' );
@@ -974,6 +974,39 @@ if ( ! function_exists( 'homeboy_datamachine_agent_runner_workspace_fallback_con
         if ( '' === homeboy_datamachine_agent_scalar( $fallback, 'repo' ) && '' !== $repo ) {
             $fallback['repo'] = $repo;
         }
+        $export_config = is_array( $config['artifact_export'] ?? null ) ? $config['artifact_export'] : array();
+        if ( '' === homeboy_datamachine_agent_scalar( $fallback, 'title' ) && '' !== (string) ( $export_config['pr_title_template'] ?? '' ) ) {
+            $fallback['title'] = homeboy_datamachine_agent_template(
+                (string) $export_config['pr_title_template'],
+                homeboy_datamachine_agent_artifact_pr_context(
+                    $job_id,
+                    $config,
+                    $engine_data,
+                    array(),
+                    array(),
+                    array(
+                        'success_status'           => 'pr_opened',
+                        'runner_workspace_capture' => array( 'status' => $runner_workspace ),
+                    )
+                )
+            );
+        }
+        if ( '' === homeboy_datamachine_agent_scalar( $fallback, 'body' ) && '' !== (string) ( $export_config['pr_body_template'] ?? '' ) ) {
+            $fallback['body'] = homeboy_datamachine_agent_template(
+                (string) $export_config['pr_body_template'],
+                homeboy_datamachine_agent_artifact_pr_context(
+                    $job_id,
+                    $config,
+                    $engine_data,
+                    array(),
+                    array(),
+                    array(
+                        'success_status'           => 'pr_opened',
+                        'runner_workspace_capture' => array( 'status' => $runner_workspace ),
+                    )
+                )
+            );
+        }
         if ( '' === homeboy_datamachine_agent_scalar( $fallback, 'title' ) ) {
             $fallback['title'] = 'Persist Data Machine agent workspace changes';
         }
@@ -983,7 +1016,7 @@ if ( ! function_exists( 'homeboy_datamachine_agent_runner_workspace_fallback_con
 }
 
 if ( ! function_exists( 'homeboy_datamachine_agent_capture_runner_workspace' ) ) {
-    function homeboy_datamachine_agent_capture_runner_workspace( array $engine_data, array $config ): array {
+    function homeboy_datamachine_agent_capture_runner_workspace( array $engine_data, array $config, int $job_id = 0 ): array {
         if ( ! homeboy_datamachine_agent_runner_workspace_capture_enabled( $config ) ) {
             return array( 'enabled' => false, 'changed' => false, 'engine_data' => $engine_data );
         }
@@ -1027,7 +1060,7 @@ if ( ! function_exists( 'homeboy_datamachine_agent_capture_runner_workspace' ) )
         }
 
         $capture_config                          = $config;
-        $capture_config['fallback_pull_request'] = homeboy_datamachine_agent_runner_workspace_fallback_config( $config, $runner_workspace );
+        $capture_config['fallback_pull_request'] = homeboy_datamachine_agent_runner_workspace_fallback_config( $config, $runner_workspace, $engine_data, $job_id );
         $fallback_pull_request                   = homeboy_datamachine_agent_open_fallback_pr( $engine_data, $capture_config );
         if ( ! empty( $fallback_pull_request['engine_data'] ) && is_array( $fallback_pull_request['engine_data'] ) ) {
             $engine_data = $fallback_pull_request['engine_data'];
@@ -2012,7 +2045,7 @@ $job_status = is_array( $job ) ? (string) ( $job['status'] ?? '' ) : '';
 $engine_data = function_exists( 'datamachine_get_engine_data' ) ? datamachine_get_engine_data( $job_id ) : array();
 $engine_data = homeboy_datamachine_agent_merge_recorded_tool_results( $engine_data, $config );
 $engine_data = homeboy_datamachine_agent_merge_child_engine_data( $engine_data, $child_drain_summary['children'], $config );
-$runner_workspace_capture = homeboy_datamachine_agent_capture_runner_workspace( $engine_data, $config );
+$runner_workspace_capture = homeboy_datamachine_agent_capture_runner_workspace( $engine_data, $config, $job_id );
 if ( is_array( $runner_workspace_capture['engine_data'] ?? null ) ) {
     $engine_data = $runner_workspace_capture['engine_data'];
 }
