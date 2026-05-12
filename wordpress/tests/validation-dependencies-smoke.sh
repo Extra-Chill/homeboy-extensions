@@ -100,6 +100,7 @@ if [ "${1:-}" = "clone" ]; then
     clone_path="${@: -1}"
     case "$repo_url" in
         *github.com/Automattic/data-machine.git)
+            echo "FAIL: data-machine should resolve through its canonical Extra-Chill owner" >&2
             exit 1
             ;;
         *github.com/Extra-Chill/data-machine.git)
@@ -150,7 +151,7 @@ fallback_resolved=$(
 )
 fallback_data_machine="${FALLBACK_CACHE_DIR}/homeboy-deps/data-machine"
 if ! grep -F -- "$fallback_data_machine" <<< "$fallback_resolved" >/dev/null; then
-    echo "FAIL: data-machine dependency should fall back from inferred Automattic org to Extra-Chill" >&2
+    echo "FAIL: data-machine dependency should resolve from Extra-Chill/data-machine" >&2
     printf '%s\n' "$fallback_resolved" >&2
     exit 1
 fi

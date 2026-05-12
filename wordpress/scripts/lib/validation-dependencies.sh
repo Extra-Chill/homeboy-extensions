@@ -234,23 +234,23 @@ homeboy_resolve_validation_dependency_path() {
             github_org=$(_homeboy_infer_github_org "${_HOMEBOY_DEP_PLUGIN_PATH:-.}" || true)
         fi
 
-        if [ -n "$github_org" ]; then
+        local known_github_org
+        known_github_org=$(_homeboy_known_dependency_github_org "$dependency" || true)
+        if [ -n "$known_github_org" ]; then
             local cloned_path
-            cloned_path=$(_homeboy_clone_dependency "$dependency" "$github_org" || true)
+            cloned_path=$(_homeboy_clone_dependency "$dependency" "$known_github_org" || true)
             if [ -n "$cloned_path" ] && [ -d "$cloned_path" ]; then
-                echo "Resolved dependency '$dependency' via git clone from ${github_org}/${dependency}" >&2
+                echo "Resolved dependency '$dependency' via git clone from ${known_github_org}/${dependency}" >&2
                 printf '%s\n' "$cloned_path"
                 return 0
             fi
         fi
 
-        local known_github_org
-        known_github_org=$(_homeboy_known_dependency_github_org "$dependency" || true)
-        if [ -n "$known_github_org" ] && [ "$known_github_org" != "$github_org" ]; then
+        if [ -n "$github_org" ] && [ "$github_org" != "$known_github_org" ]; then
             local cloned_path
-            cloned_path=$(_homeboy_clone_dependency "$dependency" "$known_github_org" || true)
+            cloned_path=$(_homeboy_clone_dependency "$dependency" "$github_org" || true)
             if [ -n "$cloned_path" ] && [ -d "$cloned_path" ]; then
-                echo "Resolved dependency '$dependency' via git clone from ${known_github_org}/${dependency}" >&2
+                echo "Resolved dependency '$dependency' via git clone from ${github_org}/${dependency}" >&2
                 printf '%s\n' "$cloned_path"
                 return 0
             fi
