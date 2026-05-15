@@ -2080,6 +2080,195 @@ if ( ! function_exists( 'homeboy_datamachine_agent_bootstrap_abilities' ) ) {
     }
 }
 
+if ( ! function_exists( 'homeboy_datamachine_agent_prepare_wp_cli_runtime' ) ) {
+    function homeboy_datamachine_agent_prepare_wp_cli_runtime(): void {
+        if ( ! class_exists( 'WP_CLI' ) ) {
+            return;
+        }
+
+        $wp_cli_root = dirname( dirname( ( new ReflectionClass( 'WP_CLI' ) )->getFileName() ) );
+        if ( ! defined( 'WP_CLI_ROOT' ) ) {
+            define( 'WP_CLI_ROOT', $wp_cli_root );
+        }
+        if ( ! defined( 'WP_CLI_VERSION' ) && is_readable( WP_CLI_ROOT . '/VERSION' ) ) {
+            define( 'WP_CLI_VERSION', trim( file_get_contents( WP_CLI_ROOT . '/VERSION' ) ) );
+        }
+        if ( ! defined( 'WP_CLI_START_MICROTIME' ) ) {
+            define( 'WP_CLI_START_MICROTIME', microtime( true ) );
+        }
+        if ( ! defined( 'WP_CLI_VENDOR_DIR' ) ) {
+            if ( file_exists( WP_CLI_ROOT . '/vendor/autoload.php' ) ) {
+                define( 'WP_CLI_VENDOR_DIR', WP_CLI_ROOT . '/vendor' );
+            } elseif ( file_exists( dirname( dirname( WP_CLI_ROOT ) ) . '/autoload.php' ) ) {
+                define( 'WP_CLI_VENDOR_DIR', dirname( dirname( WP_CLI_ROOT ) ) );
+            } elseif ( file_exists( dirname( WP_CLI_ROOT ) . '/vendor/autoload.php' ) ) {
+                define( 'WP_CLI_VENDOR_DIR', dirname( WP_CLI_ROOT ) . '/vendor' );
+            } else {
+                define( 'WP_CLI_VENDOR_DIR', WP_CLI_ROOT . '/vendor' );
+            }
+        }
+        if ( ! function_exists( 'WP_CLI\\Utils\\parse_str_to_argv' ) && is_readable( WP_CLI_ROOT . '/php/utils.php' ) ) {
+            require_once WP_CLI_ROOT . '/php/utils.php';
+        }
+        if ( ! function_exists( 'WP_CLI\\Dispatcher\\get_path' ) && is_readable( WP_CLI_ROOT . '/php/dispatcher.php' ) ) {
+            require_once WP_CLI_ROOT . '/php/dispatcher.php';
+        }
+    }
+
+    function homeboy_datamachine_agent_run_wp_cli_command( string $command ): array {
+        $command = trim( $command );
+        if ( str_starts_with( $command, 'wp ' ) ) {
+            $command = trim( substr( $command, 3 ) );
+        }
+        if ( '' === $command ) {
+            return array(
+                'success'   => false,
+                'command'   => '',
+                'exit_code' => 1,
+                'stdout'    => '',
+                'stderr'    => 'WP-CLI command must not be empty.',
+                'error'     => 'WP-CLI command must not be empty.',
+            );
+        }
+
+        if ( ! class_exists( 'WP_CLI' ) || ! method_exists( 'WP_CLI', 'runcommand' ) ) {
+            return array(
+                'success'   => false,
+                'command'   => $command,
+                'exit_code' => 127,
+                'stdout'    => '',
+                'stderr'    => 'WP_CLI::runcommand() is unavailable in this runtime.',
+                'error'     => 'WP_CLI::runcommand() is unavailable in this runtime.',
+            );
+        }
+
+        homeboy_datamachine_agent_prepare_wp_cli_runtime();
+        $result = WP_CLI::runcommand(
+            $command,
+            array(
+                'launch'     => false,
+                'exit_error' => false,
+                'return'     => 'all',
+                'parse'      => false,
+            )
+        );
+
+        $stdout    = is_object( $result ) && isset( $result->stdout ) ? (string) $result->stdout : '';
+        $stderr    = is_object( $result ) && isset( $result->stderr ) ? (string) $result->stderr : '';
+        $exit_code = is_object( $result ) && isset( $result->return_code ) ? (int) $result->return_code : 0;
+
+        return array(
+            'success'   => 0 === $exit_code,
+            'command'   => $command,
+            'exit_code' => $exit_code,
+            'stdout'    => $stdout,
+            'stderr'    => $stderr,
+            'error'     => 0 === $exit_code ? '' : trim( '' !== $stderr ? $stderr : $stdout ),
+        );
+    }
+}
+
+if ( ! function_exists( 'homeboy_datamachine_agent_register_wp_cli_ability' ) ) {
+    function homeboy_datamachine_agent_register_wp_cli_ability( array &$config ): void {
+        if ( empty( $config['enable_wp_cli_tool'] ) ) {
+            return;
+        }
+
+        add_action(
+            'wp_abilities_api_categories_init',
+            static function (): void {
+                if ( ! function_exists( 'wp_register_ability_category' ) ) {
+                    return;
+                }
+                if ( function_exists( 'wp_get_ability_category' ) && wp_get_ability_category( 'homeboy-agent' ) ) {
+                    return;
+                }
+                wp_register_ability_category(
+                    'homeboy-agent',
+                    array(
+                        'label'       => 'Homeboy Agent',
+                        'description' => 'Runtime tools exposed to disposable WordPress agent runs.',
+                    )
+                );
+            }
+        );
+
+        add_action(
+            'wp_abilities_api_init',
+            static function (): void {
+                if ( ! function_exists( 'wp_register_ability' ) || ( function_exists( 'wp_get_ability' ) && wp_get_ability( 'homeboy-agent/run-wp-cli' ) ) ) {
+                    return;
+                }
+                wp_register_ability(
+                    'homeboy-agent/run-wp-cli',
+                    array(
+                        'label'               => 'Run WP-CLI command',
+                        'description'         => 'Run a WP-CLI command against the current disposable WordPress runtime and return stdout, stderr, and exit status.',
+                        'category'            => 'homeboy-agent',
+                        'permission_callback' => static fn(): bool => true,
+                        'input_schema'        => array(
+                            'type'                 => 'object',
+                            'required'             => array( 'command' ),
+                            'properties'           => array(
+                                'command'    => array(
+                                    'type'        => 'string',
+                                    'description' => 'WP-CLI command to run. The command may include or omit the leading `wp`.',
+                                ),
+                                'timeout_ms' => array(
+                                    'type'        => 'integer',
+                                    'description' => 'Reserved for callers that enforce an outer command timeout.',
+                                    'minimum'     => 1,
+                                ),
+                            ),
+                            'additionalProperties' => false,
+                        ),
+                        'output_schema'       => array(
+                            'type'       => 'object',
+                            'properties' => array(
+                                'success'   => array( 'type' => 'boolean' ),
+                                'command'   => array( 'type' => 'string' ),
+                                'exit_code' => array( 'type' => 'integer' ),
+                                'stdout'    => array( 'type' => 'string' ),
+                                'stderr'    => array( 'type' => 'string' ),
+                                'error'     => array( 'type' => 'string' ),
+                            ),
+                        ),
+                        'execute_callback'    => static function ( array $input = array() ): array {
+                            return homeboy_datamachine_agent_run_wp_cli_command( (string) ( $input['command'] ?? '' ) );
+                        },
+                    )
+                );
+            }
+        );
+
+        $ability_tools = is_array( $config['ability_tools'] ?? null ) ? $config['ability_tools'] : array();
+        $tool_name     = is_scalar( $config['wp_cli_tool_name'] ?? null ) && '' !== trim( (string) $config['wp_cli_tool_name'] )
+            ? trim( (string) $config['wp_cli_tool_name'] )
+            : 'run_wp_cli';
+        $already_registered = false;
+        foreach ( $ability_tools as $tool_config ) {
+            if ( is_array( $tool_config ) && $tool_name === (string) ( $tool_config['name'] ?? '' ) ) {
+                $already_registered = true;
+                break;
+            }
+        }
+        if ( ! $already_registered ) {
+            $ability_tools[] = array(
+                'name'        => $tool_name,
+                'ability'     => 'homeboy-agent/run-wp-cli',
+                'description' => 'Run a WP-CLI command against the current disposable WordPress runtime. Returns real WP-CLI stdout, stderr, and exit status.',
+                'record'      => array(
+                    'engine_key' => homeboy_datamachine_agent_scalar( $config, 'engine_key' ),
+                    'fields'     => array(
+                        'last_wp_cli_command' => 'parameters.command',
+                    ),
+                ),
+            );
+        }
+        $config['ability_tools'] = $ability_tools;
+    }
+}
+
 if ( ! function_exists( 'homeboy_datamachine_agent_configure_settings' ) ) {
     function homeboy_datamachine_agent_configure_settings( array $config ): array {
         $provider = homeboy_datamachine_agent_scalar( $config, 'provider', 'openai' );
@@ -2364,6 +2553,7 @@ if ( ! $metadata['bundle_exists'] || ! is_file( $bundle_path . '/manifest.json' 
 }
 
 homeboy_datamachine_agent_bootstrap_provider( $config );
+homeboy_datamachine_agent_register_wp_cli_ability( $config );
 $bootstrap_error = homeboy_datamachine_agent_bootstrap_abilities();
 if ( null !== $bootstrap_error ) {
     return $bootstrap_error;

@@ -120,6 +120,9 @@ The runner converts the agent config into a single Playground bench workload:
   status/diff, commits, pushes, and opens or reuses a fallback PR after the run.
 - `ability_tools` can expose additional WordPress abilities as tools during the
   agent run.
+- `enable_wp_cli_tool: true` exposes a built-in `run_wp_cli` tool that executes
+  `WP_CLI::runcommand()` against the current disposable Playground WordPress
+  runtime and returns the real command, exit code, stdout, and stderr.
 - `pipeline_step_patches` and `flow_step_patches` can adjust imported bundle
   step configuration before execution.
 - `fallback_pull_request` can open a PR when files were written but the agent did
@@ -143,6 +146,7 @@ knobs to `run-datamachine-agent.sh`:
 - Agent limits: `max_turns`, `step_budget`, `time_budget_ms`.
 - Assertions and outputs: `success_requires_pr`, `success_completion_outcomes`, `engine_data_outputs`, `artifact_export_config`, `transcript_artifact_name`, `replay_bundle_artifact_name`.
 - Extension points: `extra_required_abilities`, `ability_tools`, `tool_recorders`, `pipeline_step_patches`, `flow_step_patches`, `runner_workspace`, `fallback_pull_request`.
+- Built-in WordPress actions: `enable_wp_cli_tool`, `wp_cli_tool_name`.
 
 `bundle_repo` is for cross-repo consumers. The shell runner clones the bundle
 repository, points `bundle_path` at the cloned bundle inside Playground, and adds
@@ -154,6 +158,11 @@ maintaining a bespoke runner script.
 wrap GitHub tools. A recorder can attach forced parameters, capture selected input
 or output fields, and write them under a stable `metadata.engine_data` key for
 later `engine_data_outputs` projection.
+
+Set `enable_wp_cli_tool: true` when the task should let the agent inspect or
+mutate the WordPress runtime through WP-CLI. The default tool name is
+`run_wp_cli`; override it with `wp_cli_tool_name` when a caller needs a different
+agent-facing name. Commands may include or omit the leading `wp`.
 
 `runner_workspace.expose_to_agent` defaults to `true` for backwards
 compatibility. Set it to `false` for task-sandbox runs where the agent should see
