@@ -40,4 +40,12 @@ jobs:
         with:
           component: ${{ matrix.component }}
           commands: release
+          # homeboy-extensions monorepo components release version bumps
+          # and tags only; they do not produce binary artifacts and the
+          # extension manifests themselves are consumed via
+          # `extension install-for-component`, not via GitHub Release
+          # assets. Opt out of the homeboy-native publish + github.release
+          # pipeline so per-component tag pushes stay tag-only.
+          release-skip-publish: 'true'
+          release-skip-github-release: 'true'
           app-token: ${{ steps.app-token.outputs.token || '' }}
