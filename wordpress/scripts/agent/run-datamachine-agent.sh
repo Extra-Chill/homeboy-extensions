@@ -34,6 +34,7 @@ homeboy_datamachine_agent_bundle_clone_url() {
 homeboy_datamachine_agent_wp_codebox_secret_env_names() {
     jq -r '
         [
+            "HOMEBOY_DATAMACHINE_AGENT_CONFIG",
             .prompt_env?,
             (.github_token_env? // "GITHUB_TOKEN"),
             .github_repository_token_env?,
@@ -64,6 +65,16 @@ homeboy_datamachine_agent_wp_codebox_run() {
         fi
         artifacts_dir="$RUNTIME_DIR/wp-codebox-artifacts"
     fi
+    if [ -z "$RUNTIME_DIR" ]; then
+        RUNTIME_DIR=$(mktemp -d "${TMPDIR:-/tmp}/homeboy-datamachine-agent-runtime.XXXXXX")
+    fi
+
+    local workload_wrapper="$RUNTIME_DIR/wp-codebox-datamachine-agent-workload.php"
+    cat > "$workload_wrapper" <<'PHP'
+<?php
+$homeboy_workload_result = require '/homeboy-extension/scripts/agent/datamachine-agent-workload.php';
+echo wp_json_encode( is_array( $homeboy_workload_result ) ? $homeboy_workload_result : array() );
+PHP
 
     local agents_api_path="${HOMEBOY_AGENTS_API_PATH:-${AGENTS_API_PATH:-}}"
     local data_machine_path="${HOMEBOY_DATA_MACHINE_PATH:-${DATA_MACHINE_PATH:-}}"
@@ -88,10 +99,11 @@ homeboy_datamachine_agent_wp_codebox_run() {
         --data-machine "$data_machine_path"
         --data-machine-code "$data_machine_code_path"
         --task "$WORKLOAD_LABEL"
-        --code-file "$WORKLOAD_PATH"
+        --code-file "$workload_wrapper"
         --wp "$PLAYGROUND_WORDPRESS_VERSION"
         --artifacts "$artifacts_dir"
         --json
+        --mount "$EXTENSION_PATH:/homeboy-extension:readonly"
     )
 
     if [ -n "$BUNDLE_PATH" ]; then
