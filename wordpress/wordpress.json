@@ -268,7 +268,8 @@
         "Token",
         "Tokens",
         "Value",
-        "Validator"
+        "Validator",
+        "Verifier"
       ],
       "convention_exception_globs": [
         "**/register.php",
@@ -327,6 +328,18 @@
         "**/class-*-policy-resolver.php",
         "**/class-*-lock.php",
         "**/class-*-locks.php",
+        "**/*DTO.php",
+        "**/*Data.php",
+        "**/*Helper.php",
+        "**/*Helpers.php",
+        "**/*Interface.php",
+        "**/*Payload.php",
+        "**/*Request.php",
+        "**/*Resolver.php",
+        "**/*Response.php",
+        "**/*Result.php",
+        "**/*Value.php",
+        "**/*Verifier.php",
         "**/class-null-*.php",
         "**/class-*-null-*.php"
       ],
@@ -360,7 +373,9 @@
             "**/class-*-runner.php",
             "**/class-*-executor.php",
             "**/class-*-dispatcher.php",
-            "**/class-*-router.php"
+            "**/class-*-router.php",
+            "**/*Interface.php",
+            "**/*Resolver.php"
           ]
         },
         {
@@ -382,7 +397,8 @@
           "globs": [
             "**/class-*-authenticator.php",
             "**/class-*-service.php",
-            "**/class-*-services.php"
+            "**/class-*-services.php",
+            "**/*Verifier.php"
           ]
         },
         {
@@ -402,7 +418,9 @@
             "**/class-*-report.php",
             "**/class-*-response.php",
             "**/class-*-outcome.php",
-            "**/class-*-decision.php"
+            "**/class-*-decision.php",
+            "**/*Response.php",
+            "**/*Result.php"
           ]
         },
         {
