@@ -1,6 +1,6 @@
 {
   "name": "Rust",
-  "version": "1.17.4",
+  "version": "1.17.5",
   "icon": "gearshape.2.fill",
   "description": "Cargo CLI integration for Rust components",
   "author": "Extra Chill",
@@ -59,15 +59,6 @@
       "Args)\\s*\\{": { "doc_comment": true, "block_fields": true },
       "Config)\\b": { "doc_comment": true, "block_fields": true },
       "Manifest)\\b": { "doc_comment": true, "block_fields": true }
-    },
-    "test_mapping": {
-      "source_dirs": ["src"],
-      "test_dirs": ["tests"],
-      "test_file_pattern": "tests/{dir}/{name}_test.{ext}",
-      "method_prefix": "test_",
-      "inline_tests": true,
-      "critical_patterns": ["core/"],
-      "skip_test_patterns": ["commands/"]
     },
     "doc_targets": {
       "Subcommands": {

@@ -1,7 +1,7 @@
 {
   "name": "Go",
   "id": "go",
-  "version": "1.5.1",
+  "version": "1.5.2",
   "icon": "g.circle.fill",
   "description": "Go CLI integration for services, bridges, and binaries",
   "author": "Extra Chill",
@@ -79,14 +79,6 @@
         "heading": "## Interfaces",
         "template": "- `{name}` — `{source_file}` (line {line})"
       }
-    },
-    "test_mapping": {
-      "source_dirs": ["."],
-      "test_dirs": ["."],
-      "test_file_pattern": "{dir}/{name}_test.{ext}",
-      "method_prefix": "Test",
-      "inline_tests": false,
-      "critical_patterns": ["cmd/", "pkg/", "internal/"]
     }
   },
   "docs": [

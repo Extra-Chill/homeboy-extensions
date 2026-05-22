@@ -1,6 +1,6 @@
 {
   "name": "WordPress",
-  "version": "2.100.3",
+  "version": "2.100.5",
   "icon": "w.circle.fill",
   "description": "WordPress project type with WP-CLI integration",
   "author": "Extra Chill",
@@ -230,6 +230,7 @@
         "Collection",
         "Contract",
         "Contracts",
+        "Constants",
         "Credential",
         "Credentials",
         "DTO",
@@ -256,6 +257,8 @@
         "Resolver",
         "Response",
         "Result",
+        "Sanitizer",
+        "Scheduler",
         "Serializer",
         "Service",
         "Services",
@@ -292,12 +295,16 @@
         "**/class-*-bridge.php",
         "**/class-*-resolver.php",
         "**/class-*-handler.php",
+        "**/class-*-sanitizer.php",
         "**/class-*-validator.php",
         "**/class-*-persister.php",
         "**/class-*-runner.php",
+        "**/class-*-scheduler.php",
         "**/class-*-executor.php",
         "**/class-*-dispatcher.php",
         "**/class-*-router.php",
+        "**/*Sanitizer.php",
+        "**/*Scheduler.php",
         "**/class-*-authenticator.php",
         "**/class-*-service.php",
         "**/class-*-services.php",
@@ -318,8 +325,10 @@
         "**/class-*-token.php",
         "**/class-*-tokens.php",
         "**/class-*-config.php",
+        "**/class-*-constants.php",
         "**/class-*-configuration.php",
         "**/class-*-options.php",
+        "**/*Constants.php",
         "**/class-*-artifact.php",
         "**/class-*-artifacts.php",
         "**/class-*-policy.php",
@@ -396,8 +405,12 @@
           "tag": "wordpress:php-role:service",
           "globs": [
             "**/class-*-authenticator.php",
+            "**/class-*-sanitizer.php",
+            "**/class-*-scheduler.php",
             "**/class-*-service.php",
             "**/class-*-services.php",
+            "**/*Sanitizer.php",
+            "**/*Scheduler.php",
             "**/*Verifier.php"
           ]
         },
@@ -427,8 +440,10 @@
           "tag": "wordpress:php-role:configuration",
           "globs": [
             "**/class-*-config.php",
+            "**/class-*-constants.php",
             "**/class-*-configuration.php",
             "**/class-*-options.php",
+            "**/*Constants.php",
             "**/class-*-policy.php",
             "**/class-*-policy-filter.php",
             "**/class-*-policy-provider.php",
@@ -581,7 +596,8 @@
             "\\bdo_action\\s*\\(\\s*['\\\"]{value}['\\\"]",
             "\\bapply_filters\\s*\\(\\s*['\\\"]{value}['\\\"]",
             "\\bdo_action_ref_array\\s*\\(\\s*['\\\"]{value}['\\\"]",
-            "\\bapply_filters_ref_array\\s*\\(\\s*['\\\"]{value}['\\\"]"
+            "\\bapply_filters_ref_array\\s*\\(\\s*['\\\"]{value}['\\\"]",
+            "\\b(?:__|_e|_x|_ex|_n|_nx|_n_noop|_nx_noop|esc_html__|esc_html_e|esc_html_x|esc_attr__|esc_attr_e|esc_attr_x|translate|translate_with_gettext_context)\\s*\\([^;]*,\\s*['\\\"]{value}['\\\"]\\s*\\)"
           ],
           "description": "Raw slug literal `{value}` at line {line} duplicates constant {label}",
           "suggestion": "Use {label} instead of repeating the literal slug so the constant remains the source of truth."
@@ -673,26 +689,6 @@
       "WP_CLI::add_command": { "doc_comment": true, "block_fields": false },
       "wp_register_ability": { "doc_comment": true, "block_fields": false },
       "registerTool": { "doc_comment": true, "block_fields": false }
-    },
-    "test_mapping": {
-      "source_dirs": ["inc"],
-      "test_dirs": ["tests/Unit"],
-      "test_file_pattern": "tests/Unit/{dir}/{name}Test.{ext}",
-      "method_prefix": "test_",
-      "inline_tests": false,
-      "critical_patterns": ["Abilities/", "Core/"],
-      "skip_test_patterns": [
-        ".js",
-        ".jsx",
-        ".ts",
-        ".tsx",
-        ".css",
-        ".scss",
-        ".json",
-        "/assets/",
-        "/Admin/Pages/",
-        "/Admin/Settings/"
-      ]
     },
     "doc_targets": {
       "Post Types": {
