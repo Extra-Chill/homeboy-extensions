@@ -138,6 +138,10 @@ try {
   const initialPlan = createAuditWpCodeboxFanoutPlan({
     report,
     issue_url: 'https://github.com/Extra-Chill/homeboy-extensions/issues/769',
+    provider: 'codex',
+    model: 'gpt-5.5',
+    provider_plugin_paths: ['/opt/ai-provider-for-openai'],
+    secret_env: ['AI_PROVIDER_OPENAI_CODEX_REFRESH_TOKEN'],
   });
   assert.equal(initialPlan.schema, 'homeboy/audit-wp-codebox-fanout/v1');
   assert.equal(initialPlan.audit.finding_count, 3);
@@ -156,6 +160,10 @@ try {
   assert.equal(docsRequest.audit_findings.length, 1);
   assert.match(phpcsRequest.sandbox_session_id, /^homeboy-audit-[a-f0-9]{16}$/);
   assert.equal(phpcsRequest.orchestrator.issue_url, 'https://github.com/Extra-Chill/homeboy-extensions/issues/769');
+  assert.equal(phpcsRequest.provider, 'codex');
+  assert.equal(phpcsRequest.model, 'gpt-5.5');
+  assert.deepEqual(phpcsRequest.provider_plugin_paths, ['/opt/ai-provider-for-openai']);
+  assert.deepEqual(phpcsRequest.secret_env, ['AI_PROVIDER_OPENAI_CODEX_REFRESH_TOKEN']);
   assert.match(phpcsRequest.task.prompt, /finding-phpcs-001/);
 
   const phpcsBundle = createBundle(
@@ -243,6 +251,10 @@ try {
     artifactMapPath,
     outputPath,
     issueUrl: 'https://github.com/Extra-Chill/homeboy-extensions/issues/769',
+    provider: 'codex',
+    model: 'gpt-5.5',
+    providerPluginPaths: ['/opt/ai-provider-for-openai'],
+    secretEnv: ['AI_PROVIDER_OPENAI_CODEX_REFRESH_TOKEN'],
   });
   assert.equal(filePlan.apply_back.length, 2);
   assert.equal(readJson(outputPath).apply_back.length, 2);
@@ -255,15 +267,26 @@ try {
     artifactMapPath,
     '--issue-url',
     'https://github.com/Extra-Chill/homeboy-extensions/issues/769',
+    '--provider',
+    'codex',
+    '--model',
+    'gpt-5.5',
+    '--provider-plugin-path',
+    '/opt/ai-provider-for-openai',
+    '--secret-env',
+    'AI_PROVIDER_OPENAI_CODEX_REFRESH_TOKEN',
   ]);
   const cliPlan = JSON.parse(cliOutput);
   assert.equal(cliPlan.task_requests.length, 2);
   assert.equal(cliPlan.apply_back.length, 2);
+  assert.equal(cliPlan.task_requests[0].provider, 'codex');
 
   const fixtureCommand = createWpCodeboxFixtureCommand(root);
   const execution = executeAuditWpCodeboxFanout({
     report,
     issue_url: 'https://github.com/Extra-Chill/homeboy-extensions/issues/773',
+    provider: 'codex',
+    model: 'gpt-5.5',
     wp_codebox_command: process.execPath,
     wp_codebox_args: [fixtureCommand],
   });

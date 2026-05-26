@@ -119,7 +119,7 @@ function taskPrompt(group) {
 
 function createTaskRequest(group, orchestrator) {
   const sandbox_session_id = sandboxSessionId(orchestrator, group);
-  return {
+  const request = {
     schema: TASK_SCHEMA,
     sandbox_session_id,
     group_key: group.key,
@@ -145,6 +145,21 @@ function createTaskRequest(group, orchestrator) {
       prompt: taskPrompt(group),
     },
   };
+
+  if (orchestrator.provider) {
+    request.provider = orchestrator.provider;
+  }
+  if (orchestrator.model) {
+    request.model = orchestrator.model;
+  }
+  if (orchestrator.provider_plugin_paths.length > 0) {
+    request.provider_plugin_paths = orchestrator.provider_plugin_paths;
+  }
+  if (orchestrator.secret_env.length > 0) {
+    request.secret_env = orchestrator.secret_env;
+  }
+
+  return request;
 }
 
 function safeBranchSlug(value) {
@@ -231,6 +246,10 @@ function createAuditWpCodeboxFanoutPlan(input) {
     run_id: input.run_id || report.run_id || report.id || 'fixture-run',
     report_id: input.report_id || report.id || report.run_id || 'fixture-report',
     issue_url: input.issue_url || '',
+    provider: input.provider || '',
+    model: input.model || '',
+    provider_plugin_paths: Array.isArray(input.provider_plugin_paths) ? input.provider_plugin_paths : [],
+    secret_env: Array.isArray(input.secret_env) ? input.secret_env : [],
   };
   const groups = groupFindings(auditFindings(report));
   const artifactMap = input.artifact_map || {};
@@ -274,6 +293,10 @@ function createAuditWpCodeboxFanoutPlanFromFiles(options) {
     run_id: options.runId,
     report_id: options.reportId,
     issue_url: options.issueUrl,
+    provider: options.provider,
+    model: options.model,
+    provider_plugin_paths: options.providerPluginPaths || [],
+    secret_env: options.secretEnv || [],
     base: options.base,
     branch_prefix: options.branchPrefix,
     reviewed_at: options.reviewedAt,
