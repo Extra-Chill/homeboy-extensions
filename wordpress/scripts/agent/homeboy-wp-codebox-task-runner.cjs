@@ -65,7 +65,14 @@ function requireArg(name) {
 
 function pluginEntry(source, slug, activate = false) {
   const pluginSlug = (slug || path.basename(source)).split('@')[0].replace(/[^a-zA-Z0-9_-]/g, '-');
-  return { source, slug: pluginSlug, activate };
+  const entry = { source, slug: pluginSlug, activate };
+  for (const fileName of [`${pluginSlug}.php`, 'plugin.php']) {
+    if (fs.existsSync(path.join(source, fileName))) {
+      entry.pluginFile = `${pluginSlug}/${fileName}`;
+      break;
+    }
+  }
+  return entry;
 }
 
 function providerPluginEntries(request) {

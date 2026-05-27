@@ -48,13 +48,16 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), 'homeboy-wp-codebox-task-runn
 try {
   const capturePath = path.join(root, 'capture.json');
   const fixtureWpCodebox = createFixtureWpCodebox(root);
+  const providerPluginPath = path.join(root, 'ai-provider-for-opencode@fix-opencode-tool-choice');
+  fs.mkdirSync(providerPluginPath, { recursive: true });
+  fs.writeFileSync(path.join(providerPluginPath, 'plugin.php'), '<?php // fixture provider plugin.');
   const request = {
     schema: 'homeboy/wp-codebox-task-request/v1',
     sandbox_session_id: 'homeboy-audit-fixture-session',
     group_key: 'PHPCS Formatting/Auto Fix!',
     provider: 'opencode',
     model: 'opencode-go/kimi-k2.6',
-    provider_plugin_paths: ['/plugins/ai-provider-for-opencode@fix-opencode-tool-choice'],
+    provider_plugin_paths: [providerPluginPath],
     secret_env: ['OPENCODE_API_KEY'],
     orchestrator: {
       id: 'homeboy-extensions/audit-wp-codebox-fanout',
@@ -118,6 +121,7 @@ try {
   assert.equal(recipe.inputs.extraPlugins[1].slug, 'data-machine');
   assert.equal(recipe.inputs.extraPlugins[2].slug, 'data-machine-code');
   assert.equal(recipe.inputs.extraPlugins[3].slug, 'ai-provider-for-opencode');
+  assert.equal(recipe.inputs.extraPlugins[3].pluginFile, 'ai-provider-for-opencode/plugin.php');
 
   const step = recipe.workflow.steps[0];
   assert.equal(step.command, 'wp-codebox.agent-sandbox-run');
