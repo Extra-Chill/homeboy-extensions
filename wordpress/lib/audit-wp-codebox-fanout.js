@@ -433,24 +433,57 @@ function executeAuditWpCodeboxFanout(input) {
   const plan = input.plan || createAuditWpCodeboxFanoutPlan(input);
   const onProgress = typeof input.on_progress === 'function' ? input.on_progress : () => {};
   const records = [];
-  for (const taskRequest of plan.task_requests) {
-    onProgress(progressEvent('started', taskRequest, plan));
-    const record = executeWpCodeboxTaskRequest(taskRequest, input);
-    records.push(record);
-    onProgress(progressEvent(record.status, taskRequest, plan, record));
-  }
-  const run = {
+  const baseRun = {
     schema: 'homeboy/audit-wp-codebox-execution/v1',
     plan_schema: plan.schema,
     orchestrator: plan.orchestrator,
     audit: plan.audit,
+  };
+  const writeRun = (run) => {
+    if (input.runsOutputPath) {
+      writeJson(input.runsOutputPath, run);
+    }
+  };
+
+  writeRun({
+    ...baseRun,
+    records,
+    status: 'incomplete',
+    current_group: null,
+  });
+
+  for (const taskRequest of plan.task_requests) {
+    writeRun({
+      ...baseRun,
+      records,
+      status: 'incomplete',
+      current_group: {
+        sandbox_session_id: taskRequest.sandbox_session_id,
+        group_key: taskRequest.group_key,
+        finding_ids: taskRequest.audit_findings.map((finding) => finding.id),
+      },
+    });
+
+    onProgress(progressEvent('started', taskRequest, plan));
+    const record = executeWpCodeboxTaskRequest(taskRequest, input);
+    records.push(record);
+    onProgress(progressEvent(record.status, taskRequest, plan, record));
+
+    writeRun({
+      ...baseRun,
+      records,
+      status: 'incomplete',
+      current_group: null,
+    });
+  }
+
+  const run = {
+    ...baseRun,
     records,
     status: records.every((record) => record.status === 'completed') ? 'completed' : 'failed',
   };
 
-  if (input.runsOutputPath) {
-    writeJson(input.runsOutputPath, run);
-  }
+  writeRun(run);
 
   return run;
 }
