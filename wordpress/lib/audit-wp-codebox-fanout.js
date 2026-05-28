@@ -715,7 +715,7 @@ function isStructuredWpCodeboxOutcome(explicit) {
 
 function structuredTaskOutcome(taskRequest, explicit, artifact, errorMessage = '') {
   const urls = pullRequestUrls(explicit);
-  const kind = explicit.kind;
+  const kind = explicit.kind === 'agent_no_pr_outcome' ? 'unable_to_remediate' : explicit.kind;
   const falsePositive = ['false_positive_artifact', 'false_positive_pr'].includes(kind) || Boolean(explicit.false_positive || explicit.falsePositive);
   const prUrl = explicit.pr_url || explicit.pull_request_url || explicit.pullRequestUrl || urls[0] || '';
   const falsePositivePrUrl = explicit.false_positive_pr_url || explicit.falsePositivePullRequestUrl || (falsePositive ? prUrl : '');

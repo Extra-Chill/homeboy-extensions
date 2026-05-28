@@ -338,7 +338,7 @@ try {
       },
     },
   }, null, true);
-  assert.equal(noPrOutcome.kind, 'agent_no_pr_outcome');
+  assert.equal(noPrOutcome.kind, 'unable_to_remediate');
   assert.equal(noPrOutcome.failure, 'Agent completed without opening a required PR.');
   assert.deepEqual(noPrOutcome.finding_ids, ['finding-doc-001']);
   assert.equal(noPrOutcome.metadata.datamachine.completed, true);
