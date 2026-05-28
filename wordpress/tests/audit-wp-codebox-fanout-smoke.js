@@ -13,6 +13,7 @@ const {
   executeAuditWpCodeboxFanoutFromFiles,
   safeBranchSlug,
   taskOutcome,
+  taskOutcomeSucceeded,
 } = require('../lib/audit-wp-codebox-fanout');
 const { artifactContentDigest } = require('../lib/wp-codebox-apply-adapter');
 
@@ -341,6 +342,27 @@ try {
   assert.equal(noPrOutcome.failure, 'Agent completed without opening a required PR.');
   assert.deepEqual(noPrOutcome.finding_ids, ['finding-doc-001']);
   assert.equal(noPrOutcome.metadata.datamachine.completed, true);
+
+  const zeroChangeOutcome = taskOutcome(docsRequest, {
+    success: true,
+    artifacts: {
+      id: 'artifact-zero-change',
+      directory: path.join(root, 'zero-change-artifact'),
+    },
+  }, { id: 'artifact-zero-change', directory: path.join(root, 'zero-change-artifact') }, true);
+  assert.equal(zeroChangeOutcome.kind, 'unable_to_remediate');
+  assert.equal(taskOutcomeSucceeded(zeroChangeOutcome), true);
+  assert.deepEqual(zeroChangeOutcome.finding_ids, ['finding-doc-001']);
+
+  const noopOutcome = taskOutcome(docsRequest, {
+    outcome: {
+      kind: 'noop_artifact',
+      false_positive: true,
+    },
+  }, null, true);
+  assert.equal(noopOutcome.kind, 'noop_artifact');
+  assert.equal(noopOutcome.false_positive, true);
+  assert.equal(taskOutcomeSucceeded(noopOutcome), true);
 
   const phpcsBundle = createBundle(
     root,
