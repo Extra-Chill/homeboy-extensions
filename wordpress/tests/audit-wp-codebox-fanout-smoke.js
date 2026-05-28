@@ -109,10 +109,14 @@ process.stdin.setEncoding('utf8');
 process.stdin.on('data', (chunk) => { input += chunk; });
 process.stdin.on('end', () => {
   const request = JSON.parse(input);
-  if (request.group_key === 'docs-reference') {
+  if (request.group_key === 'finding-doc-001') {
+    if (process.env.FIXTURE_SLEEP) {
+      setTimeout(() => {}, 10000);
+      return;
+    }
     if (process.env.FIXTURE_EXPECT_INCREMENTAL_RUN) {
       const run = JSON.parse(fs.readFileSync(process.env.FIXTURE_EXPECT_INCREMENTAL_RUN, 'utf8'));
-      if (run.status !== 'incomplete' || run.records.length !== 1 || !run.current_group || run.current_group.group_key !== request.group_key) {
+      if (run.status !== 'incomplete' || run.records.length !== 2 || !run.current_group || run.current_group.group_key !== request.group_key) {
         process.stderr.write('fixture incremental fanout-run summary missing expected partial state\\n');
         process.exit(4);
       }
@@ -169,8 +173,8 @@ try {
   });
   assert.equal(initialPlan.schema, 'homeboy/audit-wp-codebox-fanout/v1');
   assert.equal(initialPlan.audit.finding_count, 3);
-  assert.equal(initialPlan.audit.group_count, 2);
-  assert.equal(initialPlan.task_requests.length, 2);
+  assert.equal(initialPlan.audit.group_count, 3);
+  assert.equal(initialPlan.task_requests.length, 3);
 
   assert.equal(safeBranchSlug('PHPCS Formatting/Auto Fix!'), 'phpcs-formatting-auto-fix');
   assert.equal(safeBranchSlug('foo..bar'), 'foo-bar');
@@ -178,9 +182,11 @@ try {
   assert.equal(safeBranchSlug('foo/bar.lock'), 'foo-bar-lock');
   assert.equal(safeBranchSlug('../.@{'), 'audit-batch');
 
-  const phpcsRequest = initialPlan.task_requests.find((request) => request.group_key === 'PHPCS Formatting/Auto Fix!');
-  const docsRequest = initialPlan.task_requests.find((request) => request.group_key === 'docs-reference');
-  assert.equal(phpcsRequest.audit_findings.length, 2);
+  const phpcsRequest = initialPlan.task_requests.find((request) => request.group_key === 'finding-phpcs-001');
+  const secondPhpcsRequest = initialPlan.task_requests.find((request) => request.group_key === 'finding-phpcs-002');
+  const docsRequest = initialPlan.task_requests.find((request) => request.group_key === 'finding-doc-001');
+  assert.equal(phpcsRequest.audit_findings.length, 1);
+  assert.equal(secondPhpcsRequest.audit_findings.length, 1);
   assert.equal(docsRequest.audit_findings.length, 1);
   assert.match(phpcsRequest.sandbox_session_id, /^homeboy-audit-[a-f0-9]{16}$/);
   assert.equal(phpcsRequest.orchestrator.issue_url, 'https://github.com/Extra-Chill/homeboy-extensions/issues/769');
@@ -189,6 +195,7 @@ try {
   assert.deepEqual(phpcsRequest.provider_plugin_paths, ['/opt/ai-provider-for-openai']);
   assert.deepEqual(phpcsRequest.secret_env, ['AI_PROVIDER_OPENAI_CODEX_REFRESH_TOKEN']);
   assert.match(phpcsRequest.task.prompt, /finding-phpcs-001/);
+  assert.match(phpcsRequest.task.prompt, /false positive/);
 
   const phpcsBundle = createBundle(
     root,
@@ -203,14 +210,21 @@ try {
     'docs/setup.md'
   );
   const artifactMap = {
-    'PHPCS Formatting/Auto Fix!': {
+    'finding-phpcs-001': {
       bundle_path: phpcsBundle.bundle,
       approved_files: [phpcsBundle.changedPath],
       reviewed_at: '2026-05-25T00:00:00.000Z',
       reviewer: 'homeboy-review-fixture',
       base: 'main',
     },
-    'docs-reference': {
+    'finding-phpcs-002': {
+      bundle_path: phpcsBundle.bundle,
+      approved_files: [phpcsBundle.changedPath],
+      reviewed_at: '2026-05-25T00:00:00.000Z',
+      reviewer: 'homeboy-review-fixture',
+      base: 'main',
+    },
+    'finding-doc-001': {
       bundle_path: docsBundle.bundle,
       approved_files: [docsBundle.changedPath],
       reviewed_at: '2026-05-25T00:00:00.000Z',
@@ -224,24 +238,24 @@ try {
     artifact_map: artifactMap,
     issue_url: 'https://github.com/Extra-Chill/homeboy-extensions/issues/769',
   });
-  assert.equal(plan.apply_back.length, 2);
+  assert.equal(plan.apply_back.length, 3);
 
-  const phpcsApplyBack = plan.apply_back.find((entry) => entry.group_key === 'PHPCS Formatting/Auto Fix!');
+  const phpcsApplyBack = plan.apply_back.find((entry) => entry.group_key === 'finding-phpcs-001');
   assert.equal(phpcsApplyBack.adapter_id, 'homeboy/wp-codebox-apply-adapter/v1');
   assert.equal(phpcsApplyBack.sandbox_session_id, phpcsRequest.sandbox_session_id);
-  assert.deepEqual(phpcsApplyBack.finding_ids, ['finding-phpcs-001', 'finding-phpcs-002']);
+  assert.deepEqual(phpcsApplyBack.finding_ids, ['finding-phpcs-001']);
   assert.equal(phpcsApplyBack.artifact.id, phpcsBundle.artifactId);
   assert.equal(phpcsApplyBack.artifact.content_digest, phpcsBundle.contentDigest);
   assert.equal(phpcsApplyBack.artifact.patch_sha256, phpcsBundle.patchSha256);
   assert.deepEqual(phpcsApplyBack.review.approved_files, [phpcsBundle.changedPath]);
   assert.equal(phpcsApplyBack.adapter_payload.bundlePath, fs.realpathSync(phpcsBundle.bundle));
-  assert.equal(phpcsApplyBack.adapter_payload.branch, 'fix/homeboy-audit/phpcs-formatting-auto-fix');
+  assert.equal(phpcsApplyBack.adapter_payload.branch, 'fix/homeboy-audit/finding-phpcs-001');
   assert.equal(phpcsApplyBack.pull_request.base, 'main');
-  assert.equal(phpcsApplyBack.pull_request.head, 'fix/homeboy-audit/phpcs-formatting-auto-fix');
+  assert.equal(phpcsApplyBack.pull_request.head, 'fix/homeboy-audit/finding-phpcs-001');
   assert.match(phpcsApplyBack.pull_request.body, /Extra-Chill\/homeboy-extensions\/issues\/769/);
 
   const missingApprovalMap = {
-    'PHPCS Formatting/Auto Fix!': {
+    'finding-phpcs-001': {
       bundle_path: phpcsBundle.bundle,
     },
   };
@@ -258,7 +272,7 @@ try {
     issue_url: 'https://github.com/Extra-Chill/homeboy-extensions/issues/769',
     artifact_map: {
       ...artifactMap,
-      'docs-reference': {
+      'finding-doc-001': {
         bundle_path: docsBundle.bundle,
         approved_files: [docsBundle.changedPath],
         approved: false,
@@ -267,11 +281,11 @@ try {
       },
     },
   });
-  assert.equal(rejectedPlan.apply_back.length, 1);
-  assert.equal(rejectedPlan.apply_back[0].group_key, 'PHPCS Formatting/Auto Fix!');
+  assert.equal(rejectedPlan.apply_back.length, 2);
+  assert.equal(rejectedPlan.apply_back[0].group_key, 'finding-phpcs-001');
   assert.equal(rejectedPlan.issue_reports.length, 1);
   assert.equal(rejectedPlan.issue_reports[0].schema, 'homeboy/audit-wp-codebox-issue-report/v1');
-  assert.equal(rejectedPlan.issue_reports[0].group_key, 'docs-reference');
+  assert.equal(rejectedPlan.issue_reports[0].group_key, 'finding-doc-001');
   assert.equal(rejectedPlan.issue_reports[0].disposition, 'false_positive');
   assert.deepEqual(rejectedPlan.issue_reports[0].finding_ids, ['finding-doc-001']);
   assert.equal(rejectedPlan.issue_reports[0].artifact.id, docsBundle.artifactId);
@@ -292,8 +306,8 @@ try {
     providerPluginPaths: ['/opt/ai-provider-for-openai'],
     secretEnv: ['AI_PROVIDER_OPENAI_CODEX_REFRESH_TOKEN'],
   });
-  assert.equal(filePlan.apply_back.length, 2);
-  assert.equal(readJson(outputPath).apply_back.length, 2);
+  assert.equal(filePlan.apply_back.length, 3);
+  assert.equal(readJson(outputPath).apply_back.length, 3);
 
   const cliOutput = run(process.execPath, [
     path.join(__dirname, '..', 'scripts', 'agent', 'homeboy-audit-wp-codebox-fanout.cjs'),
@@ -313,8 +327,8 @@ try {
     'AI_PROVIDER_OPENAI_CODEX_REFRESH_TOKEN',
   ]);
   const cliPlan = JSON.parse(cliOutput);
-  assert.equal(cliPlan.task_requests.length, 2);
-  assert.equal(cliPlan.apply_back.length, 2);
+  assert.equal(cliPlan.task_requests.length, 3);
+  assert.equal(cliPlan.apply_back.length, 3);
   assert.equal(cliPlan.task_requests[0].provider, 'codex');
 
   const fixtureCommand = createWpCodeboxFixtureCommand(root);
@@ -327,15 +341,17 @@ try {
     wp_codebox_args: [fixtureCommand],
   });
   assert.equal(execution.schema, 'homeboy/audit-wp-codebox-execution/v1');
-  assert.equal(execution.records.length, 2);
+  assert.equal(execution.records.length, 3);
   assert.equal(execution.status, 'failed');
-  const completedRecord = execution.records.find((record) => record.group_key === 'PHPCS Formatting/Auto Fix!');
-  const failedRecord = execution.records.find((record) => record.group_key === 'docs-reference');
+  const completedRecord = execution.records.find((record) => record.group_key === 'finding-phpcs-001');
+  const failedRecord = execution.records.find((record) => record.group_key === 'finding-doc-001');
   assert.equal(completedRecord.status, 'completed');
   assert.equal(completedRecord.command.bin, process.execPath);
   assert.equal(completedRecord.result.session.id, completedRecord.sandbox_session_id);
   assert.equal(completedRecord.result.session.orchestrator.issue_url, 'https://github.com/Extra-Chill/homeboy-extensions/issues/773');
   assert.match(completedRecord.artifact.id, /^artifact-homeboy-audit-/);
+  assert.equal(completedRecord.outcome.finding_id, 'finding-phpcs-001');
+  assert.equal(execution.outcomes.length, 3);
   assert.equal(failedRecord.status, 'failed');
   assert.equal(failedRecord.command.exit_code, 3);
   assert.match(failedRecord.stderr, /fixture docs-reference failure/);
@@ -346,11 +362,23 @@ try {
     wp_codebox_args: [fixtureCommand],
     env: { FIXTURE_NESTED_WP_ERROR: '1' },
   });
-  const nestedFailedRecord = nestedErrorExecution.records.find((record) => record.group_key === 'docs-reference');
+  const nestedFailedRecord = nestedErrorExecution.records.find((record) => record.group_key === 'finding-doc-001');
   assert.equal(nestedErrorExecution.status, 'failed');
   assert.equal(nestedFailedRecord.status, 'failed');
   assert.equal(nestedFailedRecord.command.exit_code, 0);
   assert.match(nestedFailedRecord.command.error, /Fixture nested WP error/);
+
+  const timeoutExecution = await executeAuditWpCodeboxFanout({
+    report,
+    wp_codebox_command: process.execPath,
+    wp_codebox_args: [fixtureCommand],
+    task_timeout_seconds: 1,
+    env: { FIXTURE_SLEEP: '1' },
+  });
+  const timeoutRecord = timeoutExecution.records.find((record) => record.group_key === 'finding-doc-001');
+  assert.equal(timeoutExecution.status, 'failed');
+  assert.equal(timeoutRecord.status, 'timeout');
+  assert.match(timeoutRecord.command.error, /timed out after 1s/);
 
   const runsOutputPath = path.join(root, 'fanout-run.json');
   const fileExecution = await executeAuditWpCodeboxFanoutFromFiles({
@@ -364,9 +392,9 @@ try {
       FIXTURE_EXPECT_INCREMENTAL_RUN: runsOutputPath,
     },
   });
-  assert.equal(fileExecution.records.length, 2);
+  assert.equal(fileExecution.records.length, 3);
   const finalRun = readJson(runsOutputPath);
-  assert.equal(finalRun.records.length, 2);
+  assert.equal(finalRun.records.length, 3);
   assert.equal(Object.hasOwn(finalRun, 'current_group'), false);
 
   const cliExecutionResult = spawnSync(process.execPath, [
@@ -385,11 +413,11 @@ try {
   ], { encoding: 'utf8' });
   assert.equal(cliExecutionResult.status, 0, cliExecutionResult.stderr || cliExecutionResult.stdout);
   const cliExecution = JSON.parse(cliExecutionResult.stdout);
-  assert.equal(cliExecution.records.length, 2);
+  assert.equal(cliExecution.records.length, 3);
   assert.equal(cliExecution.records[0].schema, 'homeboy/audit-wp-codebox-run/v1');
-  assert.match(cliExecutionResult.stderr, /\[homeboy wp-codebox fanout\] started 1\/2 group=PHPCS Formatting\/Auto Fix! session=homeboy-audit-/);
-  assert.match(cliExecutionResult.stderr, /\[homeboy wp-codebox fanout\] completed 1\/2 group=PHPCS Formatting\/Auto Fix! session=homeboy-audit-.*artifact=\/tmp\/homeboy-audit-/);
-  assert.match(cliExecutionResult.stderr, /\[homeboy wp-codebox fanout\] failed 2\/2 group=docs-reference session=homeboy-audit-/);
+  assert.match(cliExecutionResult.stderr, /\[homeboy wp-codebox fanout\] started 1\/3 group=finding-phpcs-001 session=homeboy-audit-/);
+  assert.match(cliExecutionResult.stderr, /\[homeboy wp-codebox fanout\] completed 1\/3 group=finding-phpcs-001 session=homeboy-audit-.*artifact=\/tmp\/homeboy-audit-/);
+  assert.match(cliExecutionResult.stderr, /\[homeboy wp-codebox fanout\] failed 3\/3 group=finding-doc-001 session=homeboy-audit-/);
   assert.doesNotMatch(cliExecutionResult.stderr, /FIXTURE_SECRET_TOKEN/);
 
   console.log('Homeboy audit WP Codebox fanout smoke passed');

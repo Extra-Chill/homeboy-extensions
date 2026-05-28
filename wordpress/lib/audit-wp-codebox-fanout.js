@@ -23,6 +23,7 @@ const PLAN_SCHEMA = 'homeboy/audit-wp-codebox-fanout/v1';
 const TASK_SCHEMA = 'homeboy/wp-codebox-task-request/v1';
 const RUN_SCHEMA = 'homeboy/audit-wp-codebox-run/v1';
 const DEFAULT_CONCURRENCY = 3;
+const DEFAULT_TASK_TIMEOUT_SECONDS = 60 * 60 * 2;
 
 function sha256(value) {
   return crypto.createHash('sha256').update(value).digest('hex');
@@ -102,19 +103,10 @@ function normalizeFinding(finding, index) {
 }
 
 function groupFindings(findings) {
-  const groupsByKey = new Map();
-  for (const finding of findings) {
-    const key = finding.fix_batch_key || finding.kind;
-    if (!groupsByKey.has(key)) {
-      groupsByKey.set(key, []);
-    }
-    groupsByKey.get(key).push(finding);
-  }
-
-  return Array.from(groupsByKey.entries()).map(([key, groupedFindings], index) => ({
-    key,
+  return findings.map((finding, index) => ({
+    key: finding.id || finding.fingerprint || `${finding.kind}-${index + 1}`,
     index,
-    findings: groupedFindings,
+    findings: [finding],
   }));
 }
 
@@ -128,14 +120,16 @@ function sandboxSessionId(orchestrator, group) {
 }
 
 function taskPrompt(group) {
-  const findingList = group.findings
-    .map((finding) => `- ${finding.id}: ${finding.kind} in ${finding.file}${finding.line ? `:${finding.line}` : ''}`)
-    .join('\n');
+  const finding = group.findings[0] || {};
+  const location = `${finding.file || 'unknown file'}${finding.line ? `:${finding.line}` : ''}`;
 
   return [
-    `Fix the grouped Homeboy audit findings for batch ${group.key}.`,
-    'Return a WP Codebox artifact bundle with changed-files, patch, and review metadata.',
-    findingList,
+    `Fix Homeboy audit finding ${finding.id || group.key}.`,
+    `Finding: ${finding.kind || 'unknown'} in ${location}`,
+    finding.message ? `Message: ${finding.message}` : '',
+    'Expected outcome: open a PR that fixes this finding.',
+    'If the finding is a false positive, fix the audit detector/config/test path that produced it and open a PR for that correction instead.',
+    'Return the session id, PR URL, and whether the PR fixes the finding or fixes the false-positive source. If the runtime produces a WP Codebox artifact bundle, include changed-files, patch, and review metadata.',
   ].join('\n\n');
 }
 
@@ -152,6 +146,7 @@ function createTaskRequest(group, orchestrator) {
       source: 'homeboy audit',
       issue_url: orchestrator.issue_url || '',
       group_index: group.index,
+      finding_index: group.index,
     },
     audit_findings: group.findings.map((finding) => ({
       id: finding.id,
@@ -163,7 +158,7 @@ function createTaskRequest(group, orchestrator) {
       severity: finding.severity,
     })),
     task: {
-      title: `Fix Homeboy audit batch ${group.key}`,
+      title: `Fix Homeboy audit finding ${group.findings[0]?.id || group.key}`,
       prompt: taskPrompt(group),
     },
   };
@@ -215,7 +210,7 @@ function createApplyBackMetadata(taskRequest, artifactEntry, options) {
     artifact_content_digest: artifactEntry.artifact_content_digest,
   });
   const branch = artifactEntry.branch || `${options.branch_prefix || 'fix/homeboy-audit'}/${safeBranchSlug(taskRequest.group_key)}`;
-  const title = artifactEntry.pr_title || `Fix Homeboy audit batch ${taskRequest.group_key}`;
+  const title = artifactEntry.pr_title || `Fix Homeboy audit finding ${taskRequest.group_key}`;
   const issueUrl = options.issue_url || taskRequest.orchestrator.issue_url || '';
 
   return {
@@ -254,7 +249,7 @@ function createApplyBackMetadata(taskRequest, artifactEntry, options) {
       body: [
         issueUrl ? `Closes ${issueUrl}` : '',
         '',
-        `Applies WP Codebox artifact ${verified.artifactId} for Homeboy audit batch ${taskRequest.group_key}.`,
+        `Applies WP Codebox artifact ${verified.artifactId} for Homeboy audit finding ${taskRequest.group_key}.`,
       ].filter(Boolean).join('\n'),
       labels: artifactEntry.labels || ['homeboy-audit', 'wp-codebox'],
     },
@@ -302,6 +297,59 @@ function createIssueReport(taskRequest, artifactEntry, options) {
       labels: artifactEntry.labels || ['homeboy-audit', 'wp-codebox', disposition],
     },
   };
+}
+
+function normalizeTaskOutcome(parsed, taskRequest, artifact) {
+  const pullRequest = parsed?.pull_request || parsed?.pr || parsed?.result?.pull_request || null;
+  const falsePositive = parsed?.false_positive || parsed?.result?.false_positive || null;
+  const disposition = parsed?.disposition || parsed?.result?.disposition || inferredDisposition({
+    falsePositive,
+    pullRequest,
+    artifact,
+  });
+  const prUrl = stringValue(
+    parsed?.pull_request_url
+    || parsed?.pr_url
+    || parsed?.result?.pull_request_url
+    || parsed?.result?.pr_url
+    || pullRequest?.url
+    || pullRequest?.html_url
+  );
+  const falsePositivePrUrl = stringValue(
+    parsed?.false_positive_pr_url
+    || parsed?.result?.false_positive_pr_url
+    || falsePositive?.pull_request_url
+    || falsePositive?.pr_url
+    || falsePositive?.pull_request?.url
+    || falsePositive?.pull_request?.html_url
+  );
+
+  return {
+    finding_id: taskRequest.audit_findings[0]?.id || '',
+    disposition,
+    session_id: stringValue(parsed?.session?.id || parsed?.session_id || taskRequest.sandbox_session_id),
+    pr_url: prUrl,
+    false_positive_pr_url: falsePositivePrUrl,
+    artifact_id: artifact?.id || '',
+    report: stringValue(parsed?.report || parsed?.summary || parsed?.result?.report || parsed?.result?.summary),
+  };
+}
+
+function stringValue(value) {
+  return typeof value === 'string' ? value : '';
+}
+
+function inferredDisposition({ falsePositive, pullRequest, artifact }) {
+  if (falsePositive) {
+    return 'false_positive_fix_pr';
+  }
+  if (pullRequest) {
+    return 'fix_pr';
+  }
+  if (artifact) {
+    return 'artifact';
+  }
+  return 'unknown';
 }
 
 function createAuditWpCodeboxFanoutPlan(input) {
@@ -418,6 +466,7 @@ function executeWpCodeboxTaskRequest(taskRequest, options = {}) {
       error: result.error ? result.error.message : (taskFailure || ''),
     },
     status: success ? 'completed' : 'failed',
+    outcome: normalizeTaskOutcome(parsed, taskRequest, artifact),
     started_at: startedAt,
     finished_at: finishedAt,
     stdout,
@@ -438,6 +487,8 @@ function executeWpCodeboxTaskRequestAsync(taskRequest, options = {}) {
   const startedAt = new Date().toISOString();
 
   return new Promise((resolve) => {
+    const timeoutMs = normalizeTaskTimeoutMs(options.task_timeout_seconds ?? options.taskTimeoutSeconds);
+    let timedOut = false;
     const child = spawn(command, args, {
       cwd: options.cwd || process.cwd(),
       env: {
@@ -453,6 +504,14 @@ function executeWpCodeboxTaskRequestAsync(taskRequest, options = {}) {
     let stderr = '';
     let spawnError = null;
     const maxBuffer = options.max_buffer || 1024 * 1024 * 10;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      child.kill('SIGTERM');
+      setTimeout(() => {
+        child.kill('SIGKILL');
+      }, 5000).unref();
+    }, timeoutMs);
+    timeout.unref();
 
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
@@ -472,12 +531,16 @@ function executeWpCodeboxTaskRequestAsync(taskRequest, options = {}) {
       spawnError = error;
     });
     child.on('close', (code, signal) => {
+      clearTimeout(timeout);
       const finishedAt = new Date().toISOString();
       const parsed = tryParseJson(stdout);
       const artifact = parsed && typeof parsed === 'object' && parsed.artifacts ? parsed.artifacts : null;
       const taskFailure = parsed ? wpCodeboxTaskFailure(parsed) : null;
-      const errorMessage = spawnError ? spawnError.message : (taskFailure || '');
-      const success = code === 0 && !spawnError && null === taskFailure;
+      const timeoutMessage = timedOut ? `WP Codebox task timed out after ${Math.round(timeoutMs / 1000)}s` : '';
+      const errorMessage = timeoutMessage || (spawnError ? spawnError.message : (taskFailure || ''));
+      const success = code === 0 && !spawnError && null === taskFailure && !timedOut;
+
+      const status = timedOut ? 'timeout' : statusForSuccess(success);
 
       resolve({
         schema: RUN_SCHEMA,
@@ -491,7 +554,8 @@ function executeWpCodeboxTaskRequestAsync(taskRequest, options = {}) {
           signal: signal || null,
           error: errorMessage,
         },
-        status: success ? 'completed' : 'failed',
+        status,
+        outcome: normalizeTaskOutcome(parsed, taskRequest, artifact),
         started_at: startedAt,
         finished_at: finishedAt,
         stdout,
@@ -506,6 +570,10 @@ function executeWpCodeboxTaskRequestAsync(taskRequest, options = {}) {
     });
     child.stdin.end(requestJson);
   });
+}
+
+function statusForSuccess(success) {
+  return success ? 'completed' : 'failed';
 }
 
 function wpCodeboxTaskFailure(parsed) {
@@ -610,6 +678,15 @@ async function executeAuditWpCodeboxFanout(input) {
     ...baseRun,
     records,
     status: records.every((record) => record.status === 'completed') ? 'completed' : 'failed',
+    outcomes: records.map((record) => ({
+      finding_id: record.outcome?.finding_id || record.finding_ids?.[0] || '',
+      sandbox_session_id: record.sandbox_session_id,
+      status: record.status,
+      pr_url: record.outcome?.pr_url || '',
+      false_positive_pr_url: record.outcome?.false_positive_pr_url || '',
+      artifact_id: record.outcome?.artifact_id || '',
+      error: record.command?.error || '',
+    })),
   };
 
   writeRun(run);
@@ -626,6 +703,7 @@ function executeAuditWpCodeboxFanoutFromFiles(options) {
     cwd: options.cwd,
     env: options.env,
     concurrency: options.concurrency,
+    task_timeout_seconds: options.taskTimeoutSeconds,
     runsOutputPath: options.runsOutputPath,
     on_progress: options.onProgress,
   });
@@ -637,6 +715,14 @@ function normalizeConcurrency(value) {
     return DEFAULT_CONCURRENCY;
   }
   return Math.min(parsed, 16);
+}
+
+function normalizeTaskTimeoutMs(value) {
+  const parsed = Number.parseInt(value || DEFAULT_TASK_TIMEOUT_SECONDS, 10);
+  if (!Number.isFinite(parsed) || parsed < 1) {
+    return DEFAULT_TASK_TIMEOUT_SECONDS * 1000;
+  }
+  return parsed * 1000;
 }
 
 function runningGroup(taskRequest) {
@@ -671,6 +757,7 @@ module.exports = {
   RUN_SCHEMA,
   TASK_SCHEMA,
   DEFAULT_CONCURRENCY,
+  DEFAULT_TASK_TIMEOUT_SECONDS,
   auditFindings,
   createAuditWpCodeboxFanoutPlan,
   createAuditWpCodeboxFanoutPlanFromFiles,
