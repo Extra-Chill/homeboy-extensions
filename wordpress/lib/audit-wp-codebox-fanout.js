@@ -578,6 +578,20 @@ function taskOutcome(taskRequest, parsed, artifact, success, errorMessage = '', 
     return structuredTaskOutcome(taskRequest, explicit, artifact, errorMessage);
   }
 
+  const changedFiles = artifactChangedFiles(artifact);
+  if (success && changedFiles.length > 0) {
+    const falsePositive = outputLooksFalsePositive(parsed);
+    return structuredTaskOutcome(taskRequest, {
+      kind: falsePositive ? 'false_positive_artifact' : 'fix_artifact',
+      artifact: {
+        id: artifact?.id || '',
+        directory: artifact?.directory || artifact?.path || '',
+        changed_files: changedFiles,
+      },
+      false_positive: falsePositive,
+    }, artifact, errorMessage);
+  }
+
   const urls = pullRequestUrls(parsed);
   const falsePositive = Boolean(
     explicit.kind === 'false_positive_pr' ||
@@ -617,6 +631,28 @@ function taskOutcome(taskRequest, parsed, artifact, success, errorMessage = '', 
     artifact_id: artifact?.id || '',
     failure,
   };
+}
+
+function artifactChangedFiles(artifact) {
+  const directory = artifact?.directory || artifact?.path || '';
+  if (!directory) {
+    return [];
+  }
+  const changedFilesPath = path.join(directory, 'files', 'changed-files.json');
+  if (!fs.existsSync(changedFilesPath)) {
+    return [];
+  }
+  const decoded = readJson(changedFilesPath);
+  return (Array.isArray(decoded.files) ? decoded.files : []).map((file) => ({
+    path: file.path || '',
+    relative_path: file.relativePath || file.relative_path || '',
+    status: file.status || '',
+  })).filter((file) => file.path || file.relative_path);
+}
+
+function outputLooksFalsePositive(parsed) {
+  const text = JSON.stringify(parsed || {}).toLowerCase();
+  return text.includes('false positive') || text.includes('false_positive');
 }
 
 function explicitWpCodeboxOutcome(parsed) {

@@ -256,6 +256,27 @@ try {
   assert.equal(nestedArtifactOutcome.kind, 'fix_artifact');
   assert.equal(nestedArtifactOutcome.artifact.id, 'artifact-fixture-nested');
   assert.deepEqual(nestedArtifactOutcome.finding_ids, ['finding-phpcs-001', 'finding-phpcs-002']);
+
+  const artifactOnlyBundle = createBundle(
+    root,
+    'artifact-only-bundle',
+    '/wordpress/wp-content/plugins/fixture-plugin/src/ArtifactOnly.php',
+    'src/ArtifactOnly.php'
+  );
+  const artifactOnlyOutcome = taskOutcome(phpcsRequest, {
+    success: true,
+    artifacts: {
+      id: artifactOnlyBundle.artifactId,
+      directory: artifactOnlyBundle.bundle,
+    },
+    executions: [
+      {
+        stdout: JSON.stringify({ output: 'Agent completed with a reviewed artifact.' }),
+      },
+    ],
+  }, { id: artifactOnlyBundle.artifactId, directory: artifactOnlyBundle.bundle }, true);
+  assert.equal(artifactOnlyOutcome.kind, 'fix_artifact');
+  assert.equal(artifactOnlyOutcome.artifact.changed_files[0].relative_path, 'src/ArtifactOnly.php');
   const falsePositiveOutcome = taskOutcome(phpcsRequest, {
     outcome: {
       kind: 'false_positive_pr',
