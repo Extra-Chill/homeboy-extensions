@@ -800,6 +800,54 @@ def wp_codebox_artifact_changed_file_entries(artifact_dir):
     return sorted(unique.values(), key=lambda item: (item['workspace_slug'], item['relative_path']))
 
 
+def wp_codebox_record_finding_files(record):
+    findings = record.get('finding_files') if isinstance(record, dict) and isinstance(record.get('finding_files'), list) else []
+    audit_findings = record.get('audit_findings') if isinstance(record, dict) and isinstance(record.get('audit_findings'), list) else []
+    for finding in audit_findings:
+        if isinstance(finding, dict):
+            findings.append(finding.get('file') or '')
+    clean = []
+    for file_path in findings:
+        file_path = str(file_path or '').strip().lstrip('/')
+        if file_path and not os.path.isabs(file_path) and '..' not in file_path.split('/'):
+            clean.append(file_path)
+    return set(clean)
+
+
+def wp_codebox_primary_workspace_slugs(component_root, workspace_roots):
+    primary = set([''])
+    try:
+        component_real = os.path.realpath(component_root)
+    except OSError:
+        component_real = component_root
+    for slug, root in (workspace_roots or {}).items():
+        try:
+            if os.path.realpath(root) == component_real:
+                primary.add(slug)
+        except OSError:
+            continue
+    return primary
+
+
+def wp_codebox_artifact_relevance_warning(record, artifact_dir, component_root, workspace_roots):
+    finding_files = wp_codebox_record_finding_files(record)
+    if not finding_files:
+        return ''
+    primary_slugs = wp_codebox_primary_workspace_slugs(component_root, workspace_roots)
+    changed_entries = wp_codebox_artifact_changed_file_entries(artifact_dir)
+    primary_changed = [entry['relative_path'] for entry in changed_entries if entry['workspace_slug'] in primary_slugs]
+    if not primary_changed:
+        return ''
+    if finding_files.intersection(primary_changed):
+        return ''
+    artifact = record.get('artifact') if isinstance(record, dict) and isinstance(record.get('artifact'), dict) else {}
+    artifact_id = artifact.get('id') or artifact.get('artifact_id') or artifact_dir
+    return (
+        f"WP Codebox artifact skipped for group {record.get('group_key') or 'unknown'} "
+        f"artifact {artifact_id}: primary workspace changes do not touch audit finding files"
+    )
+
+
 def wp_codebox_workspace_slug(entry):
     for value in [entry.get('mountTarget'), entry.get('mount_target'), entry.get('path')]:
         parts = str(value or '').lstrip('/').split('/')
@@ -990,15 +1038,21 @@ def apply_wp_codebox_artifact_patch(component_root, artifact_dir, record=None, r
     return changed_files
 
 
-def apply_wp_codebox_fanout_artifacts(component_root, run, run_path='', workspace_roots=None):
+def apply_wp_codebox_fanout_artifacts(component_root, run, run_path='', workspace_roots=None, warnings=None):
     changed_files = []
+    warnings = warnings if isinstance(warnings, list) else []
     records = run.get('records') if isinstance(run, dict) and isinstance(run.get('records'), list) else []
+    workspace_roots = workspace_roots or {'': component_root}
     for record in records:
         if not isinstance(record, dict) or record.get('status') != 'completed':
             continue
         artifact = record.get('artifact') if isinstance(record.get('artifact'), dict) else {}
         artifact_dir = artifact.get('directory') or ''
         if not artifact_dir:
+            continue
+        relevance_warning = wp_codebox_artifact_relevance_warning(record, artifact_dir, component_root, workspace_roots)
+        if relevance_warning:
+            warnings.append(relevance_warning)
             continue
         changed_files.extend(apply_wp_codebox_artifact_patch(component_root, artifact_dir, record, run_path, workspace_roots))
     return sorted(set(changed_files))
@@ -1111,6 +1165,7 @@ def refactor_source(data):
 
     changed_files = []
     failure_message = ''
+    artifact_warnings = []
     if data.get('write') and os.path.exists(runs_path):
         with open(runs_path, 'r') as f:
             run = json.load(f)
@@ -1122,6 +1177,7 @@ def refactor_source(data):
                 run,
                 runs_path,
                 wp_codebox_workspace_roots(component_root, settings),
+                artifact_warnings,
             )
         except RuntimeError as error:
             return {
@@ -1149,6 +1205,7 @@ def refactor_source(data):
     warnings = [
         f"WP Codebox audit fan-out plan: {plan_path}",
         *path_warnings,
+        *artifact_warnings,
     ]
     if data.get('write'):
         warnings.append(f"WP Codebox audit fan-out run: {runs_path}")

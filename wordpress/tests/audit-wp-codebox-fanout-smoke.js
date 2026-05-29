@@ -562,6 +562,7 @@ try {
   assert.equal(completedRecord.status, 'completed');
   assert.equal(completedRecord.finding_id, 'finding-phpcs-001');
   assert.deepEqual(completedRecord.finding_ids, ['finding-phpcs-001', 'finding-phpcs-002']);
+  assert.deepEqual(completedRecord.finding_files, ['src/Example/class-alpha.php', 'src/Example/class-beta.php']);
   assert.equal(completedRecord.command.bin, process.execPath);
   assert.equal(completedRecord.result.session.id, completedRecord.sandbox_session_id);
   assert.equal(completedRecord.result.session.orchestrator.issue_url, 'https://github.com/Extra-Chill/homeboy-extensions/issues/773');

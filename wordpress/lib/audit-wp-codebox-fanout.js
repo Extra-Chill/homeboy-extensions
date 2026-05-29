@@ -480,6 +480,7 @@ function executeWpCodeboxTaskRequest(taskRequest, options = {}) {
     group_key: taskRequest.group_key,
     finding_id: taskRequest.finding_id || taskRequest.audit_findings[0]?.id || '',
     finding_ids: taskRequest.audit_findings.map((finding) => finding.id),
+    finding_files: taskRequest.audit_findings.map((finding) => finding.file).filter(Boolean),
     command: {
       bin: command,
       args,
@@ -586,6 +587,7 @@ function executeWpCodeboxTaskRequestAsync(taskRequest, options = {}) {
         group_key: taskRequest.group_key,
         finding_id: taskRequest.finding_id || taskRequest.audit_findings[0]?.id || '',
         finding_ids: taskRequest.audit_findings.map((finding) => finding.id),
+        finding_files: taskRequest.audit_findings.map((finding) => finding.file).filter(Boolean),
         command: {
           bin: command,
           args,
