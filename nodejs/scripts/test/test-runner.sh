@@ -28,7 +28,7 @@ set -euo pipefail
 #   HOMEBOY_DEBUG                — verbose
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-RUNNER_PRELUDE="${HOMEBOY_RUNTIME_RUNNER_PRELUDE:-${SCRIPT_DIR}/../../../scripts/lib/runner-prelude.sh}"
+RUNNER_PRELUDE="${HOMEBOY_RUNTIME_RUNNER_PRELUDE:-${SCRIPT_DIR}/../lib/runner-prelude.sh}"
 COMMAND_CAPTURE_HELPER="${HOMEBOY_RUNTIME_COMMAND_CAPTURE:-${SCRIPT_DIR}/../lib/command-capture.sh}"
 SETTINGS_HELPER="${HOMEBOY_RUNTIME_SETTINGS_HELPER:-${SCRIPT_DIR}/../lib/settings.sh}"
 # shellcheck source=/dev/null
@@ -170,7 +170,7 @@ extract_vitest_failure_line() {
 write_node_failure_json() {
     [ -n "${HOMEBOY_TEST_FAILURES_FILE:-}" ] || return 0
     [ -n "$FAILED_TEST_NAME" ] || return 0
-    if ! type homeboy_append_test_failure >/dev/null 2>&1; then
+    if ! type homeboy_sidecar_emit >/dev/null 2>&1; then
         echo "Error: HOMEBOY_RUNTIME_SIDECAR_WRITER is required to write test failures" >&2
         return 1
     fi
@@ -202,7 +202,7 @@ console.log(JSON.stringify({
 }));
 JS
 )"
-    homeboy_append_test_failure "$FAILURE_JSON"
+    homeboy_sidecar_emit test.failure "$FAILURE_JSON"
 }
 
 # Vitest summary lines look like:

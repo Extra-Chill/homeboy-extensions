@@ -2,6 +2,32 @@
 
 All notable changes to the **wordpress** extension will be documented in this file.
 
+## [2.105.6] - 2026-05-30
+
+### Fixed
+- emit WordPress lint producer summaries
+
+## [2.105.5] - 2026-05-30
+
+### Fixed
+- keep runner prelude self-contained
+
+## [2.105.4] - 2026-05-30
+
+### Fixed
+- use archive install policy for WordPress deploys
+
+## [2.105.3] - 2026-05-30
+
+### Changed
+- route fix results through typed sidecars
+- use typed sidecar writer APIs
+
+## [2.105.2] - 2026-05-30
+
+### Changed
+- Use shared runner prelude in extension runners
+
 ## [2.105.1] - 2026-05-30
 
 ### Changed

@@ -11,7 +11,7 @@ set -euo pipefail
 # flows go through `homeboy refactor --from lint --write` (#1145).
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-RUNNER_PRELUDE="${HOMEBOY_RUNTIME_RUNNER_PRELUDE:-${SCRIPT_DIR}/../../../scripts/lib/runner-prelude.sh}"
+RUNNER_PRELUDE="${HOMEBOY_RUNTIME_RUNNER_PRELUDE:-${SCRIPT_DIR}/../lib/runner-prelude.sh}"
 # shellcheck source=/dev/null
 source "$RUNNER_PRELUDE"
 homeboy_runner_init --bash 4 --steps --sidecar-writer --component-alias PLUGIN_PATH
@@ -19,7 +19,6 @@ homeboy_runner_init --bash 4 --steps --sidecar-writer --component-alias PLUGIN_P
 FIX_RESULTS_HELPER="${HOMEBOY_RUNTIME_FIX_RESULTS:-${SCRIPT_DIR}/../lib/fix-results.sh}"
 # shellcheck source=../lib/fix-results.sh
 source "$FIX_RESULTS_HELPER"
-
 
 # Debug environment variables (only shown when HOMEBOY_DEBUG=1)
 if [ "${HOMEBOY_DEBUG:-}" = "1" ]; then
@@ -99,37 +98,82 @@ homeboy_mktemp() {
     mktemp 2>/dev/null
 }
 
-# Merge additional findings (e.g. PHPStan) into the HOMEBOY_LINT_FINDINGS_FILE.
-# Appends entries from a JSON array file into the existing findings sidecar,
-# so the identity-based baseline ratchet sees findings from all linters.
 merge_findings_into_sidecar() {
     local extra_file="$1"
-    local target="${HOMEBOY_LINT_FINDINGS_FILE:-}"
-    [ -z "$target" ] && return 0
     [ ! -f "$extra_file" ] && return 0
 
-    if ! type homeboy_merge_lint_findings >/dev/null 2>&1; then
-        echo "Error: HOMEBOY_RUNTIME_SIDECAR_WRITER is required to merge lint findings" >&2
+    if ! type homeboy_sidecar_merge >/dev/null 2>&1; then
+        echo "Error: HOMEBOY_RUNTIME_SIDECAR_WRITER is required to write lint findings" >&2
         return 1
     fi
 
-    homeboy_merge_lint_findings "$extra_file"
+    homeboy_sidecar_merge lint.findings "$extra_file"
 }
 
-write_json_array_sidecar_file() {
-    local target="$1"
-    local source="$2"
+write_lint_producers_sidecar() {
+    local phpcs_passed="$1"
+    local eslint_passed="$2"
+    local phpstan_passed="$3"
+    local python_bin=""
 
-    [ -z "$target" ] && return 0
-    [ ! -f "$source" ] && return 0
+    [ -z "${HOMEBOY_LINT_PRODUCERS_FILE:-}" ] && return 0
 
-    if ! type homeboy_sidecar_merge_json_array >/dev/null 2>&1; then
-        echo "Error: HOMEBOY_RUNTIME_SIDECAR_WRITER is required to write JSON array sidecars" >&2
+    if command -v python3 >/dev/null 2>&1; then
+        python_bin="python3"
+    elif command -v python >/dev/null 2>&1; then
+        python_bin="python"
+    else
+        echo "Error: python3 or python is required to write lint producer summaries" >&2
         return 1
     fi
 
-    rm -f "$target"
-    homeboy_sidecar_merge_json_array "$target" "$source"
+    "$python_bin" - "$HOMEBOY_LINT_PRODUCERS_FILE" "${HOMEBOY_LINT_FINDINGS_FILE:-}" "$phpcs_passed" "$eslint_passed" "$phpstan_passed" <<'PYEOF'
+import json
+import os
+import sys
+import tempfile
+
+target, findings_path, phpcs_passed, eslint_passed, phpstan_passed = sys.argv[1:6]
+counts = {"phpcs": 0, "eslint": 0, "phpstan": 0}
+if findings_path and os.path.exists(findings_path) and os.path.getsize(findings_path) > 0:
+    with open(findings_path, "r", encoding="utf-8") as handle:
+        findings = json.load(handle)
+    for finding in findings if isinstance(findings, list) else []:
+        tool = finding.get("tool") if isinstance(finding, dict) else None
+        if tool in counts:
+            counts[tool] += 1
+
+statuses = {
+    "phpcs": "passed" if phpcs_passed == "1" else "failed",
+    "eslint": "passed" if eslint_passed == "1" else "failed",
+    "phpstan": "passed" if phpstan_passed == "1" else "failed",
+}
+producers = [
+    {
+        "tool": tool,
+        "status": statuses[tool],
+        "finding_count": counts[tool],
+        "step": tool,
+        "metadata": {"source_sidecar": "lint-producers"},
+    }
+    for tool in ("phpcs", "eslint", "phpstan")
+]
+
+directory = os.path.dirname(target) or "."
+os.makedirs(directory, exist_ok=True)
+fd, tmp = tempfile.mkstemp(prefix=".homeboy-lint-producers-", suffix=".json", dir=directory)
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        json.dump(producers, handle, separators=(",", ":"))
+        handle.write("\n")
+    os.replace(tmp, target)
+except Exception:
+    try:
+        os.unlink(tmp)
+    except OSError:
+        pass
+    raise
+PYEOF
 }
 
 # Determine lint target (file, glob, or full component)
@@ -737,11 +781,11 @@ if [ -n "$json_output" ] && command -v php &> /dev/null; then
 
     # Write annotations sidecar JSON for CI inline comments
     if [ -n "${HOMEBOY_ANNOTATIONS_DIR:-}" ] && [ -d "${HOMEBOY_ANNOTATIONS_DIR}" ]; then
-        if ! type homeboy_merge_annotations >/dev/null 2>&1; then
+        if ! type homeboy_sidecar_merge >/dev/null 2>&1; then
             echo "Error: HOMEBOY_RUNTIME_SIDECAR_WRITER is required to write annotations" >&2
             exit 1
         fi
-        annotations_tmpfile="$(homeboy_mktemp 'phpcs-annotations.XXXXXX.json')"
+        _PHPCS_ANNOTATIONS_TMPFILE=$(homeboy_mktemp 'phpcs-annotations.XXXXXX')
         echo "$json_output" | php -r '
             ini_set("memory_limit", "-1");
             $json = json_decode(file_get_contents("php://stdin"), true);
@@ -765,12 +809,13 @@ if [ -n "$json_output" ] && command -v php &> /dev/null; then
                     ];
                 }
             }
-            if (!empty($annotations)) {
-                file_put_contents($argv[2], json_encode($annotations, JSON_PRETTY_PRINT) . "\n");
+            $outputFile = $argv[2] ?? "";
+            if ($outputFile && !empty($annotations)) {
+                file_put_contents($outputFile, json_encode($annotations, JSON_UNESCAPED_SLASHES) . "\n");
             }
-        ' "$PLUGIN_PATH" "$annotations_tmpfile" 2>/dev/null || true
-        homeboy_merge_annotations phpcs "$annotations_tmpfile"
-        rm -f "$annotations_tmpfile"
+        ' "$PLUGIN_PATH" "$_PHPCS_ANNOTATIONS_TMPFILE" 2>/dev/null || true
+        homeboy_sidecar_merge annotation.phpcs "$_PHPCS_ANNOTATIONS_TMPFILE"
+        rm -f "$_PHPCS_ANNOTATIONS_TMPFILE"
     fi
 
     # Write lint findings sidecar for homeboy baseline and categorized issues.
@@ -778,12 +823,16 @@ if [ -n "$json_output" ] && command -v php &> /dev/null; then
     #   [{id: "file::source::line", message: "...", category: "..."}]
     # Category is derived from the top-level PHPCS source namespace.
     if [ -n "${HOMEBOY_LINT_FINDINGS_FILE:-}" ]; then
+        if ! type homeboy_sidecar_merge >/dev/null 2>&1; then
+            echo "Error: HOMEBOY_RUNTIME_SIDECAR_WRITER is required to write lint findings" >&2
+            exit 1
+        fi
         _PHPCS_FINDINGS_TMPFILE=$(homeboy_mktemp 'phpcs-findings.XXXXXX')
-        if echo "$json_output" | php -r '
+        echo "$json_output" | php -r '
             ini_set("memory_limit", "-1");
             $json = json_decode(file_get_contents("php://stdin"), true);
             if (!$json || empty($json["files"])) {
-                file_put_contents($argv[2], "[]");
+                file_put_contents($argv[2], "[]\n");
                 exit;
             }
             $componentPath = $argv[1] ?? "";
@@ -837,12 +886,14 @@ if [ -n "$json_output" ] && command -v php &> /dev/null; then
                     }
                     $findings[] = [
                         "id" => $id,
+                        "tool" => "phpcs",
                         "file" => $relPath,
                         "line" => $line,
                         "column" => $column,
                         "severity" => strtolower($msg["type"] ?? "error"),
                         "source" => "phpcs",
                         "code" => $code,
+                        "rule" => $code,
                         "category" => $category,
                         "message" => $message,
                         "fixable" => (bool) ($msg["fixable"] ?? false),
@@ -852,15 +903,14 @@ if [ -n "$json_output" ] && command -v php &> /dev/null; then
                 }
             }
             file_put_contents($argv[2], json_encode($findings, JSON_UNESCAPED_SLASHES) . "\n");
-        ' "$PLUGIN_PATH" "${_PHPCS_FINDINGS_TMPFILE}" 2>/dev/null; then
-            write_json_array_sidecar_file "${HOMEBOY_LINT_FINDINGS_FILE}" "${_PHPCS_FINDINGS_TMPFILE}" || exit 1
-        fi
-        rm -f "${_PHPCS_FINDINGS_TMPFILE}"
+        ' "$PLUGIN_PATH" "$_PHPCS_FINDINGS_TMPFILE" 2>/dev/null || true
+        homeboy_sidecar_merge lint.findings "$_PHPCS_FINDINGS_TMPFILE"
+        rm -f "$_PHPCS_FINDINGS_TMPFILE"
     fi
 fi
 
-# Create temp files for per-tool findings before ESLint/PHPStan run. PHPCS writes
-# directly to HOMEBOY_LINT_FINDINGS_FILE; the other tools are merged later.
+# Create temp files for per-tool findings before ESLint/PHPStan run. Each tool
+# writes its own parsed array, then the core sidecar helper owns final merging.
 _ESLINT_FINDINGS_TMPFILE=""
 _PHPSTAN_FINDINGS_TMPFILE=""
 if [ -n "${HOMEBOY_LINT_FINDINGS_FILE:-}" ]; then
@@ -973,9 +1023,8 @@ if [[ "${HOMEBOY_SUMMARY_MODE:-}" == "1" ]]; then
     PHPSTAN_PASSED=1
     run_phpstan_summary || PHPSTAN_PASSED=0
 
-    # Merge PHPCS + ESLint + PHPStan findings into the final baseline sidecar.
-    # PHPCS writes directly to HOMEBOY_LINT_FINDINGS_FILE; other tools write
-    # to temp files. Merge all so the identity-based ratchet sees all errors.
+    # Merge ESLint + PHPStan findings into the final baseline sidecar. PHPCS was
+    # already merged after its JSON report was parsed.
     if [ -n "${HOMEBOY_LINT_FINDINGS_FILE:-}" ] && [ -n "$_ESLINT_FINDINGS_TMPFILE" ] && [ -f "$_ESLINT_FINDINGS_TMPFILE" ]; then
         merge_findings_into_sidecar "$_ESLINT_FINDINGS_TMPFILE"
         rm -f "$_ESLINT_FINDINGS_TMPFILE"
@@ -984,6 +1033,7 @@ if [[ "${HOMEBOY_SUMMARY_MODE:-}" == "1" ]]; then
         merge_findings_into_sidecar "$_PHPSTAN_FINDINGS_TMPFILE"
         rm -f "$_PHPSTAN_FINDINGS_TMPFILE"
     fi
+    write_lint_producers_sidecar "$PHPCS_PASSED" "$ESLINT_PASSED" "$PHPSTAN_PASSED"
 
     if [ "$PHPCS_PASSED" -eq 1 ] && [ "$ESLINT_PASSED" -eq 1 ] && [ "$PHPSTAN_PASSED" -eq 1 ]; then
         echo "Linting passed"
@@ -1066,7 +1116,8 @@ run_phpstan() {
 PHPSTAN_PASSED=1
 run_phpstan || PHPSTAN_PASSED=0
 
-# Merge PHPCS + ESLint + PHPStan findings into the final baseline sidecar
+# Merge ESLint + PHPStan findings into the final baseline sidecar. PHPCS was
+# already merged after its JSON report was parsed.
 if [ -n "${HOMEBOY_LINT_FINDINGS_FILE:-}" ] && [ -n "$_ESLINT_FINDINGS_TMPFILE" ] && [ -f "$_ESLINT_FINDINGS_TMPFILE" ]; then
     merge_findings_into_sidecar "$_ESLINT_FINDINGS_TMPFILE"
     rm -f "$_ESLINT_FINDINGS_TMPFILE"
@@ -1075,6 +1126,7 @@ if [ -n "${HOMEBOY_LINT_FINDINGS_FILE:-}" ] && [ -n "$_PHPSTAN_FINDINGS_TMPFILE"
     merge_findings_into_sidecar "$_PHPSTAN_FINDINGS_TMPFILE"
     rm -f "$_PHPSTAN_FINDINGS_TMPFILE"
 fi
+write_lint_producers_sidecar "$PHPCS_PASSED" "$ESLINT_PASSED" "$PHPSTAN_PASSED"
 
 if [ "$PHPCS_PASSED" -eq 1 ] && [ "$ESLINT_PASSED" -eq 1 ] && [ "$PHPSTAN_PASSED" -eq 1 ]; then
     echo ""
