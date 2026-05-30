@@ -7,21 +7,21 @@ const PORT_MAX = 65535;
 export function resolveHomeboyInvocationRuntime(options = {}) {
     const sourceEnv = options.env || process.env;
     const namespace = sanitizeSegment(options.namespace || 'workload');
-    const invocationId = nonEmptyString(sourceEnv.HOMEBOY_INVOCATION_ID);
-    const baseDirs = {
-        state: nonEmptyString(sourceEnv.HOMEBOY_INVOCATION_STATE_DIR),
-        artifact: nonEmptyString(sourceEnv.HOMEBOY_INVOCATION_ARTIFACT_DIR),
-        tmp: nonEmptyString(sourceEnv.HOMEBOY_INVOCATION_TMP_DIR),
-    };
-    const portRange = parsePortRange(sourceEnv);
-    const isolated = Boolean(invocationId || baseDirs.state || baseDirs.artifact || baseDirs.tmp);
+    const context = parseInvocationContext(sourceEnv);
+    const legacy = parseLegacyInvocationEnv(sourceEnv);
+    const invocationId = context?.id ?? legacy.invocationId;
+    const baseDirs = context?.baseDirs ?? legacy.baseDirs;
+    const portRange = context?.portRange ?? legacy.portRange;
+    const namedLeases = context?.namedLeases ?? [];
+    const isolated = Boolean(context || invocationId || baseDirs.state || baseDirs.artifact || baseDirs.tmp);
     const dirs = isolated ? scopedDirs(baseDirs, namespace) : emptyDirs();
-    const runtimeEnv = buildRuntimeEnv({ sourceEnv, invocationId, namespace, dirs, portRange, isolated });
+    const runtimeEnv = buildRuntimeEnv({ sourceEnv, invocationId, namespace, dirs, portRange, namedLeases, isolated });
 
     return {
         isolated,
         namespace,
         invocationId,
+        namedLeases,
         baseDirs,
         dirs,
         portRange,
@@ -41,6 +41,45 @@ export function resolveHomeboyInvocationRuntime(options = {}) {
             }
             return normalizedPort;
         },
+    };
+}
+
+function parseInvocationContext(env) {
+    const rawContext = nonEmptyString(env.HOMEBOY_INVOCATION_CONTEXT_JSON);
+    if (!rawContext) return null;
+
+    let context;
+    try {
+        context = JSON.parse(rawContext);
+    } catch (error) {
+        throw new Error(`HOMEBOY_INVOCATION_CONTEXT_JSON must be valid JSON: ${error.message}`);
+    }
+
+    if (!context || typeof context !== 'object' || Array.isArray(context)) {
+        throw new Error('HOMEBOY_INVOCATION_CONTEXT_JSON must be a JSON object.');
+    }
+
+    return {
+        id: requiredContextString(context, 'id'),
+        baseDirs: {
+            state: requiredContextString(context, 'state_dir'),
+            artifact: requiredContextString(context, 'artifact_dir'),
+            tmp: requiredContextString(context, 'tmp_dir'),
+        },
+        portRange: parseContextPortRange(context.port_range),
+        namedLeases: parseNamedLeases(context.named_leases),
+    };
+}
+
+function parseLegacyInvocationEnv(env) {
+    return {
+        invocationId: nonEmptyString(env.HOMEBOY_INVOCATION_ID),
+        baseDirs: {
+            state: nonEmptyString(env.HOMEBOY_INVOCATION_STATE_DIR),
+            artifact: nonEmptyString(env.HOMEBOY_INVOCATION_ARTIFACT_DIR),
+            tmp: nonEmptyString(env.HOMEBOY_INVOCATION_TMP_DIR),
+        },
+        portRange: parseLegacyPortRange(env),
     };
 }
 
@@ -76,7 +115,7 @@ function scopedDir(baseDir, namespace) {
     return baseDir ? resolve(baseDir, namespace) : null;
 }
 
-function buildRuntimeEnv({ sourceEnv, invocationId, namespace, dirs, portRange, isolated }) {
+function buildRuntimeEnv({ sourceEnv, invocationId, namespace, dirs, portRange, namedLeases, isolated }) {
     const env = { ...sourceEnv };
 
     if (isolated) {
@@ -95,6 +134,8 @@ function buildRuntimeEnv({ sourceEnv, invocationId, namespace, dirs, portRange, 
         if (dirs.cache) env.XDG_CACHE_HOME = dirs.cache;
         if (dirs.data) env.XDG_DATA_HOME = dirs.data;
         if (dirs.state) env.XDG_STATE_HOME = dirs.state;
+        const contextJson = invocationContextJson({ invocationId, dirs, portRange, namedLeases });
+        if (contextJson) env.HOMEBOY_INVOCATION_CONTEXT_JSON = JSON.stringify(contextJson);
     }
 
     if (portRange) {
@@ -105,7 +146,36 @@ function buildRuntimeEnv({ sourceEnv, invocationId, namespace, dirs, portRange, 
     return env;
 }
 
-function parsePortRange(env) {
+function invocationContextJson({ invocationId, dirs, portRange, namedLeases }) {
+    if (!invocationId || !dirs.state || !dirs.artifact || !dirs.tmp) return null;
+
+    const context = {
+        id: invocationId,
+        state_dir: dirs.state,
+        artifact_dir: dirs.artifact,
+        tmp_dir: dirs.tmp,
+    };
+    if (portRange) context.port_range = { base: portRange.base, max: portRange.max };
+    if (namedLeases.length > 0) context.named_leases = namedLeases;
+    return context;
+}
+
+function parseContextPortRange(portRange) {
+    if (portRange == null) return null;
+    if (typeof portRange !== 'object' || Array.isArray(portRange)) {
+        throw new Error('HOMEBOY_INVOCATION_CONTEXT_JSON port_range must be an object.');
+    }
+
+    const base = normalizePort(portRange.base, 'HOMEBOY_INVOCATION_CONTEXT_JSON port_range.base');
+    const max = normalizePort(portRange.max, 'HOMEBOY_INVOCATION_CONTEXT_JSON port_range.max');
+    if (base > max) {
+        throw new Error(`HOMEBOY_INVOCATION_CONTEXT_JSON port_range.base (${base}) must be less than or equal to port_range.max (${max}).`);
+    }
+
+    return { base, max };
+}
+
+function parseLegacyPortRange(env) {
     const rawBase = nonEmptyString(env.HOMEBOY_INVOCATION_PORT_BASE);
     const rawMax = nonEmptyString(env.HOMEBOY_INVOCATION_PORT_MAX);
 
@@ -135,6 +205,29 @@ function normalizePort(value, label) {
     }
 
     return port;
+}
+
+function parseNamedLeases(namedLeases) {
+    if (namedLeases == null) return [];
+    if (!Array.isArray(namedLeases)) {
+        throw new Error('HOMEBOY_INVOCATION_CONTEXT_JSON named_leases must be an array.');
+    }
+
+    return namedLeases.map((lease, index) => {
+        const value = nonEmptyString(lease);
+        if (!value) {
+            throw new Error(`HOMEBOY_INVOCATION_CONTEXT_JSON named_leases[${index}] must be a non-empty string.`);
+        }
+        return value;
+    });
+}
+
+function requiredContextString(context, key) {
+    const value = nonEmptyString(context[key]);
+    if (!value) {
+        throw new Error(`HOMEBOY_INVOCATION_CONTEXT_JSON ${key} must be a non-empty string.`);
+    }
+    return value;
 }
 
 function nonEmptyString(value) {

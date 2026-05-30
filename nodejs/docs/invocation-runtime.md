@@ -21,7 +21,25 @@ await spawnCommand({
 runtime.assertPort(3000);
 ```
 
-The helper normalizes these Homeboy core variables when present:
+The helper prefers Homeboy's structured invocation context when present:
+
+- `HOMEBOY_INVOCATION_CONTEXT_JSON`
+
+That JSON has this shape:
+
+```json
+{
+  "id": "inv-0123456789",
+  "state_dir": "/tmp/hb/0123456789",
+  "artifact_dir": "/tmp/hb/0123456789.a",
+  "tmp_dir": "/tmp/hb/0123456789.t",
+  "port_range": { "base": 20000, "max": 20007 },
+  "named_leases": ["playground-browser-profile"]
+}
+```
+
+When structured JSON is absent, the helper falls back to these legacy Homeboy
+core variables:
 
 - `HOMEBOY_INVOCATION_ID`
 - `HOMEBOY_INVOCATION_STATE_DIR`
@@ -35,6 +53,10 @@ are scoped under the requested namespace. `runtime.env` and
 `runtime.childEnv()` export those scoped paths for child commands, including
 standard process isolation locations such as `HOME`, `TMPDIR`, and XDG state,
 config, cache, and data directories.
+
+`runtime.namedLeases` exposes any `named_leases` metadata from the structured
+context. It is an empty array when the invocation did not request named leases
+or when the helper is running from legacy fallback env.
 
 `runtime.portRange` is `null` unless both port bounds are present. Missing one
 bound, malformed bounds, out-of-range ports, and inverted ranges throw during

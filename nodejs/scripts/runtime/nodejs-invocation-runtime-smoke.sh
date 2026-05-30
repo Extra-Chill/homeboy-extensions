@@ -44,6 +44,42 @@ assert(noIsolation.portRange === null, 'no-isolation port range should be null')
 assert(noIsolation.env.PATH === '/bin', 'no-isolation env should preserve source env');
 assert(noIsolation.assertPort('1234') === 1234, 'no-isolation assertPort should normalize without range');
 
+const structuredContext = {
+  id: 'structured-123',
+  state_dir: join(tmpRoot, 'structured-state'),
+  artifact_dir: join(tmpRoot, 'structured-artifacts'),
+  tmp_dir: join(tmpRoot, 'structured-tmp'),
+  port_range: { base: 5100, max: 5199 },
+  named_leases: ['playground-browser-profile'],
+};
+const structured = resolveHomeboyInvocationRuntime({
+  namespace: 'Structured Runtime',
+  env: {
+    PATH: '/bin',
+    HOMEBOY_INVOCATION_CONTEXT_JSON: JSON.stringify(structuredContext),
+    HOMEBOY_INVOCATION_ID: 'legacy-ignored',
+    HOMEBOY_INVOCATION_STATE_DIR: join(tmpRoot, 'legacy-state'),
+    HOMEBOY_INVOCATION_PORT_BASE: '6100',
+    HOMEBOY_INVOCATION_PORT_MAX: '6199',
+  },
+});
+assert(structured.isolated === true, 'structured runtime should be isolated');
+assert(structured.invocationId === 'structured-123', 'structured context id should win over legacy id');
+assert(structured.namedLeases[0] === 'playground-browser-profile', 'structured named lease should be exposed');
+assert(structured.portRange.base === 5100, 'structured port base should win over legacy base');
+assert(structured.portRange.max === 5199, 'structured port max should win over legacy max');
+assert(structured.dirs.state === resolve(tmpRoot, 'structured-state', 'Structured-Runtime'), 'structured state dir should be namespace-scoped');
+assert(structured.dirs.artifact === resolve(tmpRoot, 'structured-artifacts', 'Structured-Runtime'), 'structured artifact dir should be namespace-scoped');
+assert(structured.dirs.tmp === resolve(tmpRoot, 'structured-tmp', 'Structured-Runtime'), 'structured tmp dir should be namespace-scoped');
+assert(structured.assertPort(5199) === 5199, 'structured max port should validate');
+const exportedContext = JSON.parse(structured.env.HOMEBOY_INVOCATION_CONTEXT_JSON);
+assert(exportedContext.id === 'structured-123', 'env should export structured context id');
+assert(exportedContext.state_dir === structured.dirs.state, 'env should export scoped structured state dir');
+assert(exportedContext.artifact_dir === structured.dirs.artifact, 'env should export scoped structured artifact dir');
+assert(exportedContext.tmp_dir === structured.dirs.tmp, 'env should export scoped structured tmp dir');
+assert(exportedContext.port_range.base === 5100, 'env should export structured port base');
+assert(exportedContext.named_leases[0] === 'playground-browser-profile', 'env should export named leases');
+
 const isolatedEnv = {
   PATH: '/bin',
   HOMEBOY_INVOCATION_ID: 'inv-123',
@@ -99,10 +135,16 @@ assertThrows(
   'must be less than or equal to',
   'inverted port range should fail'
 );
+assertThrows(
+  () => resolveHomeboyInvocationRuntime({ env: { HOMEBOY_INVOCATION_CONTEXT_JSON: JSON.stringify({ ...structuredContext, port_range: { base: 5300, max: 5200 } }) } }),
+  'must be less than or equal to',
+  'inverted structured port range should fail'
+);
 
 assert(isolated.env.HOMEBOY_INVOCATION_STATE_DIR === isolated.dirs.state, 'env should export scoped state dir');
 assert(isolated.env.HOMEBOY_INVOCATION_ARTIFACT_DIR === isolated.dirs.artifact, 'env should export scoped artifact dir');
 assert(isolated.env.HOMEBOY_INVOCATION_TMP_DIR === isolated.dirs.tmp, 'env should export scoped tmp dir');
+assert(JSON.parse(isolated.env.HOMEBOY_INVOCATION_CONTEXT_JSON).state_dir === isolated.dirs.state, 'legacy fallback should export scoped context JSON');
 assert(isolated.env.TMPDIR === isolated.dirs.tmp, 'env should export TMPDIR');
 assert(isolated.env.HOME === isolated.dirs.home, 'env should export isolated HOME');
 assert(isolated.env.XDG_CONFIG_HOME === isolated.dirs.config, 'env should export XDG config dir');
