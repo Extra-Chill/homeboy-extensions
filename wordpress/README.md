@@ -427,6 +427,46 @@ records instead, preserving the finding IDs, artifact evidence, disposition,
 reason, and issue title/body metadata needed to file a follow-up false-positive
 or rejected-artifact tracker.
 
+### OpenCode/Codex agent-task executor
+
+`lib/opencode-codex-agent-task-executor.js` is the extension-local provider
+adapter for Homeboy's generic agent-task shape. It keeps Homeboy core
+provider-agnostic by accepting a `homeboy/agent-task-request/v1` JSON payload,
+running either OpenCode or Codex in the request workspace, then returning a
+`homeboy/agent-task-outcome/v1` object with patch and report artifacts.
+
+The companion CLI reads the request from stdin or `HOMEBOY_AGENT_TASK_REQUEST`:
+
+```bash
+node scripts/agent/homeboy-opencode-codex-agent-task-executor.cjs \
+  --agent-bin opencode \
+  --artifacts /tmp/homeboy-agent-task-artifacts <<'JSON'
+{
+  "schema": "homeboy/agent-task-request/v1",
+  "id": "task-123",
+  "provider": "opencode",
+  "model": "opencode-go/kimi-k2.6",
+  "workspace": { "path": "/path/to/worktree" },
+  "secret_env": ["OPENCODE_API_KEY"],
+  "task": { "prompt": "Fix the failing audit finding and leave the patch in the worktree." }
+}
+JSON
+```
+
+The adapter maps OpenCode to `opencode run --model <model> <prompt>` and Codex
+to `codex exec --model <model> <prompt>`. It captures `git diff --binary` as
+`patch.diff`, writes a redacted execution `report.json`, and classifies failures
+as `credential_missing`, `provider_auth`, `provider_rate_limited`,
+`provider_transport`, `timeout`, `cancelled`, `process_error`, or
+`agent_failed`. Credentials are supplied only through named environment
+variables and their values are redacted from command reports and outcomes.
+
+`executeAgentTaskBatch()` provides the bounded-concurrency helper for callers
+that receive multiple `AgentTaskRequest` payloads from core policy. Individual
+requests can expose cancellation by setting `cancel_file` or
+`cancellation.file`; the executor terminates the process group when that file
+appears.
+
 ## Component settings
 
 Configure per-component in the component's homeboy/component config under
