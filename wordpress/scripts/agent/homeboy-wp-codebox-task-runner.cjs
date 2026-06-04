@@ -288,9 +288,12 @@ function normalizeAgentTaskRun(input, result) {
     return result;
   }
 
-  const execution = Array.isArray(result.executions) ? result.executions.find((item) => item?.recipeCommand === 'wp-codebox.agent-sandbox-run') || result.executions[0] : null;
+  const executions = Array.isArray(result.run?.executions) ? result.run.executions : result.executions;
+  const execution = Array.isArray(executions) ? executions.find((item) => item?.recipeCommand === 'wp-codebox.agent-sandbox-run') || executions[0] : null;
   const datamachineConfig = datamachineBundleConfig(input, input.datamachine_bundle || {});
-  const agentResult = result.run?.agentResult || result.agentResult || result.agent_result || result.metadata?.datamachine?.workload || execution?.agentResult || datamachineWorkloadFromExecutionStdout(execution, datamachineConfig) || {};
+  const stdoutWorkload = datamachineWorkloadFromExecutionStdout(execution, datamachineConfig);
+  const fallbackAgentResult = result.metadata?.datamachine?.workload || result.agent_result || result.run?.agentResult || result.agentResult || execution?.agentResult || {};
+  const agentResult = hasScenarios(stdoutWorkload) ? stdoutWorkload : fallbackAgentResult;
   const datamachineValidation = validateDatamachineWorkload(agentResult, datamachineConfig);
   const success = !datamachineValidation;
   const diagnostics = [
@@ -341,6 +344,10 @@ function datamachineWorkloadFromExecutionStdout(execution, config) {
   if (!workload) {
     return {};
   }
+  const bundleRun = workload.agent_runtime?.result || workload.result || workload;
+  if (bundleRun?.schema === 'datamachine/agent-bundle-run/v1') {
+    return datamachineWorkloadFromBundleRun(bundleRun, config);
+  }
   if (Array.isArray(workload.scenarios)) {
     return workload;
   }
@@ -354,6 +361,34 @@ function datamachineWorkloadFromExecutionStdout(execution, config) {
     };
   }
   return {};
+}
+
+function datamachineWorkloadFromBundleRun(bundleRun, config) {
+  const bundle = bundleRun.bundle && typeof bundleRun.bundle === 'object' ? bundleRun.bundle : {};
+  const workflowSteps = Array.isArray(bundleRun.workflow?.steps) ? bundleRun.workflow.steps : [];
+  return {
+    scenarios: [{
+      id: config.workload_id || bundle.flow_slug || bundle.bundle_slug || config.agent_slug || config.flow_slug || 'datamachine-agent',
+      metrics: {
+        workflow_step_count: workflowSteps.length,
+      },
+      metadata: {
+        schema: bundleRun.schema,
+        success: bundleRun.success !== false,
+        dry_run: Boolean(bundleRun.dry_run),
+        bundle,
+        job_id: bundleRun.job_id,
+        job_status: bundleRun.job_status,
+        wait_result: bundleRun.wait_result,
+        engine_data: bundleRun.engine_data,
+        error: bundleRun.success === false ? bundleRun.error : undefined,
+      },
+    }],
+  };
+}
+
+function hasScenarios(value) {
+  return Array.isArray(value?.scenarios) && value.scenarios.length > 0;
 }
 
 function pathValue(source, dottedPath) {
