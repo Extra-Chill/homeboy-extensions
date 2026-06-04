@@ -288,11 +288,11 @@ function normalizeAgentTaskRun(input, result) {
     return result;
   }
 
-  const executions = Array.isArray(result.run?.executions) ? result.run.executions : result.executions;
-  const execution = Array.isArray(executions) ? executions.find((item) => item?.recipeCommand === 'wp-codebox.agent-sandbox-run') || executions[0] : null;
+  const executions = Array.isArray(result.executions) && result.executions.length > 0 ? result.executions : (Array.isArray(result.run?.executions) ? result.run.executions : []);
+  const execution = executions.find((item) => item?.recipeCommand === 'wp-codebox.agent-sandbox-run') || executions[0] || null;
   const datamachineConfig = datamachineBundleConfig(input, input.datamachine_bundle || {});
   const stdoutWorkload = datamachineWorkloadFromExecutionStdout(execution, datamachineConfig);
-  const fallbackAgentResult = result.metadata?.datamachine?.workload || result.agent_result || result.run?.agentResult || result.agentResult || execution?.agentResult || {};
+  const fallbackAgentResult = result.metadata?.datamachine?.workload || execution?.agentResult || result.run?.agentResult || result.agentResult || result.agent_result || {};
   const agentResult = hasScenarios(stdoutWorkload) ? stdoutWorkload : fallbackAgentResult;
   const datamachineValidation = validateDatamachineWorkload(agentResult, datamachineConfig);
   const success = !datamachineValidation;
@@ -342,7 +342,7 @@ function datamachineWorkloadFromExecutionStdout(execution, config) {
   const wrapper = parseJsonObject(execution?.stdout || '');
   const workload = parseJsonObject(wrapper?.output || '') || parseJsonObject(execution?.stdout || '');
   if (!workload) {
-    return {};
+    return null;
   }
   const bundleRun = workload.agent_runtime?.result || workload.result || workload;
   if (bundleRun?.schema === 'datamachine/agent-bundle-run/v1') {
@@ -360,7 +360,7 @@ function datamachineWorkloadFromExecutionStdout(execution, config) {
       }],
     };
   }
-  return {};
+  return null;
 }
 
 function datamachineWorkloadFromBundleRun(bundleRun, config) {

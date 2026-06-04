@@ -24,21 +24,34 @@ const bundleRun = isDatamachineBundle && process.env.FIXTURE_WP_CODEBOX_BUNDLE_R
   ? {
       schema: 'datamachine/agent-bundle-run/v1',
       success: true,
-      dry_run: false,
+      dry_run: true,
       job_id: 1,
       job_status: 'completed',
-      bundle: { flow_slug: 'store-idea-home-and-craft-flow' },
+      bundle: {
+        bundle_slug: 'store-idea-agent',
+        flow_slug: 'static-site-manual-flow',
+        pipeline_slug: 'static-site-pipeline',
+      },
+      workflow: { steps: [{ step_type: 'ai' }] },
       wait_result: { success: true, terminal_state: 'completed' },
       engine_data: { store_idea_agent: { issue_number: 123, issue_url: 'https://github.com/chubes4/wp-site-generator/issues/123' } }
     }
   : null;
 const agentResult = isDatamachineBundle && process.env.FIXTURE_WP_CODEBOX_FAILED_DATAMACHINE
   ? { scenarios: [{ id: 'datamachine-agent', metadata: { error: 'Data Machine child job 456 did not reach a terminal state after drain; current status is pending.' } }] }
+  : (isDatamachineBundle && process.env.FIXTURE_WP_CODEBOX_BUNDLE_RUN
+      ? {
+          agent_runtime: {
+            success: true,
+            result: bundleRun,
+          },
+        }
   : (isDatamachineBundle && !process.env.FIXTURE_WP_CODEBOX_INCOMPLETE_DATAMACHINE
       ? { metrics: { config_present: 1 }, metadata: { engine_data: { store_idea_agent: { issue_number: 123 } } } }
-      : { status: 'completed' });
-const execution = { recipeCommand: 'wp-codebox.agent-sandbox-run', exitCode: 0, stdout: JSON.stringify(bundleRun ? { agent_runtime: { success: true, result: bundleRun } } : { status: 'completed', output: JSON.stringify(agentResult) }) };
+      : { status: 'completed' }));
 fs.writeFileSync(out, JSON.stringify({ argv: process.argv.slice(2), input, datamachineConfig: JSON.parse(process.env.HOMEBOY_DATAMACHINE_AGENT_CONFIG || '{}') }, null, 2));
+const execution = { recipeCommand: 'wp-codebox.agent-sandbox-run', exitCode: 0, stdout: JSON.stringify({ status: 'completed', output: JSON.stringify(agentResult) }) };
+const executions = [execution];
 process.stdout.write(JSON.stringify({
   success: !isDatamachineBundle,
   schema: 'wp-codebox/agent-task-run/v1',
@@ -51,8 +64,8 @@ process.stdout.write(JSON.stringify({
   },
   task_input: input,
   artifacts: input.artifacts_path,
-  run: isDatamachineBundle ? (bundleRun ? { agentResult: { status: 'completed' }, executions: [execution] } : {}) : { agentResult },
-  executions: bundleRun ? [] : [execution],
+  run: isDatamachineBundle && process.env.FIXTURE_WP_CODEBOX_BUNDLE_RUN ? { executions } : (isDatamachineBundle ? {} : { agentResult }),
+  executions: isDatamachineBundle && process.env.FIXTURE_WP_CODEBOX_BUNDLE_RUN ? [] : executions,
 }));
 `);
   fs.chmodSync(binPath, mode);
@@ -246,6 +259,7 @@ try {
       datamachine_bundle: {
         bundle_path: '/workspace/wp-site-generator/bundles/store-idea-agent',
         engine_data_outputs: { issue_number: 'metadata.engine_data.store_idea_agent.issue_number' },
+        dry_run: true,
       },
       provider_plugin_paths: [],
     }),
@@ -263,6 +277,8 @@ try {
   assert.equal(canonicalBundleRunOutput.run.agentResult.scenarios[0].metadata.schema, 'datamachine/agent-bundle-run/v1');
   assert.equal(canonicalBundleRunOutput.run.agentResult.scenarios[0].metadata.job_status, 'completed');
   assert.equal(canonicalBundleRunOutput.run.agentResult.scenarios[0].metadata.engine_data.store_idea_agent.issue_number, 123);
+  assert.equal(canonicalBundleRunOutput.run.agentResult.scenarios[0].metadata.dry_run, true);
+  assert.equal(canonicalBundleRunOutput.run.agentResult.scenarios[0].metrics.workflow_step_count, 1);
 
   const incompleteDatamachineCapturePath = path.join(root, 'capture-incomplete-datamachine.json');
   const incompleteDatamachineResult = spawnSync(process.execPath, [
