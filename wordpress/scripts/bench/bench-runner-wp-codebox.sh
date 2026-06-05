@@ -10,6 +10,7 @@ FAILURE_TRAP_HELPER="${HOMEBOY_RUNTIME_FAILURE_TRAP:-}"
 BENCH_HELPER_SH="${HOMEBOY_RUNTIME_BENCH_HELPER_SH:-${HOME}/.homeboy/runtime/bench-helper.sh}"
 BENCH_RESULTS_ARTIFACTS_HELPER="${SCRIPT_DIR}/bench-results-artifacts.sh"
 BENCH_BROWSER_METRICS_HELPER="${EXTENSION_DIR}/lib/wp-codebox-browser-metrics.js"
+CONDUCTOR_TRANSFER_RIG_COMPILER="${SCRIPT_DIR}/compile-conductor-transfer-rigs.mjs"
 DEPENDENCY_HELPER="${HOMEBOY_WORDPRESS_DEPENDENCY_HELPER:-${SCRIPT_DIR}/../lib/validation-dependencies.sh}"
 BENCH_BROWSER_TARGET_HELPER="${SCRIPT_DIR}/browser-target.sh"
 BENCH_RECIPE_BUILDER="${SCRIPT_DIR}/build-wp-codebox-bench-recipe.mjs"
@@ -610,6 +611,72 @@ homeboy_wp_codebox_compile_scenario_manifests() {
     done < <(printf '%s' "$entries_json" | jq -c '.[]')
 }
 
+homeboy_wp_codebox_compile_conductor_transfer_rigs() {
+    local entries_json
+    entries_json=$(printf '%s' "$settings_json" | jq -c '
+        .conductor_transfer_rigs // .conductor_transfer_specs // .wp_codebox_conductor_transfer_rigs // []
+        | if type == "array" then . elif type == "string" or type == "object" then [.] else [] end
+    ' 2>/dev/null || echo '[]')
+
+    CONDUCTOR_TRANSFER_WORKLOADS_JSON="[]"
+    if ! printf '%s' "$entries_json" | jq -e 'type == "array" and length > 0' >/dev/null 2>&1; then
+        return 0
+    fi
+    if [ ! -f "$CONDUCTOR_TRANSFER_RIG_COMPILER" ]; then
+        echo "Error: Conductor transfer rig compiler not found: ${CONDUCTOR_TRANSFER_RIG_COMPILER}" >&2
+        FAILED_STEP="Conductor transfer rig setup"
+        exit 1
+    fi
+
+    local compiler_input compiler_output compiler_error
+    compiler_input=$(mktemp "${TMPDIR:-/tmp}/homeboy-conductor-transfer-input.XXXXXX")
+    compiler_output=$(mktemp "${TMPDIR:-/tmp}/homeboy-conductor-transfer-output.XXXXXX")
+    compiler_error=$(mktemp "${TMPDIR:-/tmp}/homeboy-conductor-transfer-error.XXXXXX")
+    jq -n \
+        --arg componentPath "$PLUGIN_PATH" \
+        --arg artifactDir "$ARTIFACTS_DIR" \
+        --argjson rigs "$entries_json" \
+        '{componentPath: $componentPath, artifactDir: $artifactDir, rigs: $rigs}' > "$compiler_input"
+
+    if ! node "$CONDUCTOR_TRANSFER_RIG_COMPILER" < "$compiler_input" > "$compiler_output" 2> "$compiler_error"; then
+        mkdir -p "$ARTIFACTS_DIR"
+        cp "$compiler_error" "${ARTIFACTS_DIR}/conductor-transfer-rig-setup-error.txt"
+        jq -n \
+            --arg schema "homeboy/wordpress-bench-diagnostic/v1" \
+            --arg code "conductor-transfer-rig-setup-failed" \
+            --arg message "Conductor transfer rig setup failed before WP Codebox recipe generation." \
+            --arg stderrArtifact "${ARTIFACTS_DIR}/conductor-transfer-rig-setup-error.txt" \
+            '{
+                schema: $schema,
+                diagnostics: [{
+                    code: $code,
+                    severity: "error",
+                    phase: "setup",
+                    message: $message,
+                    artifacts: {stderr: $stderrArtifact}
+                }]
+            }' > "${ARTIFACTS_DIR}/conductor-transfer-rig-diagnostics.json"
+        echo "Conductor transfer rig setup failed before WP Codebox recipe generation." >&2
+        cat "$compiler_error" >&2
+        rm -f "$compiler_input" "$compiler_output" "$compiler_error"
+        FAILED_STEP="Conductor transfer rig setup"
+        exit 1
+    fi
+
+    if ! jq -e '.schema == "homeboy/wordpress-conductor-transfer-rigs/v1" and (.workloads | type == "array")' "$compiler_output" >/dev/null 2>&1; then
+        echo "Error: Conductor transfer rig compiler returned an invalid payload." >&2
+        cat "$compiler_output" >&2
+        rm -f "$compiler_input" "$compiler_output" "$compiler_error"
+        FAILED_STEP="Conductor transfer rig setup"
+        exit 1
+    fi
+
+    mkdir -p "$ARTIFACTS_DIR"
+    cp "$compiler_output" "${ARTIFACTS_DIR}/conductor-transfer-rig-workloads.json"
+    CONDUCTOR_TRANSFER_WORKLOADS_JSON=$(jq -c '.workloads' "$compiler_output")
+    rm -f "$compiler_input" "$compiler_output" "$compiler_error"
+}
+
 homeboy_wp_codebox_compile_scenario_manifests
 homeboy_wp_codebox_compile_bootstrap_files
 homeboy_wp_codebox_compile_bootstrap_steps
@@ -692,6 +759,8 @@ if [ "$settings_json" != "{}" ]; then
     WP_CODEBOX_WORKLOADS_JSON=$(printf '%s' "$settings_json" | jq -c '.wp_codebox_workloads // .playground_workloads // []' 2>/dev/null || echo "[]")
 fi
 WP_CODEBOX_WORKLOADS_JSON=$(jq -nc --argjson declared "$WP_CODEBOX_WORKLOADS_JSON" --argjson scenarios "$SCENARIO_MANIFEST_WORKLOADS_JSON" '$declared + $scenarios')
+homeboy_wp_codebox_compile_conductor_transfer_rigs
+WP_CODEBOX_WORKLOADS_JSON=$(jq -nc --argjson declared "$WP_CODEBOX_WORKLOADS_JSON" --argjson conductor "$CONDUCTOR_TRANSFER_WORKLOADS_JSON" '$declared + $conductor')
 
 MOUNTS_JSON="[]"
 COMPONENT_PLUGIN_FILE="$(homeboy_wp_codebox_find_plugin_file "$PLUGIN_PATH" || true)"

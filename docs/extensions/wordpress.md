@@ -140,6 +140,62 @@ Numeric metrics are aggregated across measured iterations with the same
 mean/p50/p95/p99/min/max suffixes used by PHP bench files. Artifacts and metadata
 are carried into the Homeboy BenchResults scenario envelope.
 
+### Conductor transfer rig workloads
+
+The WordPress extension can compile Conductor transfer rig specs into configured
+WP Codebox workloads without adding Conductor semantics to Homeboy core. Declare
+one or more specs with `conductor_transfer_rigs` in the WordPress extension
+settings:
+
+```json
+{
+  "extensions": {
+    "wordpress": {
+      "settings": {
+        "conductor_transfer_rigs": ["rigs/synthetic-transfer.json"]
+      }
+    }
+  }
+}
+```
+
+Each spec may include `source_manifest`, `target_manifest`, and
+`sandbox_manifest` paths relative to the spec file. Captured-site manifests are
+sanitized and bounded before seeding. The adapter records seeded, skipped,
+blocked, and unavailable items in workload metadata, then emits normal Homeboy
+bench metrics/artifacts including a `transfer_report` artifact ref.
+
+Supported rig step types are the same configured workload surfaces:
+
+- `php` with `file` or `code`
+- `wp-cli` with `command`
+- `ability` with `ability` and optional `input`
+
+For convenience, specs may also provide `inventory_command`,
+`apply_plan_command`, `apply_command`, `review_command`, and
+`transfer_proof_command`; these become ordered `wp-cli` workload steps. Missing
+specs, missing captured manifests, or invalid setup fail before WP Codebox recipe
+generation with `conductor-transfer-rig-diagnostics.json` in the artifacts
+directory.
+
+Captured-site manifests accept simple content, options, and plugin-owned state:
+
+```json
+{
+  "posts": [
+    { "type": "page", "title": "Source page", "slug": "source-page", "content": "..." }
+  ],
+  "options": { "blogname": "Source Site" },
+  "plugin_state": [
+    { "plugin": "example-plugin", "state": { "enabled": true } }
+  ]
+}
+```
+
+Secrets, raw credentials, local paths, and private URLs are rejected from the seed
+payload. Large strings and unsupported values are skipped or marked unavailable
+instead of being written into the WP Codebox workload.
+
 Playground grader workloads may also return a normalized reward payload:
 
 ```json

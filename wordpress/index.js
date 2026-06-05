@@ -12,4 +12,6 @@ module.exports = {
 	...require('./lib/codebox-memory-report'),
 	...require('./lib/agent-terminal-actions'),
 	...require('./lib/wp-codebox-apply-adapter'),
+	...require('./lib/captured-site-seeding'),
+	...require('./lib/conductor-transfer-workload'),
 };

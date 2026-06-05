@@ -19,7 +19,9 @@
     "./wp-codebox-apply-adapter": "./lib/wp-codebox-apply-adapter.js",
     "./wp-codebox-browser-metrics": "./lib/wp-codebox-browser-metrics.js",
     "./audit-wp-codebox-fanout": "./lib/audit-wp-codebox-fanout.js",
-    "./codebox-agent-task-executor": "./lib/codebox-agent-task-executor.js"
+    "./codebox-agent-task-executor": "./lib/codebox-agent-task-executor.js",
+    "./captured-site-seeding": "./lib/captured-site-seeding.js",
+    "./conductor-transfer-workload": "./lib/conductor-transfer-workload.js"
   },
   "scripts": {
     "lint:js": "eslint",
@@ -44,6 +46,8 @@
     "test:wp-codebox-prepared-dependency-cache": "bash tests/prepared-bench-dependency-cache-smoke.sh",
     "test:dependency-plugin-preflight": "bash tests/dependency-plugin-preflight-smoke.sh",
     "test:wp-codebox-bench-bootstrap-steps": "node tests/wp-codebox-bench-bootstrap-steps-smoke.js",
+    "test:captured-site-seeding": "node tests/captured-site-seeding-smoke.js",
+    "test:conductor-transfer-workload": "node tests/conductor-transfer-workload-smoke.js",
     "test:wp-codebox-bench-prepare-steps": "node tests/wp-codebox-bench-prepare-steps-smoke.js",
     "test:wp-codebox-phpunit-recipe-builder": "node tests/wp-codebox-phpunit-recipe-builder-smoke.js",
     "test:build-package-artifacts": "bash scripts/build/build-package-artifacts-smoke.sh",
