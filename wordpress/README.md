@@ -382,6 +382,61 @@ custom objects, returns page profiles plus stable `metrics` and `metadata.summar
 and composes with the Node.js browser benchmark helper by using its provided
 `page` and `mark` arguments inside the benchmark action.
 
+### Studio Web preview startup benchmark
+
+Studio Web fast-path proof runs can use the exported preview startup helper to
+capture cold and warm startup metrics without changing Studio Web or WP Codebox
+behavior. The helper owns the reusable evidence shape; rigs still own lifecycle,
+refs, cache priming, and Playwright launch.
+
+```js
+const {
+	runStudioWebPreviewStartupBenchmark,
+	formatStudioWebPreviewStartupMarkdownReport,
+	compareStudioWebPreviewStartupBenchmarks,
+	formatStudioWebPreviewStartupComparisonMarkdownReport,
+} = require('homeboy-extension-wordpress/studio-web-preview-startup-benchmark');
+
+const cold = await runStudioWebPreviewStartupBenchmark({
+	page,
+	url: `${status.siteUrl}/import`,
+	label: 'baseline cold',
+	ref: 'main',
+	cacheState: 'cold',
+});
+
+const warm = await runStudioWebPreviewStartupBenchmark({
+	page,
+	url: `${status.siteUrl}/import`,
+	label: 'candidate warm',
+	ref: 'fix/preview-fast-path',
+	cacheState: 'warm',
+});
+
+console.log(JSON.stringify(warm, null, 2));
+console.log(formatStudioWebPreviewStartupMarkdownReport(warm));
+
+const comparison = compareStudioWebPreviewStartupBenchmarks({ baseline: cold, candidate: warm });
+console.log(formatStudioWebPreviewStartupComparisonMarkdownReport(comparison));
+```
+
+The JSON summary schema is `homeboy/studio-web-preview-startup-benchmark/v1`.
+It records host page ready, targets fetch, preview-session ready/skipped, REST
+count, payload bytes, blueprint step count, Playground client loaded, blueprint
+complete, visible iframe ready, editable preview ready, and prepared snapshot
+hit/miss when the Studio Web target payload exposes that signal.
+
+For artifact-only workflows, the same helper can normalize a raw capture or
+compare two saved summaries:
+
+```bash
+node wordpress/lib/studio-web-preview-startup-benchmark.js --input run.json --markdown
+node wordpress/lib/studio-web-preview-startup-benchmark.js \
+	--baseline baseline.json \
+	--candidate candidate.json \
+	--markdown
+```
+
 This is intentionally extension-level infrastructure, not Homeboy core. Core
 keeps orchestration, run persistence, baselines, and reports; WordPress owns
 WP-specific browser readiness, REST route classification, request profiling,
