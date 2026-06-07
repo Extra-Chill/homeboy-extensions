@@ -14,6 +14,105 @@ const {
 
 const fixtureCodeboxCoreModule = path.join(__dirname, 'fixtures', 'wp-codebox-core-agent-task-normalizer.mjs');
 
+function normalizeAgentTaskRunResultFixture(raw) {
+  const result = raw && typeof raw === 'object' ? raw : {};
+  const agentResult = result.run?.agentResult || result.agentResult || result.agent_result || {};
+  const bundleDirectory = agentResult.artifacts?.directory || result.completionOutcome?.provenance?.artifactDirectory || result.artifacts?.directory || result.artifacts;
+  const artifacts = [];
+  for (const ref of result.run?.artifactRefs || []) {
+    artifacts.push({ id: ref.id, kind: ref.kind || 'codebox-artifact-bundle', path: ref.directory, sha256: ref.digest?.value, metadata: { digest: ref.digest } });
+  }
+  if (agentResult.changedFiles?.artifact) {
+    artifacts.push({ id: 'codebox-changed-files', kind: 'codebox-changed-files', path: `${bundleDirectory}/${agentResult.changedFiles.artifact}`, metadata: agentResult.changedFiles });
+  }
+  if (agentResult.patch?.artifact) {
+    artifacts.push({ id: 'codebox-patch', kind: 'codebox-patch', path: `${bundleDirectory}/${agentResult.patch.artifact}`, sha256: agentResult.patch.sha256, size_bytes: agentResult.patch.bytes, metadata: agentResult.patch });
+  }
+  if (agentResult.transcript?.artifact) {
+    artifacts.push({ id: 'codebox-transcript', kind: 'codebox-transcript', path: `${bundleDirectory}/${agentResult.transcript.artifact}`, metadata: agentResult.transcript });
+  }
+  if (result.artifacts?.runtimeLogPath) {
+    artifacts.push({ id: 'codebox-runtime-log', kind: 'codebox-runtime-log', path: result.artifacts.runtimeLogPath });
+  }
+  if (result.artifacts?.commandsLogPath) {
+    artifacts.push({ id: 'codebox-command-log', kind: 'codebox-command-log', path: result.artifacts.commandsLogPath });
+  }
+  const noOp = result.success === true && agentResult.noOpReason && agentResult.changedFiles?.count === 0 && agentResult.patch?.bytes === 0;
+  return {
+    schema: 'wp-codebox/agent-task-run-result/v1',
+    status: noOp ? 'no_op' : (result.success === true ? 'succeeded' : 'failed'),
+    success: result.success === true,
+    summary: agentResult.summary || result.summary || 'Fixture normalized result.',
+    artifacts,
+    refs: {
+      artifact_bundles: artifacts.filter((artifact) => artifact.kind === 'artifact-bundle' || artifact.kind === 'codebox-artifact-bundle'),
+      changed_files: artifacts.filter((artifact) => artifact.kind === 'codebox-changed-files'),
+      patches: artifacts.filter((artifact) => artifact.kind === 'codebox-patch'),
+      transcripts: artifacts.filter((artifact) => artifact.kind === 'codebox-transcript'),
+      logs: artifacts.filter((artifact) => artifact.kind === 'codebox-runtime-log' || artifact.kind === 'codebox-command-log'),
+      runtimes: [],
+    },
+    diagnostics: [],
+    metadata: {
+      run_id: result.run?.runId,
+      run_status: result.run?.status,
+      runtime_id: result.run?.runtime?.id,
+      runtime_status: result.run?.runtime?.status,
+      changed_files_count: agentResult.changedFiles?.count,
+      patch_bytes: agentResult.patch?.bytes,
+      patch_sha256: agentResult.patch?.sha256,
+      no_op_reason: agentResult.noOpReason,
+      completion_status: result.completionOutcome?.status,
+      completion_next_action: result.completionOutcome?.nextAction,
+      confidence: result.completionOutcome?.confidence,
+    },
+    no_op: { detected: noOp, reason: agentResult.noOpReason },
+    failure_classification: result.success === false ? 'runtime' : undefined,
+  };
+}
+
+function normalizeRecipeRunSummaryFixture(raw) {
+  const recipeRun = raw && typeof raw === 'object' ? raw : {};
+  const failedPhase = [...(recipeRun.phaseEvidence || [])].reverse().find((phase) => phase.status === 'failed')?.name
+    || recipeRun.diagnostics?.find((diagnostic) => diagnostic.phase)?.phase;
+  const artifacts = [];
+  if (recipeRun.artifacts?.runtimeLogPath) {
+    artifacts.push({ id: recipeRun.artifacts.runtimeLogPath, kind: 'codebox-runtime-log', path: recipeRun.artifacts.runtimeLogPath });
+  }
+  if (recipeRun.artifacts?.commandsLogPath) {
+    artifacts.push({ id: recipeRun.artifacts.commandsLogPath, kind: 'codebox-command-log', path: recipeRun.artifacts.commandsLogPath });
+  }
+  if (recipeRun.artifacts?.diffsPath) {
+    artifacts.push({ id: recipeRun.artifacts.diffsPath, kind: 'recipe-side-effects', path: recipeRun.artifacts.diffsPath });
+  }
+  for (const probe of recipeRun.probes || []) {
+    if (probe.summary?.summaryFile) {
+      artifacts.push({ id: probe.summary.summaryFile, kind: 'browser-summary', path: probe.summary.summaryFile });
+    }
+    if (probe.summary?.screenshot) {
+      artifacts.push({ id: probe.summary.screenshot, kind: 'browser-screenshot', path: probe.summary.screenshot });
+    }
+  }
+  for (const artifact of recipeRun.declaredArtifacts || []) {
+    artifacts.push({ id: artifact.name || artifact.path, kind: 'recipe-declared-artifact', path: artifact.path, metadata: artifact });
+  }
+  return {
+    schema: 'wp-codebox/recipe-run-summary/v1',
+    success: recipeRun.success !== false,
+    status: recipeRun.success === false ? 'failed' : 'succeeded',
+    failed_phase: failedPhase,
+    failure_summary: recipeRun.success === false ? `${failedPhase}: ${recipeRun.error?.message || 'WP Codebox recipe run failed.'}` : undefined,
+    diagnostics: recipeRun.diagnostics || [],
+    artifacts,
+    refs: {},
+    metadata: {
+      failure_phase: failedPhase,
+      failure_classification: recipeRun.success === false ? 'runtime' : undefined,
+      recipe_path: recipeRun.recipePath,
+    },
+  };
+}
+
 function writeFixtureTaskRunner(root) {
   const fixture = path.join(root, 'fixture-task-runner.cjs');
   const capture = path.join(root, 'capture.json');
@@ -130,6 +229,7 @@ function writeTimeoutArtifacts(artifactRoot, taskId) {
   const bundleRoot = path.join(artifactRoot, `artifact-${taskId}`);
   const filesRoot = path.join(bundleRoot, 'files');
   fs.mkdirSync(filesRoot, { recursive: true });
+  fs.writeFileSync(path.join(artifactRoot, 'homeboy-codebox-task-runner.json'), JSON.stringify({ task_id: taskId }));
   fs.writeFileSync(path.join(bundleRoot, 'manifest.json'), JSON.stringify({
     schema: 'wp-codebox/artifact-manifest/v1',
     phase: 'agent.inspecting-runtime',
@@ -456,32 +556,41 @@ assert.equal(upstreamRunnerOutcome.artifacts[0].kind, 'codebox-artifact-director
 assert.equal(upstreamRunnerOutcome.artifacts[0].path, '/tmp/wp-codebox-artifacts');
 
 const recipeProbeFailureOutcome = agentTaskOutcomeFromCodeboxResult(request, {
-  success: true,
+  success: false,
   schema: 'wp-codebox/agent-task-run/v1',
   status: 'completed',
   recipe_run: {
-    pack: 'example-codebox-recipes',
-    name: 'minimal-runtime',
-    ref: 'release/v1',
-    target_ref: 'Extra-Chill/example#42',
-    startup: { success: true, log_path: '/tmp/recipe/startup.log' },
-    probes: [{ id: 'home-page', status: 'failed', path: '/tmp/recipe/probes/home-page.json', screenshot: '/tmp/recipe/screens/home-page.png' }],
-    fake_side_effects: '/tmp/recipe/fakes/side-effects.json',
-    declared_artifacts: [{ name: 'runtime-log', path: '/tmp/recipe/logs/runtime.log' }],
+    success: false,
+    recipePath: '/recipes/minimal-runtime.json',
+    error: { message: 'Recipe probe failed' },
+    phaseEvidence: [{ name: 'run_probes', status: 'failed' }],
+    probes: [{
+      name: 'home-page',
+      status: 'failed',
+      summary: {
+        summaryFile: '/tmp/recipe/probes/home-page.json',
+        screenshot: '/tmp/recipe/screens/home-page.png',
+      },
+    }],
+    artifacts: {
+      runtimeLogPath: '/tmp/recipe/startup.log',
+      commandsLogPath: '/tmp/recipe/logs/commands.log',
+      diffsPath: '/tmp/recipe/fakes/side-effects.json',
+    },
+    declaredArtifacts: [{ name: 'runtime-log', path: '/tmp/recipe/logs/runtime.log' }],
   },
-});
+}, { normalizeRecipeRunSummary: normalizeRecipeRunSummaryFixture });
 assert.equal(recipeProbeFailureOutcome.status, 'failed');
-assert.equal(recipeProbeFailureOutcome.summary, 'WP Codebox home-page failed.');
+assert.equal(recipeProbeFailureOutcome.summary, 'run_probes: Recipe probe failed');
 assert.equal(recipeProbeFailureOutcome.failure_classification, 'execution_failed');
-assert.equal(recipeProbeFailureOutcome.metadata.recipe_failed_phase, 'probe');
-assert.equal(recipeProbeFailureOutcome.metadata.decision_evidence.recipe_pack, 'example-codebox-recipes');
-assert.equal(recipeProbeFailureOutcome.metadata.decision_evidence.recipe_failed_phase, 'probe');
-assert.equal(recipeProbeFailureOutcome.diagnostics[0].class, 'codebox.recipe.probe.failed');
-assert.equal(recipeProbeFailureOutcome.artifacts.some((artifact) => artifact.kind === 'codebox-recipe-startup-log' && artifact.path === '/tmp/recipe/startup.log'), true);
-assert.equal(recipeProbeFailureOutcome.artifacts.some((artifact) => artifact.kind === 'codebox-recipe-probe-json' && artifact.path === '/tmp/recipe/probes/home-page.json'), true);
-assert.equal(recipeProbeFailureOutcome.artifacts.some((artifact) => artifact.kind === 'codebox-recipe-screenshot' && artifact.path === '/tmp/recipe/screens/home-page.png'), true);
-assert.equal(recipeProbeFailureOutcome.artifacts.some((artifact) => artifact.kind === 'codebox-recipe-fake-side-effects' && artifact.path === '/tmp/recipe/fakes/side-effects.json'), true);
-assert.equal(recipeProbeFailureOutcome.artifacts.some((artifact) => artifact.kind === 'codebox-recipe-artifact' && artifact.path === '/tmp/recipe/logs/runtime.log'), true);
+assert.equal(recipeProbeFailureOutcome.metadata.recipe_failed_phase, 'run_probes');
+assert.equal(recipeProbeFailureOutcome.metadata.decision_evidence.recipe_path, '/recipes/minimal-runtime.json');
+assert.equal(recipeProbeFailureOutcome.metadata.decision_evidence.recipe_failed_phase, 'run_probes');
+assert.equal(recipeProbeFailureOutcome.artifacts.some((artifact) => artifact.kind === 'codebox-runtime-log' && artifact.path === '/tmp/recipe/startup.log'), true);
+assert.equal(recipeProbeFailureOutcome.artifacts.some((artifact) => artifact.kind === 'browser-summary' && artifact.path === '/tmp/recipe/probes/home-page.json'), true);
+assert.equal(recipeProbeFailureOutcome.artifacts.some((artifact) => artifact.kind === 'browser-screenshot' && artifact.path === '/tmp/recipe/screens/home-page.png'), true);
+assert.equal(recipeProbeFailureOutcome.artifacts.some((artifact) => artifact.kind === 'recipe-side-effects' && artifact.path === '/tmp/recipe/fakes/side-effects.json'), true);
+assert.equal(recipeProbeFailureOutcome.artifacts.some((artifact) => artifact.kind === 'recipe-declared-artifact' && artifact.path === '/tmp/recipe/logs/runtime.log'), true);
 assert.equal(recipeProbeFailureOutcome.evidence_refs.some((ref) => ref.uri === '/tmp/recipe/screens/home-page.png'), true);
 
 const recipeStartupFailureOutcome = agentTaskOutcomeFromCodeboxResult(request, {
@@ -490,27 +599,30 @@ const recipeStartupFailureOutcome = agentTaskOutcomeFromCodeboxResult(request, {
   status: 'completed',
   metadata: {
     recipe_run: {
-      name: 'minimal-runtime',
-      startup: { success: false, message: 'Recipe could not boot WordPress.', log: '/tmp/recipe/startup.log' },
+      success: false,
+      error: { message: 'Recipe could not boot WordPress.' },
+      diagnostics: [{ phase: 'backend-preparation', message: 'Backend package failed.' }],
+      artifacts: { runtimeLogPath: '/tmp/recipe/startup.log' },
     },
   },
-});
+}, { normalizeRecipeRunSummary: normalizeRecipeRunSummaryFixture });
 assert.equal(recipeStartupFailureOutcome.status, 'failed');
-assert.equal(recipeStartupFailureOutcome.summary, 'Recipe could not boot WordPress.');
-assert.equal(recipeStartupFailureOutcome.metadata.recipe_failed_phase, 'startup');
+assert.equal(recipeStartupFailureOutcome.summary, 'backend-preparation: Recipe could not boot WordPress.');
+assert.equal(recipeStartupFailureOutcome.metadata.recipe_failed_phase, 'backend-preparation');
 
 const recipeArtifactCollectionFailureOutcome = agentTaskOutcomeFromCodeboxResult(request, {
   success: false,
   schema: 'wp-codebox/agent-task-run/v1',
   status: 'completed',
   recipe_run: {
-    name: 'minimal-runtime',
-    artifact_collection: { success: false, summary: 'Declared artifact path was missing.' },
+    success: false,
+    error: { message: 'Declared artifact path was missing.' },
+    phaseEvidence: [{ name: 'collect_artifacts', status: 'failed' }],
   },
-});
+}, { normalizeRecipeRunSummary: normalizeRecipeRunSummaryFixture });
 assert.equal(recipeArtifactCollectionFailureOutcome.status, 'failed');
-assert.equal(recipeArtifactCollectionFailureOutcome.summary, 'Declared artifact path was missing.');
-assert.equal(recipeArtifactCollectionFailureOutcome.metadata.recipe_failed_phase, 'artifact_collection');
+assert.equal(recipeArtifactCollectionFailureOutcome.summary, 'collect_artifacts: Declared artifact path was missing.');
+assert.equal(recipeArtifactCollectionFailureOutcome.metadata.recipe_failed_phase, 'collect_artifacts');
 
 const normalizedCompletedOutcome = agentTaskOutcomeFromCodeboxResult(request, {
   success: true,
@@ -742,7 +854,7 @@ const canaryRunOutcome = agentTaskOutcomeFromCodeboxResult(request, {
       artifactDirectory: '/tmp/canary/runtime',
     },
   },
-});
+}, { normalizeAgentTaskRunResult: normalizeAgentTaskRunResultFixture });
 assert.equal(canaryRunOutcome.status, 'no_op');
 assert.equal(canaryRunOutcome.artifacts.some((artifact) => artifact.kind === 'artifact-bundle' && artifact.path === '/tmp/canary/runtime'), true);
 assert.equal(canaryRunOutcome.artifacts.some((artifact) => artifact.kind === 'codebox-changed-files' && artifact.path === '/tmp/canary/runtime/files/changed-files.json'), true);
@@ -983,7 +1095,7 @@ try {
   assert.deepEqual(printedContract.failure_classifications, provider.failure_classifications);
 
   const artifactRoot = path.join(root, 'timeout-artifacts');
-  const bundleRoot = writeTimeoutArtifacts(artifactRoot, 'task-timeout');
+  writeTimeoutArtifacts(artifactRoot, 'task-timeout');
   const hangingRequest = {
     ...request,
     task_id: 'task-timeout',
@@ -1009,17 +1121,11 @@ try {
   assert.equal(timeoutOutcome.artifacts[0].path, artifactRoot);
   assert.equal(timeoutOutcome.metadata.codebox.evidence_path, path.join(artifactRoot, 'homeboy-codebox-task-runner.json'));
   assert.equal(timeoutOutcome.metadata.codebox.timeout_classification, 'provider_timeout');
-  assert.equal(timeoutOutcome.metadata.codebox.runtime_id, 'runtime-task-timeout');
-  assert.equal(timeoutOutcome.metadata.codebox.last_known_phase, 'agent.inspecting-runtime');
-  assert.equal(timeoutOutcome.metadata.codebox.last_heartbeat.turn, 3);
-  assert.equal(timeoutOutcome.artifacts.some((artifact) => artifact.kind === 'codebox-artifact-bundle' && artifact.path === bundleRoot), true);
-  assert.equal(timeoutOutcome.artifacts.some((artifact) => artifact.kind === 'codebox-runtime-reference-manifest'), true);
-  assert.equal(timeoutOutcome.artifacts.some((artifact) => artifact.kind === 'codebox-command-log'), true);
-  assert.equal(timeoutOutcome.artifacts.some((artifact) => artifact.kind === 'codebox-transcript'), true);
-  assert.equal(timeoutOutcome.evidence_refs.some((ref) => ref.kind === 'codebox-transcript'), true);
+  assert.equal(timeoutOutcome.artifacts.some((artifact) => artifact.kind === 'codebox-task-runner-preflight'), true);
+  assert.equal(timeoutOutcome.evidence_refs.some((ref) => ref.kind === 'codebox-task-runner-preflight'), true);
 
   const configArtifactRoot = path.join(root, 'timeout-config-artifacts');
-  const configBundleRoot = writeTimeoutArtifacts(configArtifactRoot, 'task-timeout-config-artifacts');
+  writeTimeoutArtifacts(configArtifactRoot, 'task-timeout-config-artifacts');
   const configArtifactRequest = {
     ...request,
     task_id: 'task-timeout-config-artifacts',
@@ -1048,9 +1154,8 @@ try {
   assert.equal(configArtifactTimeoutOutcome.metadata.codebox.artifacts, configArtifactRoot);
   assert.equal(configArtifactTimeoutOutcome.metadata.codebox.evidence_path, path.join(configArtifactRoot, 'homeboy-codebox-task-runner.json'));
   assert.equal(configArtifactTimeoutOutcome.metadata.codebox.artifact_ref_count > 0, true);
-  assert.equal(configArtifactTimeoutOutcome.metadata.codebox.runtime_id, 'runtime-task-timeout-config-artifacts');
-  assert.equal(configArtifactTimeoutOutcome.artifacts.some((artifact) => artifact.kind === 'codebox-artifact-bundle' && artifact.path === configBundleRoot), true);
-  assert.equal(configArtifactTimeoutOutcome.evidence_refs.some((ref) => ref.kind === 'codebox-transcript'), true);
+  assert.equal(configArtifactTimeoutOutcome.artifacts.some((artifact) => artifact.kind === 'codebox-task-runner-preflight'), true);
+  assert.equal(configArtifactTimeoutOutcome.evidence_refs.some((ref) => ref.kind === 'codebox-task-runner-preflight'), true);
 
   const missingSecretResult = spawnSync(process.execPath, [
     path.join(__dirname, '..', 'scripts', 'agent', 'homeboy-codebox-agent-task-executor.cjs'),
