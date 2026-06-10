@@ -346,6 +346,8 @@ function attachFailureEvidence(payload, evidence) {
 const LEGACY_RUNTIME_PREFIX = ['data', 'machine'].join('_');
 const WP_CODEBOX_RUNTIME_PATH_KEY = `${LEGACY_RUNTIME_PREFIX}_path`;
 const WP_CODEBOX_RUNTIME_TOOLS_PATH_KEY = `${LEGACY_RUNTIME_PREFIX}_code_path`;
+const STATIC_SITE_IMPORT_VALIDATION_KIND = 'static_site_import_validation_adapter';
+const STATIC_SITE_IMPORT_ABILITY = 'static-site-importer/import-website-artifact';
 const LEGACY_BUNDLE_KEYS = [
   `${LEGACY_RUNTIME_PREFIX}_bundle`,
   `${LEGACY_RUNTIME_PREFIX}Bundle`,
@@ -605,6 +607,23 @@ function sandboxToolPolicy(input, allowedTools) {
     return explicit;
   }
 
+  if (isStaticSiteImportValidationAdapter(input)) {
+    return {
+      schema: 'wp-codebox/sandbox-tool-policy/v1',
+      version: 1,
+      tools: [{
+        id: STATIC_SITE_IMPORT_ABILITY,
+        runtime_tool_id: STATIC_SITE_IMPORT_ABILITY.replace(/[^A-Za-z0-9_]+/g, '_'),
+        execution_location: 'sandbox',
+        transport_visibility: 'sandbox',
+        allowed: true,
+        runtime: { environment: 'runtime_local', capability_scope: 'runtime_local' },
+        metadata: { source: STATIC_SITE_IMPORT_VALIDATION_KIND },
+      }],
+      metadata: { source: 'homeboy-wp-codebox-task-runner' },
+    };
+  }
+
   const tools = Array.isArray(allowedTools) ? allowedTools.filter((tool) => typeof tool === 'string' && tool.trim() !== '') : [];
   return {
     schema: 'wp-codebox/sandbox-tool-policy/v1',
@@ -639,14 +658,76 @@ function isAgentBundle(input) {
   return Boolean(input.agent_bundle && Object.keys(input.agent_bundle).length > 0);
 }
 
+function isStaticSiteImportValidationAdapter(input) {
+  return input.parent_request?.execution_kind === STATIC_SITE_IMPORT_VALIDATION_KIND
+    || input.parent_request?.executor?.config?.execution_kind === STATIC_SITE_IMPORT_VALIDATION_KIND;
+}
+
 function runtimeTask(input) {
   if (plainObject(input.runtime_task)) {
     return input.runtime_task;
+  }
+  if (isStaticSiteImportValidationAdapter(input)) {
+    return staticSiteImportValidationRuntimeTask(input);
   }
   if (isAgentBundle(input)) {
     return agentBundleRuntimeTask(input, input.agent_bundle || {});
   }
   return undefined;
+}
+
+function staticSiteImportValidationRuntimeTask(input) {
+  const config = input.parent_request?.executor?.config || input.parent_request || {};
+  const candidateArtifact = input.parent_request?.candidate_artifact || config.candidate_artifact || config.candidateArtifact || {};
+  const artifact = staticSiteCandidatePayload(candidateArtifact);
+  const fileRefs = typedArtifactFileRefs(candidateArtifact);
+  return {
+    ability: STATIC_SITE_IMPORT_ABILITY,
+    input: Object.fromEntries(Object.entries({
+      artifact,
+      slug: staticSiteCandidateString(candidateArtifact, 'slug') || config.slug || input.parent_request?.orchestrator?.agent_task_id || input.sandbox_session_id,
+      name: staticSiteCandidateString(candidateArtifact, 'name') || config.name || input.parent_request?.goal || input.sandbox_session_id,
+      activate: config.activate === true,
+      overwrite: config.overwrite !== false,
+      keep_source: config.keep_source !== false,
+      fail_on_quality: config.fail_on_quality === true,
+      max_fallbacks: config.max_fallbacks,
+      allow_missing_woocommerce: config.allow_missing_woocommerce === true,
+      report: config.report || (input.artifacts_path ? path.join(input.artifacts_path, 'import-validation-report.json') : ''),
+      asset_policy: config.asset_policy || '',
+      asset_materialization_policy: config.asset_materialization_policy || '',
+      asset_map: config.asset_map,
+      compiler_options: config.compiler_options,
+      source_metadata: {
+        adapter: STATIC_SITE_IMPORT_VALIDATION_KIND,
+        task_id: input.parent_request?.orchestrator?.agent_task_id || input.sandbox_session_id,
+        candidate_artifact: candidateArtifact,
+        candidate_file_refs: fileRefs,
+      },
+    }).filter(([, value]) => value !== undefined && value !== '' && !(Array.isArray(value) && value.length === 0))),
+  };
+}
+
+function staticSiteCandidatePayload(candidateArtifact) {
+  if (!plainObject(candidateArtifact)) {
+    return {};
+  }
+  if (plainObject(candidateArtifact.payload)) {
+    return candidateArtifact.payload;
+  }
+  if (plainObject(candidateArtifact.data)) {
+    return candidateArtifact.data;
+  }
+  if (plainObject(candidateArtifact.artifact)) {
+    return candidateArtifact.artifact;
+  }
+  return candidateArtifact;
+}
+
+function staticSiteCandidateString(candidateArtifact, key) {
+  const payload = staticSiteCandidatePayload(candidateArtifact);
+  const value = payload?.[key] || candidateArtifact?.[key];
+  return typeof value === 'string' ? value : '';
 }
 
 function agentBundleConfig(input, bundleConfig = {}) {
@@ -688,6 +769,10 @@ function resultExecutions(result) {
 }
 
 function normalizeAgentTaskRun(input, result) {
+  if (isStaticSiteImportValidationAdapter(input)) {
+    return normalizeStaticSiteImportValidationRun(input, result);
+  }
+
   if (!isAgentBundle(input)) {
     return result;
   }
@@ -730,6 +815,144 @@ function normalizeAgentTaskRun(input, result) {
       },
     },
   };
+}
+
+function normalizeStaticSiteImportValidationRun(input, result) {
+  const abilityResult = staticSiteImportAbilityResult(result);
+  const typedArtifact = importValidationTypedArtifact(input, abilityResult, result);
+  const success = result.success !== false && result.status !== 'failed' && abilityResult.success !== false;
+  const diagnostics = [
+    ...(Array.isArray(result.diagnostics) ? result.diagnostics : []),
+    ...(abilityResult.success === false ? [{
+      class: 'static_site_import_validation.import_failed',
+      message: abilityResult.error?.message || 'Static Site Importer website artifact import failed.',
+      data: abilityResult.error || {},
+    }] : []),
+  ];
+  return {
+    ...result,
+    success,
+    status: success ? 'completed' : 'failed',
+    summary: success ? 'Static Site Importer validation completed.' : (abilityResult.error?.message || result.summary || 'Static Site Importer validation failed.'),
+    session: result.session ? {
+      ...result.session,
+      status: success ? 'completed' : 'failed',
+    } : result.session,
+    outputs: {
+      ...(plainObject(result.outputs) ? result.outputs : {}),
+      import_validation_result: typedArtifact,
+      typed_artifacts: {
+        ...(plainObject(result.outputs?.typed_artifacts) ? result.outputs.typed_artifacts : {}),
+        import_validation_result: typedArtifact,
+      },
+    },
+    diagnostics,
+    metadata: {
+      ...(plainObject(result.metadata) ? result.metadata : {}),
+      artifacts: {
+        ...(plainObject(result.metadata?.artifacts) ? result.metadata.artifacts : {}),
+        ImportValidationResult: typedArtifact,
+      },
+      static_site_import_validation: {
+        ability: STATIC_SITE_IMPORT_ABILITY,
+        result: abilityResult,
+      },
+    },
+  };
+}
+
+function staticSiteImportAbilityResult(result) {
+  const candidates = [
+    result.outputs?.ability_result,
+    result.outputs?.import_result,
+    result.outputs?.result,
+    result.run?.agentResult,
+    result.run?.agent_result,
+    result.agentResult,
+    result.agent_result,
+    result.metadata?.runtime_task?.result,
+    result.metadata?.agent_runtime?.result,
+    result.raw?.agent_runtime?.result,
+  ];
+  for (const candidate of candidates) {
+    if (plainObject(candidate)) {
+      if (plainObject(candidate.result) && (candidate.success !== undefined || candidate.result.import_report_summary)) {
+        return candidate;
+      }
+      if (candidate.import_report_summary || candidate.error || candidate.success !== undefined) {
+        return candidate;
+      }
+    }
+  }
+  return plainObject(result.outputs?.import_validation_result?.payload) ? result.outputs.import_validation_result.payload : {};
+}
+
+function importValidationTypedArtifact(input, abilityResult, result) {
+  const importResult = plainObject(abilityResult.result) ? abilityResult.result : abilityResult;
+  const summary = importResult.import_report_summary || abilityResult.import_report_summary || {};
+  const payload = {
+    schema: 'wp-site-generator/ImportValidationResult/v1',
+    type: 'ImportValidationResult',
+    success: abilityResult.success !== false && result.success !== false,
+    status: summary.status || (abilityResult.success === false ? 'failed' : 'completed'),
+    quality_pass: summary.quality_pass,
+    fallback_count: summary.fallback_count,
+    core_html_block_count: summary.core_html_block_count,
+    freeform_block_count: summary.freeform_block_count,
+    invalid_block_count: summary.invalid_block_count,
+    content_loss_count: summary.content_loss_count,
+    diagnostic_count: summary.diagnostic_count,
+    failure_reasons: Array.isArray(summary.failure_reasons) ? summary.failure_reasons : [],
+    diagnostics: Array.isArray(summary.diagnostics) ? summary.diagnostics : [],
+    import_report_summary: summary,
+    import_result: importResult,
+    candidate_artifact: input.parent_request?.candidate_artifact || {},
+  };
+  const fileRefs = importValidationFileRefs(importResult, abilityResult, result);
+  return Object.fromEntries(Object.entries({
+    schema: 'homeboy/agent-task-typed-artifact/v1',
+    name: 'import_validation_result',
+    type: 'ImportValidationResult',
+    artifact_schema: 'wp-site-generator/ImportValidationResult/v1',
+    payload,
+    provenance: {
+      adapter: STATIC_SITE_IMPORT_VALIDATION_KIND,
+      ability: STATIC_SITE_IMPORT_ABILITY,
+      task_id: input.parent_request?.orchestrator?.agent_task_id || input.sandbox_session_id,
+    },
+    file_refs: fileRefs,
+    metadata: {
+      artifact_outputs: input.parent_request?.artifact_outputs || {},
+      engine_data_outputs: input.parent_request?.engine_data_outputs || {},
+    },
+  }).filter(([, value]) => value !== undefined && value !== '' && !(Array.isArray(value) && value.length === 0)));
+}
+
+function importValidationFileRefs(importResult, abilityResult, result) {
+  const refs = [];
+  const addPath = (filePath, kind, label) => {
+    if (typeof filePath === 'string' && filePath !== '') {
+      refs.push({ path: filePath, kind, label, mime: 'application/json' });
+    }
+  };
+  addPath(importResult.external_report_path, 'ssi-import-report', 'Static Site Importer external import report');
+  addPath(importResult.report_path, 'ssi-import-report', 'Static Site Importer theme import report');
+  for (const ref of [...(Array.isArray(abilityResult.file_refs) ? abilityResult.file_refs : []), ...(Array.isArray(result.file_refs) ? result.file_refs : [])]) {
+    refs.push(typeof ref === 'string' ? { path: ref } : ref);
+  }
+  for (const artifact of [...(Array.isArray(abilityResult.artifacts) ? abilityResult.artifacts : []), ...(Array.isArray(result.artifacts) ? result.artifacts : [])]) {
+    if (plainObject(artifact) && (artifact.path || artifact.url)) {
+      refs.push({
+        id: artifact.id,
+        path: artifact.path,
+        url: artifact.url,
+        kind: artifact.kind || artifact.type || 'ssi-artifact',
+        label: artifact.label || artifact.name,
+        mime: artifact.mime,
+      });
+    }
+  }
+  return refs.filter((ref, index) => ref && (ref.path || ref.url) && refs.findIndex((candidate) => (candidate.path || candidate.url) === (ref.path || ref.url)) === index);
 }
 
 function parseJsonObject(value) {

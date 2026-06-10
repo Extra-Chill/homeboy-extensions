@@ -223,6 +223,7 @@ assert.equal(provider.capabilities.includes('agent_bundle_execution'), true);
 assert.equal(provider.capabilities.includes('typed_bundle_outputs'), true);
 assert.equal(provider.capabilities.includes('external_recipe_packs'), true);
 assert.equal(provider.capabilities.includes('recipe_probe_artifacts'), true);
+assert.equal(provider.capabilities.includes('static_site_import_validation'), true);
 assert.deepEqual(provider.runtime_gap_trackers, []);
 
 const codeboxRequest = codeboxTaskRequestFromAgentTaskRequest(request);
@@ -713,6 +714,58 @@ const agentBundleRequestWithExplicitMount = codeboxTaskRequestFromAgentTaskReque
 assert.equal(agentBundleRequestWithExplicitMount.mounts.length, 1);
 assert.equal(agentBundleRequestWithExplicitMount.mounts[0].source, '/custom/static-site-agent');
 
+const staticValidationRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'homeboy-static-import-validation-'));
+try {
+  const staticSiteImporterPath = path.join(staticValidationRoot, 'static-site-importer');
+  const blockArtifactCompilerPath = path.join(staticValidationRoot, 'block-artifact-compiler');
+  const blockFormatBridgePath = path.join(staticValidationRoot, 'block-format-bridge');
+  for (const directory of [staticSiteImporterPath, blockArtifactCompilerPath, blockFormatBridgePath]) {
+    fs.mkdirSync(directory, { recursive: true });
+  }
+  const candidateArtifact = {
+    schema: 'homeboy/agent-task-typed-artifact/v1',
+    name: 'static_site_candidate',
+    type: 'StaticSiteCandidate',
+    artifact_schema: 'wp-site-generator/StaticSiteCandidate/v1',
+    payload: { slug: 'cedar-studio', name: 'Cedar Studio', website: { pages: [] } },
+    file_refs: [{ path: '/tmp/static-site-candidate.json', mime: 'application/json' }],
+  };
+  const staticValidationRequest = codeboxTaskRequestFromAgentTaskRequest({
+    ...request,
+    task_id: 'validate-static-site-candidate-123',
+    executor: {
+      backend: 'codebox',
+      config: {
+        execution_kind: 'static_site_import_validation_adapter',
+        candidate_artifact: candidateArtifact,
+        artifact_outputs: {
+          import_validation_result: { schema: 'wp-site-generator/ImportValidationResult/v1' },
+        },
+        engine_data_outputs: {
+          import_validation_result: 'metadata.artifacts.ImportValidationResult',
+        },
+        static_site_importer_path: staticSiteImporterPath,
+        block_artifact_compiler_path: blockArtifactCompilerPath,
+        block_format_bridge_path: blockFormatBridgePath,
+      },
+    },
+  });
+  assert.equal(staticValidationRequest.execution_kind, 'static_site_import_validation_adapter');
+  assert.equal(staticValidationRequest.runtime_task.ability, 'static-site-importer/import-website-artifact');
+  assert.equal(staticValidationRequest.runtime_task.input.artifact.slug, 'cedar-studio');
+  assert.equal(staticValidationRequest.runtime_task.input.slug, 'cedar-studio');
+  assert.equal(staticValidationRequest.runtime_task.input.name, 'Cedar Studio');
+  assert.equal(staticValidationRequest.runtime_task.input.source_metadata.candidate_file_refs[0].path, '/tmp/static-site-candidate.json');
+  assert.equal(staticValidationRequest.candidate_artifact.payload.slug, 'cedar-studio');
+  assert.equal(staticValidationRequest.artifact_outputs.import_validation_result.schema, 'wp-site-generator/ImportValidationResult/v1');
+  assert.equal(staticValidationRequest.engine_data_outputs.import_validation_result, 'metadata.artifacts.ImportValidationResult');
+  assert.equal(staticValidationRequest.extra_plugins.find((plugin) => plugin.slug === 'static-site-importer').source, staticSiteImporterPath);
+  assert.equal(staticValidationRequest.extra_plugins.find((plugin) => plugin.slug === 'block-artifact-compiler').source, blockArtifactCompilerPath);
+  assert.equal(staticValidationRequest.extra_plugins.find((plugin) => plugin.slug === 'block-format-bridge').source, blockFormatBridgePath);
+} finally {
+  fs.rmSync(staticValidationRoot, { recursive: true, force: true });
+}
+
 const outcome = agentTaskOutcomeFromCodeboxResult(request, {
   success: false,
   provider_error: true,
@@ -941,6 +994,41 @@ assert.equal(agentBundleOutcome.metadata.sandbox_policy.sandbox_tool_policy.tool
 assert.equal(upstreamRunnerOutcome.artifacts[1].kind, 'codebox-session-artifacts');
 assert.equal(upstreamRunnerOutcome.evidence_refs[0].uri, 'https://preview.example.test/sandbox-session-1');
 assert.equal(upstreamRunnerOutcome.evidence_refs[1].uri, '/tmp/wp-codebox-artifacts');
+
+const staticValidationOutcome = agentTaskOutcomeFromCodeboxResult({
+  ...request,
+  task_id: 'validate-static-site-candidate-123',
+  executor: { backend: 'codebox' },
+}, {
+  success: true,
+  schema: 'wp-codebox/agent-task-run/v1',
+  artifacts: '/tmp/wp-codebox-artifacts',
+  outputs: {
+    import_validation_result: {
+      schema: 'homeboy/agent-task-typed-artifact/v1',
+      name: 'import_validation_result',
+      type: 'ImportValidationResult',
+      artifact_schema: 'wp-site-generator/ImportValidationResult/v1',
+      payload: { fallback_count: 0, import_report_summary: { status: 'completed', quality_pass: true } },
+      file_refs: [{ path: '/tmp/wp-codebox-artifacts/import-validation-report.json', mime: 'application/json' }],
+    },
+    typed_artifacts: {
+      import_validation_result: {
+        schema: 'homeboy/agent-task-typed-artifact/v1',
+        name: 'import_validation_result',
+        type: 'ImportValidationResult',
+        artifact_schema: 'wp-site-generator/ImportValidationResult/v1',
+        payload: { fallback_count: 0, import_report_summary: { status: 'completed', quality_pass: true } },
+        file_refs: [{ path: '/tmp/wp-codebox-artifacts/import-validation-report.json', mime: 'application/json' }],
+      },
+    },
+  },
+});
+assert.equal(staticValidationOutcome.status, 'succeeded');
+assert.equal(staticValidationOutcome.outputs.import_validation_result.type, 'ImportValidationResult');
+assert.equal(staticValidationOutcome.outputs.typed_artifacts.import_validation_result.artifact_schema, 'wp-site-generator/ImportValidationResult/v1');
+assert.equal(staticValidationOutcome.artifacts.some((artifact) => artifact.kind === 'typed-bundle-output' && artifact.name === 'import_validation_result' && artifact.path === '/tmp/wp-codebox-artifacts/import-validation-report.json'), true);
+assert.equal(staticValidationOutcome.evidence_refs.some((ref) => ref.uri === '/tmp/wp-codebox-artifacts/import-validation-report.json'), true);
 
 const canonicalTopLevelAgentBundleOutcome = agentTaskOutcomeFromCodeboxResult({
   ...request,

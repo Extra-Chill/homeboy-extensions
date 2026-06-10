@@ -10,6 +10,8 @@ const AGENT_TASK_REQUEST_SCHEMA = 'homeboy/agent-task-request/v1';
 const AGENT_TASK_OUTCOME_SCHEMA = 'homeboy/agent-task-outcome/v1';
 const AGENT_TASK_ARTIFACT_SCHEMA = 'homeboy/agent-task-artifact/v1';
 const WP_CODEBOX_TASK_REQUEST_SCHEMA = 'wp-codebox/task-input/v1';
+const STATIC_SITE_IMPORT_VALIDATION_KIND = 'static_site_import_validation_adapter';
+const STATIC_SITE_IMPORT_ABILITY = 'static-site-importer/import-website-artifact';
 
 const PROVIDER_CAPABILITIES = [
   'browser_runtime',
@@ -27,6 +29,7 @@ const PROVIDER_CAPABILITIES = [
   'typed_bundle_outputs',
   'external_recipe_packs',
   'recipe_probe_artifacts',
+  'static_site_import_validation',
 ];
 
 const DEFAULT_WORKSPACE_READONLY_TOOLS = [
@@ -210,7 +213,7 @@ function codeboxTaskRequestFromAgentTaskRequest(request, options = {}) {
     context,
     recipe,
     sandbox_tool_policy: sandboxToolPolicy,
-    runtime_task: runtimeTask,
+    runtime_task: runtimeTask || staticSiteImportValidationRuntimeTask(request, config, inputs),
     sandbox_session_id: config.sandbox_session_id || request.task_id,
     session_id: config.session_id || config.sessionId || '',
     agent: config.agent || options.agent || 'wp-codebox-sandbox',
@@ -227,6 +230,11 @@ function codeboxTaskRequestFromAgentTaskRequest(request, options = {}) {
     // Codebox recipe steps; a non-zero exit fails the run so the orchestrator
     // refuses to report success until the gates are green.
     verify_steps: inputs.verify_steps || config.verify_steps || options.verifySteps || [],
+    execution_kind: config.execution_kind || inputs.execution_kind || '',
+    candidate_artifact: firstDefined(inputs.candidate_artifact, inputs.candidateArtifact, config.candidate_artifact, config.candidateArtifact),
+    artifact_outputs: firstDefined(inputs.artifact_outputs, inputs.artifactOutputs, config.artifact_outputs, config.artifactOutputs),
+    engine_data_outputs: firstDefined(inputs.engine_data_outputs, inputs.engineDataOutputs, config.engine_data_outputs, config.engineDataOutputs),
+    extra_plugins: extraPluginsForAgentTask(request, config, inputs, options),
     mounts,
     workspaces: inputs.workspaces || config.workspaces || options.workspaces || defaults.workspaces || [],
     agents_api_path: components.agents_api || config.agents_api || config.agents_api_path || options.agentsApi || '',
@@ -249,6 +257,102 @@ function codeboxTaskRequestFromAgentTaskRequest(request, options = {}) {
     agent_bundle: agentBundle,
     parent_request: request,
   };
+}
+
+function staticSiteImportValidationRuntimeTask(request, config, inputs) {
+  const executionKind = config.execution_kind || inputs.execution_kind || '';
+  if (executionKind !== STATIC_SITE_IMPORT_VALIDATION_KIND) {
+    return undefined;
+  }
+
+  const candidateArtifact = firstDefined(inputs.candidate_artifact, inputs.candidateArtifact, config.candidate_artifact, config.candidateArtifact);
+  const artifact = staticSiteCandidatePayload(candidateArtifact);
+  const fileRefs = typedArtifactFileRefs(candidateArtifact || {});
+  return {
+    ability: STATIC_SITE_IMPORT_ABILITY,
+    input: Object.fromEntries(Object.entries({
+      artifact,
+      slug: staticSiteCandidateString(candidateArtifact, 'slug') || config.slug || inputs.slug || request.task_id,
+      name: staticSiteCandidateString(candidateArtifact, 'name') || config.name || inputs.name || request.task_id,
+      activate: config.activate === true,
+      overwrite: config.overwrite !== false,
+      keep_source: config.keep_source !== false,
+      fail_on_quality: config.fail_on_quality === true,
+      max_fallbacks: config.max_fallbacks,
+      allow_missing_woocommerce: config.allow_missing_woocommerce === true,
+      report: config.report || inputs.report || '',
+      asset_policy: config.asset_policy || inputs.asset_policy || '',
+      asset_materialization_policy: config.asset_materialization_policy || inputs.asset_materialization_policy || '',
+      asset_map: config.asset_map || inputs.asset_map,
+      compiler_options: config.compiler_options || inputs.compiler_options,
+      source_metadata: {
+        adapter: STATIC_SITE_IMPORT_VALIDATION_KIND,
+        task_id: request.task_id,
+        candidate_artifact: sanitizePublicMetadata(candidateArtifact || {}),
+        candidate_file_refs: fileRefs,
+      },
+    }).filter(([, value]) => value !== undefined && value !== '' && !(Array.isArray(value) && value.length === 0))),
+  };
+}
+
+function staticSiteCandidatePayload(candidateArtifact) {
+  if (!candidateArtifact || typeof candidateArtifact !== 'object' || Array.isArray(candidateArtifact)) {
+    return {};
+  }
+  if (candidateArtifact.payload && typeof candidateArtifact.payload === 'object' && !Array.isArray(candidateArtifact.payload)) {
+    return candidateArtifact.payload;
+  }
+  if (candidateArtifact.data && typeof candidateArtifact.data === 'object' && !Array.isArray(candidateArtifact.data)) {
+    return candidateArtifact.data;
+  }
+  if (candidateArtifact.artifact && typeof candidateArtifact.artifact === 'object' && !Array.isArray(candidateArtifact.artifact)) {
+    return candidateArtifact.artifact;
+  }
+  return candidateArtifact;
+}
+
+function staticSiteCandidateString(candidateArtifact, key) {
+  const payload = staticSiteCandidatePayload(candidateArtifact);
+  const value = payload?.[key] || candidateArtifact?.[key];
+  return typeof value === 'string' ? value : '';
+}
+
+function extraPluginsForAgentTask(request, config, inputs, options = {}) {
+  const explicit = [
+    ...normalizeArray(inputs.extra_plugins || inputs.extraPlugins),
+    ...normalizeArray(config.extra_plugins || config.extraPlugins),
+    ...normalizeArray(options.extraPlugins),
+  ];
+  const validationPlugins = config.execution_kind === STATIC_SITE_IMPORT_VALIDATION_KIND || inputs.execution_kind === STATIC_SITE_IMPORT_VALIDATION_KIND
+    ? staticSiteImportPluginComponents(request, config, inputs, options)
+    : [];
+  const seen = new Set();
+  return [...explicit, ...validationPlugins].filter((plugin) => {
+    if (!plugin || typeof plugin !== 'object') {
+      return false;
+    }
+    const key = `${plugin.slug || ''}:${plugin.source || plugin.path || ''}`;
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+}
+
+function staticSiteImportPluginComponents(request, config, inputs, options = {}) {
+  const settings = firstObject(options.settings, parseJsonObject(process.env.HOMEBOY_SETTINGS_JSON)) || {};
+  const workspaceRoot = resolveWorkspaceRoot(request, config, inputs, settings, options);
+  const workspaceBase = workspaceRoot ? path.dirname(workspaceRoot) : process.cwd();
+  const component = (slug, ...candidates) => {
+    const source = firstExistingPath(...candidates);
+    return source ? { slug, source, activate: true } : null;
+  };
+  return [
+    component('static-site-importer', config.static_site_importer_path, settings.static_site_importer_path, process.env.HOMEBOY_STATIC_SITE_IMPORTER_PATH, activeSitePluginPath('static-site-importer'), siblingPath(workspaceBase, 'static-site-importer')),
+    component('block-artifact-compiler', config.block_artifact_compiler_path, settings.block_artifact_compiler_path, process.env.HOMEBOY_BLOCK_ARTIFACT_COMPILER_PATH, activeSitePluginPath('block-artifact-compiler'), siblingPath(workspaceBase, 'block-artifact-compiler')),
+    component('block-format-bridge', config.block_format_bridge_path, settings.block_format_bridge_path, process.env.HOMEBOY_BLOCK_FORMAT_BRIDGE_PATH, activeSitePluginPath('block-format-bridge'), siblingPath(workspaceBase, 'block-format-bridge')),
+  ].filter(Boolean);
 }
 
 function runtimeComponentPaths(config, options = {}) {
