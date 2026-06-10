@@ -60,6 +60,53 @@ if (process.env.FIXTURE_WP_CODEBOX_JSON_VALIDATION_FAILURE) {
   process.exit(0);
 }
 const isAgentBundle = Boolean(input.agent_bundle && Object.keys(input.agent_bundle).length);
+if (input.execution_kind === 'static_site_import_validation_adapter') {
+  const importValidationResultPath = input.artifacts_path + '/import-validation-result.json';
+  const findingPacketsPath = input.artifacts_path + '/finding-packets.json';
+  const importValidationResult = {
+    schema: 'static-site-importer/import-validation-result/v1',
+    artifact_type: 'ImportValidationResult',
+    status: 'reported',
+    counts: { core_html_blocks: 0, fallback_blocks: 0 },
+    artifacts: { finding_packets: { path: findingPacketsPath } }
+  };
+  const findingPackets = {
+    schema: 'static-site-importer/finding-packets/v1',
+    artifact_type: 'FindingPacketSet',
+    count: 0,
+    packets: []
+  };
+  fs.mkdirSync(input.artifacts_path, { recursive: true });
+  fs.writeFileSync(importValidationResultPath, JSON.stringify(importValidationResult, null, 2));
+  fs.writeFileSync(findingPacketsPath, JSON.stringify(findingPackets, null, 2));
+  fs.writeFileSync(out, JSON.stringify({ argv: process.argv.slice(2), input }, null, 2));
+  process.stdout.write(JSON.stringify({
+    success: true,
+    schema: 'wp-codebox/agent-task-run/v1',
+    status: 'completed',
+    session: {
+      schema: 'wp-codebox/sandbox-session/v1',
+      id: input.sandbox_session_id,
+      status: 'completed',
+      artifacts: { bundle_id: 'artifact-bundle-sha256-static-validation', path: input.artifacts_path, preview_url: 'https://preview.example.test/' + input.sandbox_session_id },
+      orchestrator: input.orchestrator
+    },
+    task_input: input,
+    artifacts: input.artifacts_path,
+    outputs: {
+      runtime_task_result: {
+        success: true,
+        result: {
+          import_validation_result: importValidationResult,
+          finding_packets: findingPackets,
+          import_validation_result_path: importValidationResultPath,
+          finding_packets_path: findingPacketsPath
+        }
+      }
+    }
+  }));
+  process.exit(0);
+}
 const bundleRun = isAgentBundle && process.env.FIXTURE_WP_CODEBOX_BUNDLE_RUN
   ? {
       schema: 'datamachine/agent-bundle-run/v1',
@@ -288,6 +335,83 @@ try {
   assert.equal(runtimeTaskCaptured.input.sandbox_tool_policy.tools[0].id, 'homeboy-canary/write-file');
   assert.equal(runtimeTaskCaptured.input.runtime_task.ability, 'homeboy-canary/write-file');
   assert.equal(runtimeTaskCaptured.input.workspaces[0].target, '/workspace/codebox-canary');
+
+  const staticValidationCapturePath = path.join(root, 'capture-static-validation.json');
+  const staticValidationArtifacts = path.join(root, 'static-validation-artifacts');
+  const staticValidationResult = spawnSync(process.execPath, [
+    path.join(__dirname, '..', 'scripts', 'agent', 'homeboy-wp-codebox-task-runner.cjs'),
+    '--wp-codebox-bin', fixtureWpCodebox,
+    '--artifacts', staticValidationArtifacts,
+  ], {
+    encoding: 'utf8',
+    input: JSON.stringify({
+      ...request,
+      execution_kind: 'static_site_import_validation_adapter',
+      candidate_artifact: {
+        schema: 'homeboy/agent-task-typed-artifact/v1',
+        name: 'static_site_candidate',
+        type: 'StaticSiteCandidate',
+        artifact_schema: 'static-site-importer/static-site-candidate/v1',
+        payload: {
+          slug: 'issue-1226-static-validation',
+          name: 'Issue 1226 Static Validation',
+          website_artifact: { schema: 'block-artifact-compiler/website-artifact/v1', files: [], documents: [] },
+        },
+      },
+      artifact_outputs: {
+        import_validation_result: { schema: 'wp-site-generator/ImportValidationResult/v1', path: path.join(staticValidationArtifacts, 'import-validation-result.json') },
+      },
+      engine_data_outputs: {
+        import_validation_result: 'metadata.artifacts.ImportValidationResult',
+      },
+      extra_plugins: [
+        { slug: 'block-format-bridge', source: '/components/block-format-bridge', activate: true },
+        { slug: 'block-artifact-compiler', source: '/components/block-artifact-compiler', activate: true },
+        { slug: 'static-site-importer', source: '/components/static-site-importer', activate: true },
+      ],
+    }),
+    env: { ...process.env, FIXTURE_WP_CODEBOX_CAPTURE: staticValidationCapturePath, OPENCODE_API_KEY: 'redacted-test-key' },
+  });
+  assert.equal(staticValidationResult.status, 0, staticValidationResult.stderr || staticValidationResult.stdout);
+  const staticValidationCaptured = readJson(staticValidationCapturePath);
+  assert.equal(staticValidationCaptured.input.runtime_task.ability, 'static-site-importer/import-website-artifact');
+  assert.equal(staticValidationCaptured.input.runtime_task.input.artifact.schema, 'block-artifact-compiler/website-artifact/v1');
+  assert.equal(staticValidationCaptured.input.runtime_task.input.slug, 'issue-1226-static-validation');
+  assert.equal(staticValidationCaptured.input.extra_plugins.find((plugin) => plugin.slug === 'static-site-importer').source, '/components/static-site-importer');
+  assert.equal(staticValidationCaptured.input.extra_plugins.find((plugin) => plugin.slug === 'block-artifact-compiler').source, '/components/block-artifact-compiler');
+  assert.equal(staticValidationCaptured.input.extra_plugins.find((plugin) => plugin.slug === 'block-format-bridge').source, '/components/block-format-bridge');
+  const staticValidationOutput = JSON.parse(staticValidationResult.stdout);
+  assert.equal(staticValidationOutput.success, true);
+  assert.equal(staticValidationOutput.outputs.import_validation_result.schema, 'static-site-importer/import-validation-result/v1');
+  assert.equal(staticValidationOutput.outputs.typed_artifacts.import_validation_result.type, 'ImportValidationResult');
+  assert.equal(staticValidationOutput.outputs.typed_artifacts.finding_packets.type, 'FindingPacketSet');
+  assert.equal(staticValidationOutput.artifacts.some((artifact) => artifact.kind === 'static-site-importer/import-validation-result' && artifact.path.endsWith('import-validation-result.json')), true);
+  assert.equal(staticValidationOutput.evidence_refs.some((ref) => ref.kind === 'static-site-importer/finding-packets' && ref.uri.endsWith('finding-packets.json')), true);
+
+  const malformedStaticValidationResult = spawnSync(process.execPath, [
+    path.join(__dirname, '..', 'scripts', 'agent', 'homeboy-wp-codebox-task-runner.cjs'),
+    '--wp-codebox-bin', fixtureWpCodebox,
+    '--artifacts', path.join(root, 'malformed-static-validation-artifacts'),
+  ], {
+    encoding: 'utf8',
+    input: JSON.stringify({
+      ...request,
+      execution_kind: 'static_site_import_validation_adapter',
+      candidate_artifact: {
+        schema: 'homeboy/agent-task-typed-artifact/v1',
+        name: 'static_site_candidate',
+        type: 'StaticSiteCandidate',
+        artifact_schema: 'static-site-importer/static-site-candidate/v1',
+        payload: { slug: 'missing-website-artifact' },
+      },
+    }),
+    env: { ...process.env, FIXTURE_WP_CODEBOX_CAPTURE: path.join(root, 'capture-malformed-static-validation.json'), OPENCODE_API_KEY: 'redacted-test-key' },
+  });
+  assert.equal(malformedStaticValidationResult.status, 1, malformedStaticValidationResult.stderr || malformedStaticValidationResult.stdout);
+  const malformedStaticValidationOutput = JSON.parse(malformedStaticValidationResult.stdout);
+  assert.equal(malformedStaticValidationOutput.success, false);
+  assert.equal(malformedStaticValidationOutput.diagnostics[0].class, 'static_site_import_validation_adapter.invalid_candidate');
+  assert.equal(malformedStaticValidationOutput.diagnostics[0].data.reason, 'malformed_candidate');
 
   const codexCapturePath = path.join(root, 'capture-codex.json');
   const codexSecretEnv = [

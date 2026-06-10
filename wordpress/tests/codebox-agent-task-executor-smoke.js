@@ -223,6 +223,7 @@ assert.equal(provider.capabilities.includes('agent_bundle_execution'), true);
 assert.equal(provider.capabilities.includes('typed_bundle_outputs'), true);
 assert.equal(provider.capabilities.includes('external_recipe_packs'), true);
 assert.equal(provider.capabilities.includes('recipe_probe_artifacts'), true);
+assert.equal(provider.capabilities.includes('static_site_import_validation_adapter'), true);
 assert.deepEqual(provider.runtime_gap_trackers, []);
 
 const codeboxRequest = codeboxTaskRequestFromAgentTaskRequest(request);
@@ -389,7 +390,10 @@ try {
   const dataMachineCodePath = path.join(defaultsRoot, 'data-machine-code');
   const staleStandaloneAgentsApiPath = path.join(defaultsRoot, 'agents-api');
   const providerPath = path.join(defaultsRoot, 'ai-provider-for-openai');
-  for (const directory of [workspaceRoot, bundledAgentsApiPath, dataMachineCodePath, staleStandaloneAgentsApiPath, providerPath]) {
+  const staticSiteImporterPath = path.join(defaultsRoot, 'static-site-importer');
+  const blockArtifactCompilerPath = path.join(defaultsRoot, 'block-artifact-compiler');
+  const blockFormatBridgePath = path.join(defaultsRoot, 'block-format-bridge');
+  for (const directory of [workspaceRoot, bundledAgentsApiPath, dataMachineCodePath, staleStandaloneAgentsApiPath, providerPath, staticSiteImporterPath, blockArtifactCompilerPath, blockFormatBridgePath]) {
     fs.mkdirSync(directory, { recursive: true });
   }
 
@@ -621,6 +625,43 @@ try {
   assert.deepEqual(explicitOverrideRequest.secret_env, ['EXPLICIT_SECRET']);
   assert.deepEqual(explicitOverrideRequest.mounts, [{ source: '/explicit/worktree', target: '/workspace', mode: 'readonly' }]);
   assert.deepEqual(explicitOverrideRequest.workspaces, [{ target: '/explicit-workspace', mode: 'readonly' }]);
+
+  const staticValidationRequest = codeboxTaskRequestFromAgentTaskRequest({
+    ...request,
+    task_id: 'static-validation-task-123',
+    executor: {
+      backend: 'codebox',
+      config: {
+        execution_kind: 'static_site_import_validation_adapter',
+        candidate_artifact: {
+          schema: 'homeboy/agent-task-typed-artifact/v1',
+          name: 'static_site_candidate',
+          type: 'StaticSiteCandidate',
+          artifact_schema: 'static-site-importer/static-site-candidate/v1',
+          payload: { slug: 'issue-1226', website_artifact: { schema: 'block-artifact-compiler/website-artifact/v1', files: [] } },
+        },
+        artifact_outputs: {
+          import_validation_result: { schema: 'wp-site-generator/ImportValidationResult/v1', path: '/artifacts/ImportValidationResult.json' },
+        },
+        engine_data_outputs: {
+          import_validation_result: 'metadata.artifacts.ImportValidationResult',
+        },
+      },
+    },
+    inputs: {
+      target: { root: workspaceRoot, mode: 'readonly' },
+    },
+  }, {
+    settings: {},
+  });
+  assert.equal(staticValidationRequest.execution_kind, 'static_site_import_validation_adapter');
+  assert.equal(staticValidationRequest.runtime_task.ability, 'static-site-importer/import-website-artifact');
+  assert.equal(staticValidationRequest.candidate_artifact.type, 'StaticSiteCandidate');
+  assert.equal(staticValidationRequest.artifact_outputs.import_validation_result.path, '/artifacts/ImportValidationResult.json');
+  assert.equal(staticValidationRequest.engine_data_outputs.import_validation_result, 'metadata.artifacts.ImportValidationResult');
+  assert.equal(staticValidationRequest.extra_plugins.find((plugin) => plugin.slug === 'static-site-importer').source, staticSiteImporterPath);
+  assert.equal(staticValidationRequest.extra_plugins.find((plugin) => plugin.slug === 'block-artifact-compiler').source, blockArtifactCompilerPath);
+  assert.equal(staticValidationRequest.extra_plugins.find((plugin) => plugin.slug === 'block-format-bridge').source, blockFormatBridgePath);
 } finally {
   fs.rmSync(defaultsRoot, { recursive: true, force: true });
 }

@@ -350,6 +350,7 @@ const LEGACY_BUNDLE_KEYS = [
   `${LEGACY_RUNTIME_PREFIX}_bundle`,
   `${LEGACY_RUNTIME_PREFIX}Bundle`,
 ];
+const STATIC_SITE_IMPORT_VALIDATION_ADAPTER = 'static_site_import_validation_adapter';
 
 function legacyValue(source, suffix = '') {
   if (!source || typeof source !== 'object') {
@@ -410,10 +411,15 @@ function runnerInput(request, artifacts) {
     wp_codebox_bin: argValue('--wp-codebox-bin') || request.wp_codebox_bin || '',
     agents_api_path: argValue('--agents-api') || request.agents_api_path || request.agents_api || '',
     runtime_component_paths: runtimeComponentPaths,
+    extra_plugins: request.extra_plugins || request.extraPlugins || [],
     homeboy_path: argValue('--homeboy') || request.homeboy_path || request.homeboy || '',
     homeboy_extensions_path: argValue('--homeboy-extensions') || request.homeboy_extensions_path || request.homeboy_extensions || path.resolve(__dirname, '..', '..'),
     wp_version: request.wp_codebox_wordpress_version || request.wp_version || request.wp || undefined,
     agent_bundle: requestAgentBundle(request),
+    execution_kind: request.execution_kind,
+    candidate_artifact: request.candidate_artifact || request.candidateArtifact,
+    artifact_outputs: request.artifact_outputs || request.artifactOutputs,
+    engine_data_outputs: request.engine_data_outputs || request.engineDataOutputs,
   }).filter(([, value]) => value !== '' && value !== undefined && !(Array.isArray(value) && value.length === 0)));
 }
 
@@ -465,7 +471,8 @@ function verifySteps(input) {
 
 function extraPlugins(input) {
   const explicit = input.parent_request?.extra_plugins || input.parent_request?.extraPlugins || [];
-  const plugins = [...runtimeComponentExtraPlugins(input), ...(Array.isArray(explicit) ? explicit : [])];
+  const inputPlugins = input.extra_plugins || [];
+  const plugins = [...runtimeComponentExtraPlugins(input), ...(Array.isArray(inputPlugins) ? inputPlugins : []), ...(Array.isArray(explicit) ? explicit : [])];
   const seen = new Set();
   return plugins.filter((plugin) => {
     const key = `${plugin.slug || ''}:${plugin.source || ''}`;
@@ -527,12 +534,20 @@ function stableTaskInput(input) {
     wp: input.wp_version,
     agent_bundle: isAgentBundle(input) ? agentBundleConfig(input, input.agent_bundle || {}) : {},
     runtime_task: runtimeTask(input),
+    execution_kind: input.execution_kind,
+    candidate_artifact: input.candidate_artifact,
+    artifact_outputs: input.artifact_outputs,
+    engine_data_outputs: input.engine_data_outputs,
     parent_request: input.parent_request,
   }).filter(([, value]) => value !== '' && value !== undefined && !(Array.isArray(value) && value.length === 0)));
 }
 
 function plainObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function firstValue(...values) {
+  return values.find((value) => value !== undefined && value !== null && value !== '');
 }
 
 function normalizeTypedArtifactEntry(name, artifact) {
@@ -639,14 +654,155 @@ function isAgentBundle(input) {
   return Boolean(input.agent_bundle && Object.keys(input.agent_bundle).length > 0);
 }
 
+function isStaticSiteImportValidationAdapter(input) {
+  return input.execution_kind === STATIC_SITE_IMPORT_VALIDATION_ADAPTER || input.parent_request?.execution_kind === STATIC_SITE_IMPORT_VALIDATION_ADAPTER;
+}
+
+function staticSiteImportValidationCandidateSource(input) {
+  return input.candidate_artifact
+    || input.parent_request?.candidate_artifact
+    || input.parent_request?.candidateArtifact
+    || input.parent_request?.inputs?.candidate_artifact
+    || input.parent_request?.inputs?.candidateArtifact;
+}
+
+function resolveStaticSiteCandidate(input) {
+  const candidate = normalizeStaticSiteCandidate(staticSiteImportValidationCandidateSource(input));
+  if (candidate) {
+    return candidate;
+  }
+  throw staticSiteImportValidationError('missing_candidate', 'Static site import validation requires a StaticSiteCandidate typed artifact payload or file ref.');
+}
+
+function normalizeStaticSiteCandidate(value) {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed || /^\{\{.*\}\}$/.test(trimmed)) {
+      return null;
+    }
+    if (fs.existsSync(trimmed)) {
+      return normalizeStaticSiteCandidate(readJsonIfAvailable(trimmed));
+    }
+    return normalizeStaticSiteCandidate(parseJsonObject(trimmed));
+  }
+  if (!plainObject(value)) {
+    return null;
+  }
+
+  const typed = normalizeTypedArtifactEntry(value.name || value.id || 'static_site_candidate', value);
+  const candidate = typed?.type === 'StaticSiteCandidate' || typed?.artifact_schema === 'static-site-importer/static-site-candidate/v1'
+    ? typed
+    : normalizeTypedArtifactEntry('static_site_candidate', value.static_site_candidate || value.staticSiteCandidate || value.typed_artifacts?.static_site_candidate || value.typedArtifacts?.static_site_candidate);
+  if (!candidate) {
+    return null;
+  }
+  if (plainObject(candidate.payload)) {
+    return candidate;
+  }
+  for (const ref of candidate.file_refs || []) {
+    const refPath = typeof ref === 'string' ? ref : (ref?.path || ref?.file);
+    const fileCandidate = refPath ? normalizeStaticSiteCandidate(readJsonIfAvailable(refPath)) : null;
+    if (fileCandidate) {
+      return fileCandidate;
+    }
+  }
+  return candidate;
+}
+
+function websiteArtifactFromCandidate(candidate) {
+  const payload = plainObject(candidate.payload) ? candidate.payload : {};
+  const artifact = payload.website_artifact || payload.websiteArtifact || payload.artifact || payload.block_artifact || payload.blockArtifact;
+  if (plainObject(artifact)) {
+    return artifact;
+  }
+  if (payload.schema || payload.files || payload.documents || payload.blocks || payload.entrypoint || payload.entry_point || payload.website) {
+    return payload;
+  }
+  for (const ref of candidate.file_refs || []) {
+    const refPath = typeof ref === 'string' ? ref : (ref?.path || ref?.file);
+    const filePayload = refPath ? readJsonIfAvailable(refPath) : null;
+    const fileCandidate = normalizeStaticSiteCandidate(filePayload);
+    if (fileCandidate && fileCandidate !== candidate) {
+      return websiteArtifactFromCandidate(fileCandidate);
+    }
+  }
+  throw staticSiteImportValidationError('malformed_candidate', 'StaticSiteCandidate does not contain a website artifact payload.');
+}
+
+function staticSiteImportValidationError(reason, message, data = {}) {
+  const error = new Error(message);
+  error.code = 'static_site_import_validation_adapter.invalid_candidate';
+  error.reason = reason;
+  error.data = data;
+  return error;
+}
+
+function staticSiteImportValidationFailurePayload(error, artifacts) {
+  return {
+    schema: 'wp-codebox/agent-task-run/v1',
+    success: false,
+    status: 'failed',
+    summary: error.message || 'Static site import validation adapter failed.',
+    artifacts,
+    outputs: {},
+    diagnostics: [{
+      class: error.code || 'static_site_import_validation_adapter.failed',
+      message: error.message || String(error),
+      data: { reason: error.reason || 'adapter_error', ...(plainObject(error.data) ? error.data : {}) },
+    }],
+    metadata: {
+      static_site_import_validation_adapter: {
+        reason: error.reason || 'adapter_error',
+      },
+    },
+  };
+}
+
 function runtimeTask(input) {
   if (plainObject(input.runtime_task)) {
+    if (isStaticSiteImportValidationAdapter(input) && input.runtime_task.ability === 'static-site-importer/import-website-artifact') {
+      return staticSiteImportValidationRuntimeTask(input);
+    }
     return input.runtime_task;
+  }
+  if (isStaticSiteImportValidationAdapter(input)) {
+    return staticSiteImportValidationRuntimeTask(input);
   }
   if (isAgentBundle(input)) {
     return agentBundleRuntimeTask(input, input.agent_bundle || {});
   }
   return undefined;
+}
+
+function staticSiteImportValidationRuntimeTask(input) {
+  const candidate = resolveStaticSiteCandidate(input);
+  const payload = candidate.payload || {};
+  const artifact = websiteArtifactFromCandidate(candidate);
+  return {
+    ability: 'static-site-importer/import-website-artifact',
+    input: Object.fromEntries(Object.entries({
+      artifact,
+      slug: payload.slug || payload.theme_slug || payload.site_slug || input.parent_request?.slug || 'static-site-import-validation',
+      name: payload.name || payload.title || payload.theme_name || 'Static Site Import Validation',
+      activate: input.parent_request?.activate ?? true,
+      overwrite: input.parent_request?.overwrite ?? true,
+      keep_source: input.parent_request?.keep_source ?? true,
+      fail_on_quality: input.parent_request?.fail_on_quality ?? false,
+      max_fallbacks: input.parent_request?.max_fallbacks,
+      allow_missing_woocommerce: input.parent_request?.allow_missing_woocommerce ?? true,
+      report: path.join(input.artifacts_path, 'import-report.json'),
+      asset_policy: input.parent_request?.asset_policy,
+      asset_materialization_policy: input.parent_request?.asset_materialization_policy || 'copy_to_theme',
+      asset_map: payload.asset_map || input.parent_request?.asset_map,
+      compiler_options: input.parent_request?.compiler_options || {},
+      source_metadata: {
+        ...(plainObject(payload.source_metadata) ? payload.source_metadata : {}),
+        homeboy_execution_kind: STATIC_SITE_IMPORT_VALIDATION_ADAPTER,
+        candidate_name: candidate.name,
+        candidate_artifact_schema: candidate.artifact_schema,
+      },
+    }).filter(([, value]) => value !== '' && value !== undefined && !(Array.isArray(value) && value.length === 0))),
+  };
 }
 
 function agentBundleConfig(input, bundleConfig = {}) {
@@ -688,6 +844,9 @@ function resultExecutions(result) {
 }
 
 function normalizeAgentTaskRun(input, result) {
+  if (isStaticSiteImportValidationAdapter(input)) {
+    return normalizeStaticSiteImportValidationRun(input, result);
+  }
   if (!isAgentBundle(input)) {
     return result;
   }
@@ -730,6 +889,184 @@ function normalizeAgentTaskRun(input, result) {
       },
     },
   };
+}
+
+function normalizeStaticSiteImportValidationRun(input, result) {
+  const validation = staticSiteImportValidationArtifacts(input, result);
+  const diagnostics = [
+    ...(Array.isArray(result.diagnostics) ? result.diagnostics : []),
+    ...(validation.diagnostic ? [validation.diagnostic] : []),
+  ];
+  const success = result.success !== false && result.status !== 'failed' && Boolean(validation.importValidationResult);
+  const typedArtifacts = Object.fromEntries(Object.entries({
+    import_validation_result: validation.importValidationTypedArtifact,
+    finding_packets: validation.findingPacketsTypedArtifact,
+  }).filter(([, value]) => value));
+
+  return {
+    ...result,
+    success,
+    status: success ? 'completed' : 'failed',
+    summary: success
+      ? 'Static site import validation completed through Static Site Importer.'
+      : (validation.diagnostic?.message || result.summary || 'Static site import validation failed.'),
+    outputs: {
+      ...(plainObject(result.outputs) ? result.outputs : {}),
+      import_validation_result: validation.importValidationResult,
+      typed_artifacts: {
+        ...(plainObject(result.outputs?.typed_artifacts) ? result.outputs.typed_artifacts : {}),
+        ...typedArtifacts,
+      },
+    },
+    artifacts: [...staticSiteImportValidationBaseArtifacts(result), ...validation.artifacts],
+    evidence_refs: [
+      ...(Array.isArray(result.evidence_refs) ? result.evidence_refs : []),
+      ...validation.evidenceRefs,
+    ],
+    diagnostics,
+    metadata: {
+      ...(plainObject(result.metadata) ? result.metadata : {}),
+      static_site_import_validation_adapter: {
+        candidate: validation.candidateSummary,
+        import_validation_result_path: validation.importValidationResultPath,
+        finding_packets_path: validation.findingPacketsPath,
+      },
+    },
+  };
+}
+
+function staticSiteImportValidationBaseArtifacts(result) {
+  if (Array.isArray(result.artifacts)) {
+    return result.artifacts;
+  }
+  if (typeof result.artifacts === 'string' && result.artifacts) {
+    return [{ id: 'wp-codebox-artifacts', kind: 'codebox-artifact-directory', path: result.artifacts }];
+  }
+  return [];
+}
+
+function staticSiteImportValidationArtifacts(input, result) {
+  const candidate = resolveStaticSiteCandidate(input);
+  const abilityResult = firstPlainObject(
+    result.outputs?.runtime_task_result,
+    result.outputs?.runtimeTaskResult,
+    result.outputs?.result,
+    result.run?.agentResult?.result,
+    result.run?.agentResult?.output,
+    result.agentResult?.result,
+    result.agent_result?.result,
+    result.metadata?.runtime_task_result,
+    result.metadata?.runtimeTaskResult,
+    result.result,
+  ) || {};
+  const importValidationResult = firstPlainObject(
+    result.outputs?.import_validation_result,
+    result.outputs?.importValidationResult,
+    abilityResult.import_validation_result,
+    abilityResult.importValidationResult,
+    abilityResult.result?.import_validation_result,
+    abilityResult.result?.importValidationResult,
+    readJsonIfAvailable(firstValue(
+      result.outputs?.import_validation_result_path,
+      abilityResult.import_validation_result_path,
+      abilityResult.result?.import_validation_result_path,
+      abilityResult.result?.external_import_validation_result_path,
+    )),
+  );
+  const findingPackets = firstPlainObject(
+    result.outputs?.finding_packets,
+    result.outputs?.findingPackets,
+    abilityResult.finding_packets,
+    abilityResult.findingPackets,
+    abilityResult.result?.finding_packets,
+    abilityResult.result?.findingPackets,
+    readJsonIfAvailable(firstValue(
+      result.outputs?.finding_packets_path,
+      abilityResult.finding_packets_path,
+      abilityResult.result?.finding_packets_path,
+      abilityResult.result?.external_finding_packets_path,
+    )),
+  );
+  const importValidationResultPath = firstValue(
+    result.outputs?.import_validation_result_path,
+    abilityResult.import_validation_result_path,
+    abilityResult.result?.import_validation_result_path,
+    abilityResult.result?.external_import_validation_result_path,
+    artifactOutputPath(input, 'import_validation_result'),
+  );
+  const findingPacketsPath = firstValue(
+    result.outputs?.finding_packets_path,
+    abilityResult.finding_packets_path,
+    abilityResult.result?.finding_packets_path,
+    abilityResult.result?.external_finding_packets_path,
+  );
+  const artifacts = [];
+  const evidenceRefs = [];
+  appendValidationArtifact(artifacts, evidenceRefs, 'import-validation-result', 'static-site-importer/import-validation-result', importValidationResultPath, importValidationResult);
+  appendValidationArtifact(artifacts, evidenceRefs, 'finding-packets', 'static-site-importer/finding-packets', findingPacketsPath, findingPackets);
+
+  const diagnostic = importValidationResult ? null : {
+    class: 'static_site_import_validation_adapter.missing_import_validation_result',
+    message: 'Static Site Importer completed without an import_validation_result artifact.',
+    data: { reason: 'missing_import_validation_result', ability_result: abilityResult },
+  };
+  return {
+    candidateSummary: {
+      name: candidate.name,
+      artifact_schema: candidate.artifact_schema,
+      file_refs: candidate.file_refs,
+    },
+    importValidationResult,
+    findingPackets,
+    importValidationResultPath,
+    findingPacketsPath,
+    importValidationTypedArtifact: importValidationResult ? typedValidationArtifact('import_validation_result', 'ImportValidationResult', 'static-site-importer/import-validation-result/v1', importValidationResult, importValidationResultPath, candidate) : null,
+    findingPacketsTypedArtifact: findingPackets ? typedValidationArtifact('finding_packets', 'FindingPacketSet', 'static-site-importer/finding-packets/v1', findingPackets, findingPacketsPath, candidate) : null,
+    artifacts,
+    evidenceRefs,
+    diagnostic,
+  };
+}
+
+function typedValidationArtifact(name, type, schema, payload, filePath, candidate) {
+  return Object.fromEntries(Object.entries({
+    schema: 'homeboy/agent-task-typed-artifact/v1',
+    name,
+    type,
+    artifact_schema: payload.schema || payload.artifact_schema || schema,
+    payload,
+    provenance: {
+      source: STATIC_SITE_IMPORT_VALIDATION_ADAPTER,
+      candidate_name: candidate.name,
+      candidate_artifact_schema: candidate.artifact_schema,
+    },
+    file_refs: filePath ? [{ path: filePath, mime: 'application/json' }] : [],
+  }).filter(([, value]) => value !== undefined && value !== '' && !(Array.isArray(value) && value.length === 0)));
+}
+
+function appendValidationArtifact(artifacts, evidenceRefs, id, kind, filePath, payload) {
+  if (!filePath && !payload) {
+    return;
+  }
+  const artifact = {
+    id,
+    kind,
+    path: filePath,
+    metadata: payload ? { schema: payload.schema, artifact_type: payload.artifact_type || payload.artifactType } : {},
+  };
+  artifacts.push(artifact);
+  if (filePath) {
+    evidenceRefs.push({ kind, uri: filePath, label: kind.replace(/-/g, ' ') });
+  }
+}
+
+function artifactOutputPath(input, name) {
+  const output = input.artifact_outputs?.[name] || input.parent_request?.artifact_outputs?.[name] || input.parent_request?.artifactOutputs?.[name];
+  return plainObject(output) ? output.path : '';
+}
+
+function firstPlainObject(...candidates) {
+  return candidates.find(plainObject) || null;
 }
 
 function parseJsonObject(value) {
@@ -1023,6 +1360,14 @@ function runWpCodeboxParentTask(request) {
   }
 
   const input = runnerInput(request, artifacts);
+  if (isStaticSiteImportValidationAdapter(input)) {
+    try {
+      websiteArtifactFromCandidate(resolveStaticSiteCandidate(input));
+    } catch (error) {
+      process.stdout.write(`${JSON.stringify(staticSiteImportValidationFailurePayload(error, artifacts), null, 2)}\n`);
+      return 1;
+    }
+  }
   const inputPath = writeJsonFile('homeboy-wp-codebox-agent-task-input-', stableTaskInput(input));
   const wpCodeboxBin = input.wp_codebox_bin || process.env.HOMEBOY_WP_CODEBOX_BIN || 'wp-codebox';
   const args = ['agent-task-run', `--input-file=${inputPath}`, '--json'];

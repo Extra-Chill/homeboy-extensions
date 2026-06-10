@@ -27,7 +27,10 @@ const PROVIDER_CAPABILITIES = [
   'typed_bundle_outputs',
   'external_recipe_packs',
   'recipe_probe_artifacts',
+  'static_site_import_validation_adapter',
 ];
+
+const STATIC_SITE_IMPORT_VALIDATION_ADAPTER = 'static_site_import_validation_adapter';
 
 const DEFAULT_WORKSPACE_READONLY_TOOLS = [
   'workspace_ls',
@@ -179,7 +182,8 @@ function codeboxTaskRequestFromAgentTaskRequest(request, options = {}) {
   const recipe = recipeConfigFromAgentTaskRequest(request, config, inputs);
   const mounts = agentBundleMounts(agentBundle, config.mounts || defaults.mounts || options.mounts || []);
   const components = runtimeComponentPaths(config, { ...defaults, ...options });
-  const runtimeTask = inputs.runtime_task || inputs.runtimeTask || config.runtime_task || config.runtimeTask || options.runtimeTask;
+  const validationAdapter = staticSiteImportValidationAdapterConfig(request, config, inputs, defaults, options);
+  const runtimeTask = validationAdapter.runtime_task || inputs.runtime_task || inputs.runtimeTask || config.runtime_task || config.runtimeTask || options.runtimeTask;
   const sandboxToolPolicy = firstDefined(inputs.sandbox_tool_policy, inputs.sandboxToolPolicy, config.sandbox_tool_policy, config.sandboxToolPolicy, options.sandboxToolPolicy, defaults.sandboxToolPolicy);
   const allowedTools = firstDefined(inputs.allowed_tools, inputs.allowedTools, config.allowed_tools, config.allowedTools, options.allowedTools, defaults.allowedTools);
   const explicitSecretEnv = [
@@ -218,6 +222,7 @@ function codeboxTaskRequestFromAgentTaskRequest(request, options = {}) {
     provider: config.provider || options.provider || defaults.provider || '',
     model: request.executor.model || config.model || options.model || defaults.model || '',
     provider_plugin_paths: config.provider_plugin_paths || options.providerPluginPaths || defaults.providerPluginPaths || [],
+    extra_plugins: validationAdapter.extra_plugins || config.extra_plugins || config.extraPlugins || options.extraPlugins || [],
     agent_bundles: config.agent_bundles || config.agentBundles || options.agentBundles || [],
     runtime_stack_mounts: config.runtime_stack_mounts || options.runtimeStackMounts || [],
     runtime_overlay_profiles: config.runtime_overlay_profiles || config.runtimeOverlayProfiles || options.runtimeOverlayProfiles || defaults.runtimeOverlayProfiles || [],
@@ -247,6 +252,10 @@ function codeboxTaskRequestFromAgentTaskRequest(request, options = {}) {
       source_refs: request.source_refs || [],
     },
     agent_bundle: agentBundle,
+    execution_kind: validationAdapter.execution_kind || config.execution_kind || inputs.execution_kind,
+    candidate_artifact: validationAdapter.candidate_artifact,
+    artifact_outputs: validationAdapter.artifact_outputs,
+    engine_data_outputs: validationAdapter.engine_data_outputs,
     parent_request: request,
   };
 }
@@ -301,6 +310,33 @@ function defaultCodeboxRuntimeConfig(request, config, inputs, options = {}) {
     process.env.HOMEBOY_WP_CODEBOX_AGENTS_API_PATH,
     bundledAgentsApiPath(dataMachinePath),
   );
+  const staticSiteImporterPath = firstExistingPath(
+    options.staticSiteImporter,
+    settings.wp_codebox_static_site_importer_path,
+    settings.static_site_importer_path,
+    process.env.HOMEBOY_STATIC_SITE_IMPORTER_PATH,
+    process.env.HOMEBOY_WP_CODEBOX_STATIC_SITE_IMPORTER_PATH,
+    activeSitePluginPath('static-site-importer'),
+    siblingPath(workspaceBase, 'static-site-importer'),
+  );
+  const blockArtifactCompilerPath = firstExistingPath(
+    options.blockArtifactCompiler,
+    settings.wp_codebox_block_artifact_compiler_path,
+    settings.block_artifact_compiler_path,
+    process.env.HOMEBOY_BLOCK_ARTIFACT_COMPILER_PATH,
+    process.env.HOMEBOY_WP_CODEBOX_BLOCK_ARTIFACT_COMPILER_PATH,
+    activeSitePluginPath('block-artifact-compiler'),
+    siblingPath(workspaceBase, 'block-artifact-compiler'),
+  );
+  const blockFormatBridgePath = firstExistingPath(
+    options.blockFormatBridge,
+    settings.wp_codebox_block_format_bridge_path,
+    settings.block_format_bridge_path,
+    process.env.HOMEBOY_BLOCK_FORMAT_BRIDGE_PATH,
+    process.env.HOMEBOY_WP_CODEBOX_BLOCK_FORMAT_BRIDGE_PATH,
+    activeSitePluginPath('block-format-bridge'),
+    siblingPath(workspaceBase, 'block-format-bridge'),
+  );
 
   return {
     agentsApi: agentsApiPath,
@@ -311,11 +347,49 @@ function defaultCodeboxRuntimeConfig(request, config, inputs, options = {}) {
     model,
     secretEnv: defaultSecretEnv(provider, settings),
     runtimeOverlayProfiles: defaultRuntimeOverlayProfiles(provider),
+    staticSiteImporterPath,
+    blockArtifactCompilerPath,
+    blockFormatBridgePath,
     mounts: defaultWorkspaceMounts(workspaceRoot, request, config, inputs, options),
     workspaces: defaultWorkspaces(config, inputs, options),
     allowedTools: defaultWorkspaceAllowedTools(workspaceRoot, workspaceMode(request, config, inputs)),
     sandboxToolPolicy: defaultWorkspaceSandboxToolPolicy(workspaceRoot, workspaceMode(request, config, inputs)),
   };
+}
+
+function staticSiteImportValidationAdapterConfig(request, config, inputs, defaults, options = {}) {
+  const executionKind = firstValue(inputs.execution_kind, config.execution_kind, options.executionKind);
+  if (executionKind !== STATIC_SITE_IMPORT_VALIDATION_ADAPTER) {
+    return {};
+  }
+
+  return {
+    execution_kind: STATIC_SITE_IMPORT_VALIDATION_ADAPTER,
+    candidate_artifact: firstValue(inputs.candidate_artifact, inputs.candidateArtifact, config.candidate_artifact, config.candidateArtifact, options.candidateArtifact),
+    artifact_outputs: firstObject(inputs.artifact_outputs, inputs.artifactOutputs, config.artifact_outputs, config.artifactOutputs, options.artifactOutputs) || {},
+    engine_data_outputs: firstObject(inputs.engine_data_outputs, inputs.engineDataOutputs, config.engine_data_outputs, config.engineDataOutputs, options.engineDataOutputs) || {},
+    runtime_task: { ability: 'static-site-importer/import-website-artifact' },
+    extra_plugins: staticSiteImportValidationPlugins(defaults, config, options),
+  };
+}
+
+function staticSiteImportValidationPlugins(defaults, config, options = {}) {
+  const explicit = normalizeArray(config.extra_plugins || config.extraPlugins || options.extraPlugins);
+  const plugins = [
+    ...explicit,
+    { slug: 'block-format-bridge', source: firstValue(config.block_format_bridge_path, config.blockFormatBridgePath, defaults.blockFormatBridgePath), activate: true },
+    { slug: 'block-artifact-compiler', source: firstValue(config.block_artifact_compiler_path, config.blockArtifactCompilerPath, defaults.blockArtifactCompilerPath), activate: true },
+    { slug: 'static-site-importer', source: firstValue(config.static_site_importer_path, config.staticSiteImporterPath, defaults.staticSiteImporterPath), activate: true },
+  ].filter((plugin) => plugin && typeof plugin === 'object' && plugin.source);
+  const seen = new Set();
+  return plugins.filter((plugin) => {
+    const key = `${plugin.slug || ''}:${plugin.source || ''}`;
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
 }
 
 function defaultProviderPluginPaths(provider, settings, fallbackProviderPluginPath) {
