@@ -22,6 +22,14 @@ const codexSecretEnv = [
 ];
 const claudeCodeRefreshTokenEnv = 'AI_PROVIDER_CLAUDE_CODE_REFRESH_TOKEN';
 
+function fixtureEnv(overrides = {}) {
+  const env = { ...process.env, ...overrides };
+  if (!Object.hasOwn(overrides, 'HOMEBOY_WP_CODEBOX_CORE_MODULE')) {
+    delete env.HOMEBOY_WP_CODEBOX_CORE_MODULE;
+  }
+  return env;
+}
+
 function writeFixtureTaskRunner(root) {
   const fixture = path.join(root, 'fixture-task-runner.cjs');
   const capture = path.join(root, 'capture.json');
@@ -1246,6 +1254,7 @@ try {
     fixture,
   ], {
     encoding: 'utf8',
+    env: fixtureEnv(),
     input: JSON.stringify({
       ...request,
       task_id: 'missing-model-cli-task-123',
@@ -1275,6 +1284,7 @@ try {
     '/components/agents-api',
   ], {
     encoding: 'utf8',
+    env: fixtureEnv(),
     input: JSON.stringify(request),
   });
   assert.equal(result.status, 0, result.stderr || result.stdout);
@@ -1290,7 +1300,7 @@ try {
   ], {
     encoding: 'utf8',
     input: JSON.stringify(request),
-    env: { ...process.env, HOMEBOY_WP_CODEBOX_CORE_MODULE: fixtureCodeboxCoreModule },
+    env: fixtureEnv({ HOMEBOY_WP_CODEBOX_CORE_MODULE: fixtureCodeboxCoreModule }),
   });
   assert.equal(normalizedResult.status, 0, normalizedResult.stderr || normalizedResult.stdout);
   const normalizedOutcome = JSON.parse(normalizedResult.stdout);
@@ -1315,6 +1325,7 @@ try {
     fixture,
   ], {
     encoding: 'utf8',
+    env: fixtureEnv(),
     input: JSON.stringify({
       ...request,
       task_id: 'recipe-cli-task-123',
@@ -1354,7 +1365,7 @@ try {
     fixture,
   ], {
     encoding: 'utf8',
-    env: { ...process.env, HOME: fakeCodexHome },
+    env: fixtureEnv({ HOME: fakeCodexHome }),
     input: JSON.stringify({
       ...codexAgentRequest,
       task_id: 'codex-cli-task-123',
@@ -1415,6 +1426,7 @@ try {
     path.join(__dirname, '..', 'scripts', 'agent', 'homeboy-codebox-agent-task-executor.cjs'),
   ], {
     encoding: 'utf8',
+    env: fixtureEnv(),
     input: JSON.stringify(agentBundleCliRequest),
   });
   assert.equal(agentBundleCliResult.status, 0, agentBundleCliResult.stderr || agentBundleCliResult.stdout);
@@ -1436,6 +1448,7 @@ try {
     path.join(__dirname, '..', 'scripts', 'agent', 'homeboy-codebox-agent-task-executor.cjs'),
   ], {
     encoding: 'utf8',
+    env: fixtureEnv(),
     input: JSON.stringify({
       ...request,
       task_id: 'recipe-wp-codebox-task-123',
@@ -1465,7 +1478,7 @@ try {
     path.join(__dirname, '..', 'scripts', 'agent', 'homeboy-codebox-agent-task-executor.cjs'),
   ], {
     encoding: 'utf8',
-    env: { ...process.env, FIXTURE_WP_CODEBOX_AGENT_TASK_FAILURE: '1' },
+    env: fixtureEnv({ FIXTURE_WP_CODEBOX_AGENT_TASK_FAILURE: '1' }),
     input: JSON.stringify({
       ...request,
       task_id: 'failed-wp-codebox-task-123',
@@ -1511,6 +1524,7 @@ try {
     artifactRoot,
   ], {
     encoding: 'utf8',
+    env: fixtureEnv(),
     input: JSON.stringify(hangingRequest),
     timeout: 3000,
   });
@@ -1552,6 +1566,7 @@ try {
     writeHangingTaskRunner(root),
   ], {
     encoding: 'utf8',
+    env: fixtureEnv(),
     input: JSON.stringify(configArtifactRequest),
     timeout: 3000,
   });
@@ -1572,6 +1587,7 @@ try {
     writeMissingSecretTaskRunner(root),
   ], {
     encoding: 'utf8',
+    env: fixtureEnv(),
     input: JSON.stringify(codexAgentRequest),
   });
   assert.equal(missingSecretResult.status, 1, missingSecretResult.stderr || missingSecretResult.stdout);
@@ -1613,6 +1629,7 @@ try {
     missingWorkspace.fixture,
   ], {
     encoding: 'utf8',
+    env: fixtureEnv(),
     input: JSON.stringify(missingWorkspaceRequest),
   });
   assert.equal(missingWorkspaceResult.status, 1, missingWorkspaceResult.stderr || missingWorkspaceResult.stdout);
@@ -1644,10 +1661,9 @@ try {
   ], {
     encoding: 'utf8',
     input: JSON.stringify(claudeCodeBaseRequest),
-    env: {
-      ...process.env,
+    env: fixtureEnv({
       [claudeCodeRefreshTokenEnv]: '',
-    },
+    }),
   });
   assert.equal(claudeMissingValueResult.status, 1, claudeMissingValueResult.stderr || claudeMissingValueResult.stdout);
   const claudeMissingValueOutcome = JSON.parse(claudeMissingValueResult.stdout);
@@ -1669,11 +1685,10 @@ try {
         secret_env: ['AI_PROVIDER_CLAUDE_CODE_ACCESS_TOKEN'],
       },
     }),
-    env: {
-      ...process.env,
+    env: fixtureEnv({
       AI_PROVIDER_CLAUDE_CODE_ACCESS_TOKEN: 'claude-access-token-value',
       [claudeCodeRefreshTokenEnv]: 'claude-refresh-token-value',
-    },
+    }),
   });
   assert.equal(claudeMissingMappingResult.status, 1, claudeMissingMappingResult.stderr || claudeMissingMappingResult.stdout);
   const claudeMissingMappingOutcome = JSON.parse(claudeMissingMappingResult.stdout);
