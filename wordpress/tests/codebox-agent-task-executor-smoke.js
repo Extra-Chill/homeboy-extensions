@@ -537,6 +537,37 @@ try {
   assert.deepEqual(codexSubscriptionDefaultedRequest.runtime_overlays, []);
   assert.deepEqual(codexSubscriptionDefaultedRequest.secret_env, codexSecretEnv);
 
+  const configuredProviderPath = path.join(defaultsRoot, 'configured-provider');
+  const configuredLibraryPath = path.join(defaultsRoot, 'configured-library');
+  const configuredRuntimeOverlays = [{
+    type: 'bundled-library',
+    library: 'php-ai-client',
+    source: configuredLibraryPath,
+    target: '/wordpress/wp-includes/php-ai-client',
+  }];
+  const configuredGenericStackRequest = codeboxTaskRequestFromAgentTaskRequest({
+    ...request,
+    task_id: 'configured-generic-stack-task-123',
+    executor: {
+      backend: 'codebox',
+      config: { provider: 'codex' },
+    },
+    inputs: {
+      target: { root: workspaceRoot },
+    },
+  }, {
+    settings: {
+      wp_codebox_provider_plugin_paths: [configuredProviderPath],
+      wp_codebox_runtime_overlay_profiles: ['configured-profile'],
+      wp_codebox_runtime_overlays: configuredRuntimeOverlays,
+      wp_codebox_secret_env: ['CONFIGURED_SECRET'],
+    },
+  });
+  assert.deepEqual(configuredGenericStackRequest.provider_plugin_paths, [configuredProviderPath]);
+  assert.deepEqual(configuredGenericStackRequest.runtime_overlay_profiles, ['configured-profile']);
+  assert.deepEqual(configuredGenericStackRequest.runtime_overlays, configuredRuntimeOverlays);
+  assert.deepEqual(configuredGenericStackRequest.secret_env, ['CONFIGURED_SECRET']);
+
   const openAiDefaultedRequest = codeboxTaskRequestFromAgentTaskRequest({
     ...request,
     task_id: 'default-openai-provider-task-123',
