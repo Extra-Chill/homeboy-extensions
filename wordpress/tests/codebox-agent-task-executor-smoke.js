@@ -42,6 +42,7 @@ fs.writeFileSync(${JSON.stringify(capture)}, JSON.stringify({
   argv: process.argv.slice(2),
   request,
   env_presence: Object.fromEntries(codexSecretEnv.map((name) => [name, Boolean(process.env[name])])),
+  codex_env: Object.fromEntries(codexSecretEnv.map((name) => [name, process.env[name] || ''])),
 }, null, 2));
 process.stdout.write(JSON.stringify({
   success: true,
@@ -1657,13 +1658,24 @@ try {
 
   const fakeCodexHome = path.join(root, 'fake-codex-home');
   const fakeCodexDirectory = path.join(fakeCodexHome, '.codex');
+  const fakeOpenCodeDirectory = path.join(fakeCodexHome, '.local', 'share', 'opencode');
   fs.mkdirSync(fakeCodexDirectory, { recursive: true });
+  fs.mkdirSync(fakeOpenCodeDirectory, { recursive: true });
   fs.writeFileSync(path.join(fakeCodexDirectory, 'auth.json'), JSON.stringify({
     tokens: {
       access_token: 'fixture-codex-access-token',
       refresh_token: 'fixture-codex-refresh-token',
       expires_at: '1780000000',
       account_id: 'fixture-codex-account-id',
+    },
+  }));
+  fs.writeFileSync(path.join(fakeOpenCodeDirectory, 'auth.json'), JSON.stringify({
+    openai: {
+      type: 'oauth',
+      access: 'fixture-opencode-access-token',
+      refresh: 'fixture-opencode-refresh-token',
+      expires: 1780000000123,
+      accountId: 'fixture-opencode-account-id',
     },
   }));
 
@@ -1700,6 +1712,10 @@ try {
     'AI_PROVIDER_OPENAI_CODEX_FEDRAMP',
   ]);
   assert.deepEqual(capturedCodex.env_presence, Object.fromEntries(codexSecretEnv.map((name) => [name, true])));
+  assert.equal(capturedCodex.codex_env.AI_PROVIDER_OPENAI_CODEX_ACCESS_TOKEN, 'fixture-opencode-access-token');
+  assert.equal(capturedCodex.codex_env.AI_PROVIDER_OPENAI_CODEX_REFRESH_TOKEN, 'fixture-opencode-refresh-token');
+  assert.equal(capturedCodex.codex_env.AI_PROVIDER_OPENAI_CODEX_EXPIRES_AT, '1780000000');
+  assert.equal(capturedCodex.codex_env.AI_PROVIDER_OPENAI_CODEX_ACCOUNT_ID, 'fixture-opencode-account-id');
   assert(!JSON.stringify(capturedCodex).includes('wp-ai-gateway'));
   assert(!JSON.stringify(capturedCodex).includes('fixture-codex-access-token'));
 

@@ -75,6 +75,10 @@ function defaultCodexAuthPath() {
   return process.env.HOME ? path.join(process.env.HOME, '.codex', 'auth.json') : '';
 }
 
+function defaultOpenCodeAuthPath() {
+  return process.env.HOME ? path.join(process.env.HOME, '.local', 'share', 'opencode', 'auth.json') : '';
+}
+
 function jwtExpiration(token) {
   const payload = String(token || '').split('.')[1];
   if (!payload) {
@@ -96,9 +100,7 @@ function codexAuthEnv(taskInput) {
   if (CODEX_SECRET_ENV.slice(0, 4).every((name) => Boolean(process.env[name]))) {
     return {};
   }
-  const authPath = process.env.HOMEBOY_WP_CODEBOX_CODEX_AUTH_PATH || defaultCodexAuthPath();
-  const auth = readJsonIfAvailable(authPath);
-  const tokens = auth?.tokens || {};
+  const tokens = codexTokensFromOpenCodeAuth() || codexTokensFromCodexAuth();
   if (!tokens.access_token || !tokens.refresh_token || !tokens.account_id) {
     return {};
   }
@@ -109,6 +111,36 @@ function codexAuthEnv(taskInput) {
     AI_PROVIDER_OPENAI_CODEX_ACCOUNT_ID: tokens.account_id,
     AI_PROVIDER_OPENAI_CODEX_FEDRAMP: tokens.fedramp === undefined ? 'false' : String(tokens.fedramp),
   }).filter(([name, value]) => CODEX_SECRET_ENV.includes(name) && value !== undefined && value !== null && value !== ''));
+}
+
+function codexTokensFromOpenCodeAuth() {
+  const authPath = process.env.HOMEBOY_WP_CODEBOX_OPENCODE_AUTH_PATH || defaultOpenCodeAuthPath();
+  const auth = readJsonIfAvailable(authPath);
+  const openai = auth?.openai || {};
+  if (openai.type !== 'oauth' || !openai.access || !openai.refresh || !openai.accountId) {
+    return null;
+  }
+  return {
+    access_token: openai.access,
+    refresh_token: openai.refresh,
+    expires_at: openCodeExpiresAt(openai.expires) || jwtExpiration(openai.access),
+    account_id: openai.accountId,
+    fedramp: openai.fedramp,
+  };
+}
+
+function codexTokensFromCodexAuth() {
+  const authPath = process.env.HOMEBOY_WP_CODEBOX_CODEX_AUTH_PATH || defaultCodexAuthPath();
+  const auth = readJsonIfAvailable(authPath);
+  return auth?.tokens || {};
+}
+
+function openCodeExpiresAt(value) {
+  if (!Number.isFinite(Number(value))) {
+    return '';
+  }
+  const numeric = Number(value);
+  return String(numeric > 100000000000 ? Math.floor(numeric / 1000) : Math.floor(numeric));
 }
 
 function directorySizeBytes(directory) {
