@@ -90,8 +90,24 @@ name: Data Machine Agent CI (reusable)
         description: "Include the standard WordPress agent runtime stack: Agents API, Data Machine, and Data Machine Code."
         type: boolean
         default: true
+      agent_runtime:
+        description: Runtime substrate id. Currently only wp-codebox is supported; runtime_id is an alias.
+        type: string
+        default: ""
+      runtime_id:
+        description: Alias for agent_runtime.
+        type: string
+        default: ""
+      agent_runtime_ref:
+        description: Runtime substrate ref. Overrides runtime_ref and wp_codebox_ref when set.
+        type: string
+        default: ""
+      runtime_ref:
+        description: Alias for agent_runtime_ref. Overrides wp_codebox_ref when set.
+        type: string
+        default: ""
       wp_codebox_ref:
-        description: Ref for Automattic/wp-codebox. Agent CI always checks out and builds WP Codebox when run_agent is true.
+        description: Ref for Automattic/wp-codebox. Alias for the default WP Codebox runtime ref when agent_runtime_ref/runtime_ref are empty.
         type: string
         default: main
       agents_api_ref:
@@ -219,6 +235,14 @@ name: Data Machine Agent CI (reusable)
           the default ci-driver fixture mount. Entries may be SOURCE:TARGET[:MODE]
           strings or objects with source, target, mode, and optional type
           (directory or file). Default '[]' means no extra mounts.
+        type: string
+        default: "[]"
+      runtime_mounts:
+        description: Runtime-neutral alias for extra WP Codebox mounts. JSON string array appended alongside extra_wp_codebox_mounts.
+        type: string
+        default: "[]"
+      runtime_overlays:
+        description: JSON array of runtime overlay entries forwarded to the runner config runtime_overlays.
         type: string
         default: "[]"
       workload_run_before:
@@ -496,6 +520,10 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
           VALIDATION_DEPENDENCIES: ${{ inputs.validation_dependencies }}
           INCLUDE_AGENT_RUNTIME_DEPENDENCIES: ${{ inputs.include_agent_runtime_dependencies }}
+          AGENT_RUNTIME: ${{ inputs.agent_runtime }}
+          RUNTIME_ID: ${{ inputs.runtime_id }}
+          AGENT_RUNTIME_REF: ${{ inputs.agent_runtime_ref }}
+          RUNTIME_REF: ${{ inputs.runtime_ref }}
           WP_CODEBOX_REF: ${{ inputs.wp_codebox_ref }}
           AGENTS_API_REF: ${{ inputs.agents_api_ref }}
           DATA_MACHINE_REF: ${{ inputs.data_machine_ref }}
@@ -506,6 +534,16 @@ jobs:
         run: |
           set -euo pipefail
           dependency_entries=()
+          effective_runtime_id="${AGENT_RUNTIME:-${RUNTIME_ID:-wp-codebox}}"
+          if [ -n "$AGENT_RUNTIME" ] && [ -n "$RUNTIME_ID" ] && [ "$AGENT_RUNTIME" != "$RUNTIME_ID" ]; then
+            echo "agent_runtime and runtime_id must match when both are set." >&2
+            exit 1
+          fi
+          if [ "$effective_runtime_id" != "wp-codebox" ]; then
+            echo "Unsupported agent_runtime/runtime_id: $effective_runtime_id. Only wp-codebox is currently supported." >&2
+            exit 1
+          fi
+          effective_runtime_ref="${AGENT_RUNTIME_REF:-${RUNTIME_REF:-$WP_CODEBOX_REF}}"
           provider_plugin_json="$(printf '%s' "$PROVIDER_PLUGIN" | jq -Rsc --arg provider "$PROVIDER" --arg openaiRef "$OPENAI_PROVIDER_REF" '
             if (gsub("^\\s+|\\s+$"; "") | length) == 0 then {} else fromjson end
             | if type == "object" then . else error("provider_plugin must be a JSON object") end
@@ -519,7 +557,7 @@ jobs:
           ')"
           provider_plugin_repo="$(jq -r '.repo // ""' <<< "$provider_plugin_json")"
           provider_plugin_ref="$(jq -r '.ref // ""' <<< "$provider_plugin_json")"
-          dependency_entries+=("Automattic/wp-codebox@${WP_CODEBOX_REF}")
+          dependency_entries+=("Automattic/wp-codebox@${effective_runtime_ref}")
           if [ "$INCLUDE_AGENT_RUNTIME_DEPENDENCIES" = "true" ]; then
             dependency_entries+=("Automattic/agents-api@${AGENTS_API_REF}")
             dependency_entries+=("Extra-Chill/data-machine@${DATA_MACHINE_REF}")
@@ -688,6 +726,11 @@ jobs:
           PROMPT: ${{ inputs.prompt }}
           PROVIDER: ${{ inputs.provider }}
           MODEL: ${{ inputs.model }}
+          AGENT_RUNTIME: ${{ inputs.agent_runtime }}
+          RUNTIME_ID: ${{ inputs.runtime_id }}
+          AGENT_RUNTIME_REF: ${{ inputs.agent_runtime_ref }}
+          RUNTIME_REF: ${{ inputs.runtime_ref }}
+          WP_CODEBOX_REF: ${{ inputs.wp_codebox_ref }}
           WP_CODEBOX_WORDPRESS_VERSION: ${{ inputs.wp_codebox_wordpress_version }}
           SUCCESS_REQUIRES_PR: ${{ inputs.success_requires_pr }}
           SUCCESS_COMPLETION_OUTCOMES: ${{ inputs.success_completion_outcomes }}
@@ -705,6 +748,8 @@ jobs:
           DRY_RUN: ${{ inputs.dry_run }}
           EXTRA_WP_CONFIG_DEFINES: ${{ inputs.extra_wp_config_defines }}
           EXTRA_WP_CODEBOX_MOUNTS: ${{ inputs.extra_wp_codebox_mounts }}
+          RUNTIME_MOUNTS: ${{ inputs.runtime_mounts }}
+          RUNTIME_OVERLAYS: ${{ inputs.runtime_overlays }}
           WORKLOAD_RUN_BEFORE: ${{ inputs.workload_run_before }}
           WORKLOAD_RUN_AFTER: ${{ inputs.workload_run_after }}
           DAILY_MEMORY_ENABLED: ${{ inputs.daily_memory_enabled }}
@@ -744,6 +789,16 @@ jobs:
           component_slug="$(basename "$GITHUB_WORKSPACE")"
           transcript_host_dir="${GITHUB_WORKSPACE}/datamachine-agent-artifacts/${AGENT_SLUG}"
           transcript_guest_dir="/wordpress/wp-content/plugins/${component_slug}/datamachine-agent-artifacts/${AGENT_SLUG}"
+          effective_runtime_id="${AGENT_RUNTIME:-${RUNTIME_ID:-wp-codebox}}"
+          if [ -n "$AGENT_RUNTIME" ] && [ -n "$RUNTIME_ID" ] && [ "$AGENT_RUNTIME" != "$RUNTIME_ID" ]; then
+            echo "agent_runtime and runtime_id must match when both are set." >&2
+            exit 1
+          fi
+          if [ "$effective_runtime_id" != "wp-codebox" ]; then
+            echo "Unsupported agent_runtime/runtime_id: $effective_runtime_id. Only wp-codebox is currently supported." >&2
+            exit 1
+          fi
+          effective_runtime_ref="${AGENT_RUNTIME_REF:-${RUNTIME_REF:-$WP_CODEBOX_REF}}"
           execute_workflow_guest_path="$EXECUTE_WORKFLOW_PATH"
           execute_workflow_mounts_json="[]"
           if [ -n "$EXECUTE_WORKFLOW_PATH" ] && [[ "$EXECUTE_WORKFLOW_PATH" != /* ]]; then
@@ -843,7 +898,23 @@ jobs:
           ')"
           workspace_contract_checks_json="$(validate_json_input workspace_contract_checks object "$WORKSPACE_CONTRACT_CHECKS")"
           extra_wp_config_defines_json="$(validate_json_input extra_wp_config_defines object "$EXTRA_WP_CONFIG_DEFINES")"
-          extra_wp_codebox_mounts_json="$(validate_json_input extra_wp_codebox_mounts array "$EXTRA_WP_CODEBOX_MOUNTS" | jq -c --arg workspace "$GITHUB_WORKSPACE" '
+          normalize_mounts_input() {
+            local name="$1"
+            local value="$2"
+            validate_json_input "$name" array "$value" | jq -c --arg workspace "$GITHUB_WORKSPACE" '
+              map(
+                if type == "object" and (.source? | type == "string") and (.source | startswith("/") | not) then
+                  .source = ($workspace + "/" + .source)
+                else
+                  .
+                end
+              )
+            '
+          }
+          extra_wp_codebox_mounts_json="$(jq -cs '.[0] + .[1]' \
+            <(normalize_mounts_input extra_wp_codebox_mounts "$EXTRA_WP_CODEBOX_MOUNTS") \
+            <(normalize_mounts_input runtime_mounts "$RUNTIME_MOUNTS"))"
+          runtime_overlays_json="$(validate_json_input runtime_overlays array "$RUNTIME_OVERLAYS" | jq -c --arg workspace "$GITHUB_WORKSPACE" '
             map(
               if type == "object" and (.source? | type == "string") and (.source | startswith("/") | not) then
                 .source = ($workspace + "/" + .source)
@@ -927,6 +998,8 @@ jobs:
             --arg executeWorkflowPath "$execute_workflow_guest_path" \
             --arg providerRegisterFunction "$provider_register_function" \
             --arg wpCliToolName "$WP_CLI_TOOL_NAME" \
+            --arg runtimeId "$effective_runtime_id" \
+            --arg runtimeRef "$effective_runtime_ref" \
             --argjson validationDependencies "$validation_json" \
             --argjson providerCredentials "$provider_credentials_json" \
             --argjson providerBenchEnv "$provider_bench_env_json" \
@@ -941,6 +1014,7 @@ jobs:
             --argjson dryRun "$DRY_RUN" \
             --argjson extraWpConfigDefines "$extra_wp_config_defines_json" \
             --argjson extraWpCodeboxMounts "$extra_wp_codebox_mounts_json" \
+            --argjson runtimeOverlays "$runtime_overlays_json" \
             --argjson executeWorkflowMounts "$execute_workflow_mounts_json" \
             --argjson runnerWorkspaceMounts "$runner_workspace_mounts_json" \
             --argjson workloadRunBefore "$workload_run_before_json" \
@@ -966,6 +1040,8 @@ jobs:
               workload_id: $flowSlug,
               workload_label: ("Run " + $agentSlug + " Data Machine agent"),
               validation_dependencies: $validationDependencies,
+              runtime_id: $runtimeId,
+              runtime_ref: $runtimeRef,
               wp_codebox_wordpress_version: $wpCodeboxWordPressVersion,
               wp_codebox_mounts: ([
                 {
@@ -976,6 +1052,7 @@ jobs:
                 }
               ] + $extraWpCodeboxMounts + $executeWorkflowMounts + $runnerWorkspaceMounts),
               wp_config_defines: $extraWpConfigDefines,
+              runtime_overlays: $runtimeOverlays,
               workload_run_before: $workloadRunBefore,
               workload_run_after: $workloadRunAfter,
               required_abilities: (((if $executeWorkflowPath != "" then ["datamachine/import-agent", "datamachine/execute-workflow", "datamachine/drain-job"] else ["datamachine/import-agent", "datamachine/run-flow", "datamachine/drain-job"] end) + $extraRequiredAbilities) | reduce .[] as $ability ([]; if index($ability) then . else . + [$ability] end)),

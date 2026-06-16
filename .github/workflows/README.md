@@ -143,6 +143,8 @@ jobs:
 ## Inputs worth calling out
 
 - Agent CI always runs through WP Codebox. The workflow checks out and builds `Automattic/wp-codebox` whenever `run_agent` is true; `wp_codebox_ref` controls the ref.
+- `agent_runtime` and `runtime_id` are runtime-neutral names for the execution substrate. Today the only supported value is `wp-codebox`, which remains the default.
+- `agent_runtime_ref` and `runtime_ref` are runtime-neutral names for the substrate ref. They override `wp_codebox_ref` when set; existing callers can keep using `wp_codebox_ref` unchanged.
 - `include_agent_runtime_dependencies` defaults to `true` and checks out the standard WordPress agent runtime stack: `Automattic/agents-api`, `Extra-Chill/data-machine`, `Extra-Chill/data-machine-code`, and the provider plugin.
 - `agents_api_ref`, `data_machine_ref`, `data_machine_code_ref`, and `openai_provider_ref` control runtime dependency refs. `openai_provider_ref` defaults to `trunk` for the built-in OpenAI preset.
 - `provider_plugin` is a JSON object with `repo`, `ref`, `path`, `register_function`, and `credentials` keys. When `provider: openai`, an empty object preserves the existing OpenAI provider defaults.
@@ -156,6 +158,8 @@ jobs:
 - `dry_run` is intended for workflow smoke tests only; production consumers should leave it `false`.
 - `transcript_artifact_name` controls artifact upload. An empty value skips upload.
 - `extra_wp_config_defines` must be a JSON object and is merged into the runner config `wp_config_defines`.
+- `runtime_mounts` is the runtime-neutral alias for additional runtime mounts. It is appended alongside `extra_wp_codebox_mounts`; both inputs must be JSON arrays.
+- `runtime_overlays` forwards runtime overlay entries to the runner config. It must be a JSON array.
 - `extra_wp_codebox_mounts`, `workload_run_before`, `workload_run_after`, and `extra_required_abilities` must be JSON arrays.
 - `workload_run_after` runs post-agent verifier hooks in the same WordPress scenario, so consumers can assert the agent left WordPress in a valid state.
 - `ability_tools` adds WordPress ability-backed tools to the agent loop. It must be a JSON array.
