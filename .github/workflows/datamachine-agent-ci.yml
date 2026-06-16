@@ -91,23 +91,11 @@ name: Data Machine Agent CI (reusable)
         type: boolean
         default: true
       agent_runtime:
-        description: Runtime substrate id. Currently only wp-codebox is supported; runtime_id is an alias.
+        description: Runtime substrate id. Currently only wp-codebox is supported.
         type: string
-        default: ""
-      runtime_id:
-        description: Alias for agent_runtime.
-        type: string
-        default: ""
+        default: wp-codebox
       agent_runtime_ref:
-        description: Runtime substrate ref. Overrides runtime_ref and wp_codebox_ref when set.
-        type: string
-        default: ""
-      runtime_ref:
-        description: Alias for agent_runtime_ref. Overrides wp_codebox_ref when set.
-        type: string
-        default: ""
-      wp_codebox_ref:
-        description: Ref for Automattic/wp-codebox. Alias for the default WP Codebox runtime ref when agent_runtime_ref/runtime_ref are empty.
+        description: Runtime substrate ref. For agent_runtime=wp-codebox this is the Automattic/wp-codebox ref.
         type: string
         default: main
       agents_api_ref:
@@ -126,7 +114,8 @@ name: Data Machine Agent CI (reusable)
         description: Ref for WordPress/ai-provider-for-openai when mounting the default OpenAI provider plugin.
         type: string
         default: trunk
-      wp_codebox_wordpress_version:
+      runtime_wordpress_version:
+        description: WordPress version used by the selected WordPress-capable runtime.
         type: string
         default: "7.0"
       success_requires_pr:
@@ -229,16 +218,12 @@ name: Data Machine Agent CI (reusable)
           Default '{}' means no extra defines.
         type: string
         default: "{}"
-      extra_wp_codebox_mounts:
+      runtime_mounts:
         description: |
-          JSON string array appended to the runner config wp_codebox_mounts after
-          the default ci-driver fixture mount. Entries may be SOURCE:TARGET[:MODE]
+          JSON string array appended to the selected runtime mounts after the
+          default ci-driver fixture mount. Entries may be SOURCE:TARGET[:MODE]
           strings or objects with source, target, mode, and optional type
           (directory or file). Default '[]' means no extra mounts.
-        type: string
-        default: "[]"
-      runtime_mounts:
-        description: Runtime-neutral alias for extra WP Codebox mounts. JSON string array appended alongside extra_wp_codebox_mounts.
         type: string
         default: "[]"
       runtime_overlays:
@@ -521,10 +506,7 @@ jobs:
           VALIDATION_DEPENDENCIES: ${{ inputs.validation_dependencies }}
           INCLUDE_AGENT_RUNTIME_DEPENDENCIES: ${{ inputs.include_agent_runtime_dependencies }}
           AGENT_RUNTIME: ${{ inputs.agent_runtime }}
-          RUNTIME_ID: ${{ inputs.runtime_id }}
           AGENT_RUNTIME_REF: ${{ inputs.agent_runtime_ref }}
-          RUNTIME_REF: ${{ inputs.runtime_ref }}
-          WP_CODEBOX_REF: ${{ inputs.wp_codebox_ref }}
           AGENTS_API_REF: ${{ inputs.agents_api_ref }}
           DATA_MACHINE_REF: ${{ inputs.data_machine_ref }}
           DATA_MACHINE_CODE_REF: ${{ inputs.data_machine_code_ref }}
@@ -534,16 +516,12 @@ jobs:
         run: |
           set -euo pipefail
           dependency_entries=()
-          effective_runtime_id="${AGENT_RUNTIME:-${RUNTIME_ID:-wp-codebox}}"
-          if [ -n "$AGENT_RUNTIME" ] && [ -n "$RUNTIME_ID" ] && [ "$AGENT_RUNTIME" != "$RUNTIME_ID" ]; then
-            echo "agent_runtime and runtime_id must match when both are set." >&2
-            exit 1
-          fi
+          effective_runtime_id="$AGENT_RUNTIME"
           if [ "$effective_runtime_id" != "wp-codebox" ]; then
-            echo "Unsupported agent_runtime/runtime_id: $effective_runtime_id. Only wp-codebox is currently supported." >&2
+            echo "Unsupported agent_runtime: $effective_runtime_id. Only wp-codebox is currently supported." >&2
             exit 1
           fi
-          effective_runtime_ref="${AGENT_RUNTIME_REF:-${RUNTIME_REF:-$WP_CODEBOX_REF}}"
+          effective_runtime_ref="$AGENT_RUNTIME_REF"
           provider_plugin_json="$(printf '%s' "$PROVIDER_PLUGIN" | jq -Rsc --arg provider "$PROVIDER" --arg openaiRef "$OPENAI_PROVIDER_REF" '
             if (gsub("^\\s+|\\s+$"; "") | length) == 0 then {} else fromjson end
             | if type == "object" then . else error("provider_plugin must be a JSON object") end
@@ -727,11 +705,8 @@ jobs:
           PROVIDER: ${{ inputs.provider }}
           MODEL: ${{ inputs.model }}
           AGENT_RUNTIME: ${{ inputs.agent_runtime }}
-          RUNTIME_ID: ${{ inputs.runtime_id }}
           AGENT_RUNTIME_REF: ${{ inputs.agent_runtime_ref }}
-          RUNTIME_REF: ${{ inputs.runtime_ref }}
-          WP_CODEBOX_REF: ${{ inputs.wp_codebox_ref }}
-          WP_CODEBOX_WORDPRESS_VERSION: ${{ inputs.wp_codebox_wordpress_version }}
+          RUNTIME_WORDPRESS_VERSION: ${{ inputs.runtime_wordpress_version }}
           SUCCESS_REQUIRES_PR: ${{ inputs.success_requires_pr }}
           SUCCESS_COMPLETION_OUTCOMES: ${{ inputs.success_completion_outcomes }}
           MAX_TURNS: ${{ inputs.max_turns }}
@@ -747,7 +722,6 @@ jobs:
           WP_GYM_BENCHMARK_MODE: ${{ inputs.wp_gym_benchmark_mode }}
           DRY_RUN: ${{ inputs.dry_run }}
           EXTRA_WP_CONFIG_DEFINES: ${{ inputs.extra_wp_config_defines }}
-          EXTRA_WP_CODEBOX_MOUNTS: ${{ inputs.extra_wp_codebox_mounts }}
           RUNTIME_MOUNTS: ${{ inputs.runtime_mounts }}
           RUNTIME_OVERLAYS: ${{ inputs.runtime_overlays }}
           WORKLOAD_RUN_BEFORE: ${{ inputs.workload_run_before }}
@@ -789,16 +763,12 @@ jobs:
           component_slug="$(basename "$GITHUB_WORKSPACE")"
           transcript_host_dir="${GITHUB_WORKSPACE}/datamachine-agent-artifacts/${AGENT_SLUG}"
           transcript_guest_dir="/wordpress/wp-content/plugins/${component_slug}/datamachine-agent-artifacts/${AGENT_SLUG}"
-          effective_runtime_id="${AGENT_RUNTIME:-${RUNTIME_ID:-wp-codebox}}"
-          if [ -n "$AGENT_RUNTIME" ] && [ -n "$RUNTIME_ID" ] && [ "$AGENT_RUNTIME" != "$RUNTIME_ID" ]; then
-            echo "agent_runtime and runtime_id must match when both are set." >&2
-            exit 1
-          fi
+          effective_runtime_id="$AGENT_RUNTIME"
           if [ "$effective_runtime_id" != "wp-codebox" ]; then
-            echo "Unsupported agent_runtime/runtime_id: $effective_runtime_id. Only wp-codebox is currently supported." >&2
+            echo "Unsupported agent_runtime: $effective_runtime_id. Only wp-codebox is currently supported." >&2
             exit 1
           fi
-          effective_runtime_ref="${AGENT_RUNTIME_REF:-${RUNTIME_REF:-$WP_CODEBOX_REF}}"
+          effective_runtime_ref="$AGENT_RUNTIME_REF"
           execute_workflow_guest_path="$EXECUTE_WORKFLOW_PATH"
           execute_workflow_mounts_json="[]"
           if [ -n "$EXECUTE_WORKFLOW_PATH" ] && [[ "$EXECUTE_WORKFLOW_PATH" != /* ]]; then
@@ -911,9 +881,7 @@ jobs:
               )
             '
           }
-          extra_wp_codebox_mounts_json="$(jq -cs '.[0] + .[1]' \
-            <(normalize_mounts_input extra_wp_codebox_mounts "$EXTRA_WP_CODEBOX_MOUNTS") \
-            <(normalize_mounts_input runtime_mounts "$RUNTIME_MOUNTS"))"
+          runtime_mounts_json="$(normalize_mounts_input runtime_mounts "$RUNTIME_MOUNTS")"
           runtime_overlays_json="$(validate_json_input runtime_overlays array "$RUNTIME_OVERLAYS" | jq -c --arg workspace "$GITHUB_WORKSPACE" '
             map(
               if type == "object" and (.source? | type == "string") and (.source | startswith("/") | not) then
@@ -953,8 +921,8 @@ jobs:
           provider_register_function="$(jq -r '.register_function // ""' <<< "$provider_plugin_json")"
           provider_credentials_json="$(jq -c '.credentials // {}' <<< "$provider_plugin_json")"
           provider_bench_env_json="{}"
-          wp_codebox_bin="${GITHUB_WORKSPACE}/.ci/wp-codebox/packages/cli/dist/index.js"
-          [ -f "$wp_codebox_bin" ] || { echo "WP Codebox CLI build missing at $wp_codebox_bin" >&2; exit 1; }
+          runtime_bin="${GITHUB_WORKSPACE}/.ci/wp-codebox/packages/cli/dist/index.js"
+          [ -f "$runtime_bin" ] || { echo "Runtime CLI build missing at $runtime_bin" >&2; exit 1; }
           while IFS= read -r provider_env_name; do
             [ -n "$provider_env_name" ] || continue
             case "$provider_env_name" in
@@ -983,11 +951,11 @@ jobs:
             --arg prompt "$PROMPT" \
             --arg provider "$PROVIDER" \
             --arg model "$MODEL" \
-            --arg wpCodeboxBin "$wp_codebox_bin" \
+            --arg runtimeBin "$runtime_bin" \
             --arg providerPluginHostPath "$provider_plugin_host_path" \
             --arg engineKey "$ENGINE_KEY" \
             --arg toolResultsKey "$TOOL_RESULTS_KEY" \
-            --arg wpCodeboxWordPressVersion "$WP_CODEBOX_WORDPRESS_VERSION" \
+            --arg runtimeWordPressVersion "$RUNTIME_WORDPRESS_VERSION" \
             --arg homeboyExtensionsPath "${GITHUB_WORKSPACE}/.ci/homeboy-extensions" \
             --arg transcriptHostDir "$transcript_host_dir" \
             --arg transcriptGuestDir "$transcript_guest_dir" \
@@ -1013,7 +981,7 @@ jobs:
             --argjson artifactDeclarations "$artifact_declarations_json" \
             --argjson dryRun "$DRY_RUN" \
             --argjson extraWpConfigDefines "$extra_wp_config_defines_json" \
-            --argjson extraWpCodeboxMounts "$extra_wp_codebox_mounts_json" \
+            --argjson runtimeMounts "$runtime_mounts_json" \
             --argjson runtimeOverlays "$runtime_overlays_json" \
             --argjson executeWorkflowMounts "$execute_workflow_mounts_json" \
             --argjson runnerWorkspaceMounts "$runner_workspace_mounts_json" \
@@ -1042,15 +1010,15 @@ jobs:
               validation_dependencies: $validationDependencies,
               runtime_id: $runtimeId,
               runtime_ref: $runtimeRef,
-              wp_codebox_wordpress_version: $wpCodeboxWordPressVersion,
-              wp_codebox_mounts: ([
+              runtime_wordpress_version: $runtimeWordPressVersion,
+              runtime_mounts: ([
                 {
                   type: "file",
                   source: ($homeboyExtensionsPath + "/wordpress/tests/fixtures/datamachine-agent-ci-driver/datamachine-agent-ci-driver.php"),
                   target: "/wordpress/wp-content/plugins/datamachine-agent-ci-driver/datamachine-agent-ci-driver.php",
                   mode: "readonly"
                 }
-              ] + $extraWpCodeboxMounts + $executeWorkflowMounts + $runnerWorkspaceMounts),
+              ] + $runtimeMounts + $executeWorkflowMounts + $runnerWorkspaceMounts),
               wp_config_defines: $extraWpConfigDefines,
               runtime_overlays: $runtimeOverlays,
               workload_run_before: $workloadRunBefore,
@@ -1067,9 +1035,9 @@ jobs:
               model: $model,
               provider_register_function: $providerRegisterFunction,
               provider_credentials: $providerCredentials,
-              wp_codebox_bin: $wpCodeboxBin,
-              wp_codebox_components: ({
-                wp_codebox: ($componentPath + "/.ci/wp-codebox/packages/wordpress-plugin"),
+              runtime_bin: $runtimeBin,
+              runtime_components: ({
+                runtime: ($componentPath + "/.ci/wp-codebox/packages/wordpress-plugin"),
                 agents_api: ($componentPath + "/.ci/agents-api"),
                 data_machine: ($componentPath + "/.ci/data-machine"),
                 data_machine_code: ($componentPath + "/.ci/data-machine-code")
