@@ -10,7 +10,7 @@ depend on runtime capabilities without embedding the provider contract.
 
 Generic runtime package requirements are documented in
 [`docs/agent-runtime-package-contract.md`](docs/agent-runtime-package-contract.md).
-Use the `agent-runtimes/fake-runtime` fixture as the minimal contract example;
+Use the `ai-runtimes/fake-runtime` fixture as the minimal contract example;
 WP Codebox is a concrete backend, not the generic template.
 
 ## Available Extensions

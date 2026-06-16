@@ -1,6 +1,6 @@
 # Agent Runtime Package Contract
 
-Agent runtime packages live under `agent-runtimes/<runtime-id>/`. They expose
+AI runtime packages live under `ai-runtimes/<runtime-id>/`. They expose
 provider commands that Homeboy can invoke without encoding backend-specific
 knowledge in core or in domain extensions.
 
@@ -172,7 +172,7 @@ capabilities, not hard-code a global default backend.
 
 ## Fake Runtime Fixture
 
-`agent-runtimes/fake-runtime` is the smallest reference fixture for this
+`ai-runtimes/fake-runtime` is the smallest reference fixture for this
 contract. It exists to prove future runtimes can satisfy Homeboy's generic
 runtime package shape without copying WP Codebox package structure or WordPress
 behavior.

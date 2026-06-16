@@ -23,10 +23,7 @@ try {
   fs.symlinkSync(path.join(__dirname, '..', '..', 'ai-runtimes', 'wp-codebox'), runtimePath, 'dir');
 
   const command = provider.command.replaceAll('{{runtime_path}}', runtimePath);
-  assert(
-    !command.includes('../agent-runtimes/'),
-    'runtime provider command must not require a sibling agent-runtimes install'
-  );
+  assert(command.includes('/ai-runtimes/wp-codebox/'), 'runtime provider command should resolve through ai-runtimes');
 
   const [, scriptPath] = command.match(/^node\s+(.+)$/) || [];
   assert(scriptPath, 'provider command should be a node script command');
@@ -35,11 +32,7 @@ try {
     path.join(runtimePath, 'scripts', 'agent', 'homeboy-codebox-agent-task-executor.cjs')
   );
   assert.equal(fs.existsSync(scriptPath), true, `provider command target should exist: ${scriptPath}`);
-  assert.equal(
-    fs.existsSync(path.join(extensionsRoot, 'agent-runtimes')),
-    false,
-    'smoke layout should not install sibling agent-runtimes'
-  );
+  assert.equal(fs.existsSync(path.join(runtimePath, 'wp-codebox.json')), true, 'smoke layout should install the runtime package');
 
   const result = spawnSync(process.execPath, [scriptPath], {
     encoding: 'utf8',

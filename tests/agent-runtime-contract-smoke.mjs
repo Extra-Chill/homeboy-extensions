@@ -6,7 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const runtimeDir = path.join(rootDir, 'agent-runtimes', 'fake-runtime');
+const runtimeDir = path.join(rootDir, 'ai-runtimes', 'fake-runtime');
 const manifestPath = path.join(runtimeDir, 'fake-runtime.json');
 const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
 
