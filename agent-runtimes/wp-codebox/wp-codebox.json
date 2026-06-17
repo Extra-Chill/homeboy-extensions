@@ -71,7 +71,11 @@
         {
           "schema": "homeboy/secret-env-requirement/v1",
           "source": "provider_default",
-          "env": ["AI_PROVIDER_CLAUDE_CODE_REFRESH_TOKEN"],
+          "env": [
+            "AI_PROVIDER_CLAUDE_CODE_ACCESS_TOKEN",
+            "AI_PROVIDER_CLAUDE_CODE_REFRESH_TOKEN",
+            "AI_PROVIDER_CLAUDE_CODE_EXPIRES_AT"
+          ],
           "when": {
             "any": [
               { "path": "executor.config.provider", "equals": "claude-code" },
@@ -229,7 +233,31 @@
           }
         },
         "claude-code": {
-          "secret_env": ["AI_PROVIDER_CLAUDE_CODE_REFRESH_TOKEN"]
+          "secret_env": [
+            "AI_PROVIDER_CLAUDE_CODE_ACCESS_TOKEN",
+            "AI_PROVIDER_CLAUDE_CODE_REFRESH_TOKEN",
+            "AI_PROVIDER_CLAUDE_CODE_EXPIRES_AT"
+          ],
+          "secret_env_sources": {
+            "AI_PROVIDER_CLAUDE_CODE_ACCESS_TOKEN": {
+              "source": "keychain-bundle",
+              "scope": "agent-task",
+              "name": "claude-code-oauth",
+              "field": "access_token"
+            },
+            "AI_PROVIDER_CLAUDE_CODE_REFRESH_TOKEN": {
+              "source": "keychain-bundle",
+              "scope": "agent-task",
+              "name": "claude-code-oauth",
+              "field": "refresh_token"
+            },
+            "AI_PROVIDER_CLAUDE_CODE_EXPIRES_AT": {
+              "source": "keychain-bundle",
+              "scope": "agent-task",
+              "name": "claude-code-oauth",
+              "field": "expires_at"
+            }
+          }
         }
       },
       "role_aliases": {

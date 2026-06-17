@@ -22,6 +22,11 @@ const codexSecretEnv = [
   'AI_PROVIDER_OPENAI_CODEX_ACCOUNT_ID',
   'AI_PROVIDER_OPENAI_CODEX_FEDRAMP',
 ];
+const claudeCodeSecretEnv = [
+  'AI_PROVIDER_CLAUDE_CODE_ACCESS_TOKEN',
+  'AI_PROVIDER_CLAUDE_CODE_REFRESH_TOKEN',
+  'AI_PROVIDER_CLAUDE_CODE_EXPIRES_AT',
+];
 const claudeCodeRefreshTokenEnv = 'AI_PROVIDER_CLAUDE_CODE_REFRESH_TOKEN';
 const repoLoopCapabilities = [
   'tool:datamachine/run-agent-bundle',
@@ -308,7 +313,7 @@ assert.deepEqual(secretEnvRequirementForProvider(provider, 'codex').when, {
   ],
 });
 assert.deepEqual(secretEnvRequirementForProvider(provider, 'openai').env, ['OPENAI_API_KEY']);
-assert.deepEqual(secretEnvRequirementForProvider(provider, 'claude-code').env, [claudeCodeRefreshTokenEnv]);
+assert.deepEqual(secretEnvRequirementForProvider(provider, 'claude-code').env, claudeCodeSecretEnv);
 assert.deepEqual(provider.workspace_materialization, { cwd: 'git_checkout' });
 assert.deepEqual(provider.provider_defaults, {
   openai: {
@@ -325,7 +330,27 @@ assert.deepEqual(provider.provider_defaults, {
     secret_env_sources: codexSecretEnvSources,
   },
   'claude-code': {
-    secret_env: ['AI_PROVIDER_CLAUDE_CODE_REFRESH_TOKEN'],
+    secret_env: claudeCodeSecretEnv,
+    secret_env_sources: {
+      AI_PROVIDER_CLAUDE_CODE_ACCESS_TOKEN: {
+        source: 'keychain-bundle',
+        scope: 'agent-task',
+        name: 'claude-code-oauth',
+        field: 'access_token',
+      },
+      AI_PROVIDER_CLAUDE_CODE_REFRESH_TOKEN: {
+        source: 'keychain-bundle',
+        scope: 'agent-task',
+        name: 'claude-code-oauth',
+        field: 'refresh_token',
+      },
+      AI_PROVIDER_CLAUDE_CODE_EXPIRES_AT: {
+        source: 'keychain-bundle',
+        scope: 'agent-task',
+        name: 'claude-code-oauth',
+        field: 'expires_at',
+      },
+    },
   },
 });
 assert.deepEqual(provider.role_aliases, {
@@ -513,7 +538,7 @@ const claudeCodeDefaultSecretEnvRequest = codeboxTaskRequestFromAgentTaskRequest
     },
   },
 });
-assert.deepEqual(claudeCodeDefaultSecretEnvRequest.secret_env, [claudeCodeRefreshTokenEnv]);
+assert.deepEqual(claudeCodeDefaultSecretEnvRequest.secret_env, claudeCodeSecretEnv);
 
 const runtimeTaskRequest = codeboxTaskRequestFromAgentTaskRequest({
   ...request,
