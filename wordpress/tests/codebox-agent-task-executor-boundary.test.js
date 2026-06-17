@@ -51,6 +51,11 @@ assert.deepEqual(provider.provider_defaults.codex.secret_env, [
   'AI_PROVIDER_OPENAI_CODEX_ACCOUNT_ID',
   'AI_PROVIDER_OPENAI_CODEX_FEDRAMP',
 ]);
+assert.deepEqual(provider.provider_defaults.codex.secret_env_sources.AI_PROVIDER_OPENAI_CODEX_ACCESS_TOKEN, {
+  source: 'json-file',
+  path: '~/.codex/auth.json',
+  field: 'tokens.access_token',
+});
 assert.deepEqual(provider.provider_defaults['claude-code'].secret_env, [
   'AI_PROVIDER_CLAUDE_CODE_REFRESH_TOKEN',
 ]);

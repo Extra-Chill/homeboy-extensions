@@ -262,6 +262,33 @@ const request = {
 };
 
 const provider = providerContract();
+const codexSecretEnvSources = {
+  AI_PROVIDER_OPENAI_CODEX_ACCESS_TOKEN: {
+    source: 'json-file',
+    path: '~/.codex/auth.json',
+    field: 'tokens.access_token',
+  },
+  AI_PROVIDER_OPENAI_CODEX_REFRESH_TOKEN: {
+    source: 'json-file',
+    path: '~/.codex/auth.json',
+    field: 'tokens.refresh_token',
+  },
+  AI_PROVIDER_OPENAI_CODEX_EXPIRES_AT: {
+    source: 'json-file',
+    path: '~/.codex/auth.json',
+    field: 'tokens.expires_at',
+  },
+  AI_PROVIDER_OPENAI_CODEX_ACCOUNT_ID: {
+    source: 'json-file',
+    path: '~/.codex/auth.json',
+    field: 'tokens.account_id',
+  },
+  AI_PROVIDER_OPENAI_CODEX_FEDRAMP: {
+    source: 'json-file',
+    path: '~/.codex/auth.json',
+    field: 'tokens.fedramp',
+  },
+};
 assert.equal(provider.id, 'wordpress.codebox-agent-task-executor');
 assert.equal(provider.label, 'WP Codebox agent task executor');
 assert.equal(provider.backend, 'codebox');
@@ -295,6 +322,7 @@ assert.deepEqual(provider.provider_defaults, {
       'AI_PROVIDER_OPENAI_CODEX_ACCOUNT_ID',
       'AI_PROVIDER_OPENAI_CODEX_FEDRAMP',
     ],
+    secret_env_sources: codexSecretEnvSources,
   },
   'claude-code': {
     secret_env: ['AI_PROVIDER_CLAUDE_CODE_REFRESH_TOKEN'],
