@@ -874,6 +874,7 @@ function homeboyAgentToolContractEnv() {
     'HOMEBOY_AGENT_TOOL_REQUEST_SCHEMA',
     'HOMEBOY_AGENT_TOOL_RESULT_SCHEMA',
     'HOMEBOY_AGENT_TOOL_POLICY_SCHEMA',
+    'HOMEBOY_AGENT_TOOL_DISPATCH_COMMAND',
   ].map((name) => [name, process.env[name]]).filter(([, value]) => typeof value === 'string' && value !== ''));
 }
 

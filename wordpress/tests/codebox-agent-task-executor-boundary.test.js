@@ -174,6 +174,7 @@ const originalToolPolicyEnv = process.env.HOMEBOY_AGENT_TOOL_POLICY_JSON;
 const originalToolRequestSchemaEnv = process.env.HOMEBOY_AGENT_TOOL_REQUEST_SCHEMA;
 const originalToolResultSchemaEnv = process.env.HOMEBOY_AGENT_TOOL_RESULT_SCHEMA;
 const originalToolPolicySchemaEnv = process.env.HOMEBOY_AGENT_TOOL_POLICY_SCHEMA;
+const originalToolDispatchCommandEnv = process.env.HOMEBOY_AGENT_TOOL_DISPATCH_COMMAND;
 const homeboyAgentToolPolicyJson = JSON.stringify({
   schema: 'homeboy/agent-tool-policy/v1',
   default_location: 'disabled',
@@ -187,6 +188,7 @@ process.env.HOMEBOY_AGENT_TOOL_POLICY_JSON = homeboyAgentToolPolicyJson;
 process.env.HOMEBOY_AGENT_TOOL_REQUEST_SCHEMA = 'homeboy/agent-tool-request/v1';
 process.env.HOMEBOY_AGENT_TOOL_RESULT_SCHEMA = 'homeboy/agent-tool-result/v1';
 process.env.HOMEBOY_AGENT_TOOL_POLICY_SCHEMA = 'homeboy/agent-tool-policy/v1';
+process.env.HOMEBOY_AGENT_TOOL_DISPATCH_COMMAND = 'homeboy agent-task tool dispatch';
 const homeboyToolPolicyTaskInput = codeboxTaskRequestFromAgentTaskRequest({
   schema: 'homeboy/agent-task-request/v1',
   task_id: 'homeboy-tool-policy-task-1',
@@ -199,11 +201,13 @@ restoreEnv('HOMEBOY_AGENT_TOOL_POLICY_JSON', originalToolPolicyEnv);
 restoreEnv('HOMEBOY_AGENT_TOOL_REQUEST_SCHEMA', originalToolRequestSchemaEnv);
 restoreEnv('HOMEBOY_AGENT_TOOL_RESULT_SCHEMA', originalToolResultSchemaEnv);
 restoreEnv('HOMEBOY_AGENT_TOOL_POLICY_SCHEMA', originalToolPolicySchemaEnv);
+restoreEnv('HOMEBOY_AGENT_TOOL_DISPATCH_COMMAND', originalToolDispatchCommandEnv);
 
 assert.equal(homeboyToolPolicyTaskInput.allowed_tools.includes('workspace_read'), true);
 assert.equal(homeboyToolPolicyTaskInput.allowed_tools.includes('github_issue_publish'), false);
 assert.equal(homeboyToolPolicyTaskInput.allowed_tools.includes('github_pull_request_publish'), false);
 assert.equal(homeboyToolPolicyTaskInput.runtime_env.HOMEBOY_AGENT_TOOL_REQUEST_SCHEMA, 'homeboy/agent-tool-request/v1');
+assert.equal(homeboyToolPolicyTaskInput.runtime_env.HOMEBOY_AGENT_TOOL_DISPATCH_COMMAND, 'homeboy agent-task tool dispatch');
 assert.deepEqual(
   JSON.parse(homeboyToolPolicyTaskInput.runtime_env.DATAMACHINE_HOST_TOOL_POLICY_JSON),
   JSON.parse(homeboyAgentToolPolicyJson)
