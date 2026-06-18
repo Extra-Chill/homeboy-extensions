@@ -2,6 +2,29 @@
 
 All notable changes to the **wordpress** extension will be documented in this file.
 
+## [3.7.4] - 2026-06-18
+
+### Fixed
+- repair DB-activation PHPUnit smoke canary on main
+
+## [3.7.3] - 2026-06-18
+
+### Changed
+- Enforce generic runtime boundaries
+
+## [3.7.2] - 2026-06-18
+
+### Changed
+- Genericize adapter fixture examples
+
+## [3.7.1] - 2026-06-18
+
+### Changed
+- Add runtime provider resolver groundwork
+
+### Fixed
+- Fix fanout reconcile runner task determinism
+
 ## [3.7.0] - 2026-06-18
 
 ### Added
