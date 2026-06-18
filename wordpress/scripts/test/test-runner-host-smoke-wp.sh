@@ -322,22 +322,46 @@ echo "  WordPress: ${WP_VERSION:-default}"
 echo "  Per-file timeout: ${HOST_SMOKE_TIMEOUT_SECONDS}s"
 echo ""
 
+# Run every selected smoke even after one fails, then aggregate. Stopping at
+# the first failure forced an iterative fix-one/rerun-CI loop (#4682): each run
+# surfaced only a single failing smoke. Collecting all failures lets the
+# operator fix them in one pass. The overall exit status is still non-zero when
+# any smoke failed (with the first failing exit code preserved) so CI stays red.
 passed=0
+failed=0
+failed_smokes=()
+first_failure_exit=0
 for smoke_file in "${smoke_files[@]}"; do
     rel_path="${smoke_file#"${PLUGIN_PATH}/"}"
     echo "HOST_SMOKE_BEGIN:${rel_path}"
-    if run_one_smoke "$smoke_file"; then
+    # `&&`/`||` provides an errexit-safe context: run_one_smoke toggles `set -e`
+    # internally, so calling it bare under errexit would abort the loop on the
+    # first failing smoke — exactly the one-failure-per-run bug (#4682). Capture
+    # the real exit status directly (a trailing `!`/`if` would clobber `$?`).
+    smoke_status=0
+    run_one_smoke "$smoke_file" || smoke_status=$?
+    if [ "$smoke_status" -eq 0 ]; then
         echo "HOST_SMOKE_OK:${rel_path}"
         passed=$((passed + 1))
     else
-        exit_code=$?
-        echo "HOST_SMOKE_FAIL:${rel_path}:exit=${exit_code}"
-        echo ""
-        echo "Real-WordPress smoke test failed: ${rel_path}"
-        exit "$exit_code"
+        echo "HOST_SMOKE_FAIL:${rel_path}:exit=${smoke_status}"
+        failed=$((failed + 1))
+        failed_smokes+=("${rel_path}:exit=${smoke_status}")
+        if [ "$first_failure_exit" -eq 0 ]; then
+            first_failure_exit="$smoke_status"
+        fi
     fi
 done
 
 echo ""
-echo "HOST_SMOKE_SUMMARY:passed=${passed} failed=0"
+echo "HOST_SMOKE_SUMMARY:passed=${passed} failed=${failed}"
+if [ "$failed" -gt 0 ]; then
+    echo ""
+    echo "Real-WordPress smoke tests failed (${failed} of ${#smoke_files[@]}):"
+    for failed_smoke in "${failed_smokes[@]}"; do
+        echo "  - ${failed_smoke}"
+    done
+    exit "$first_failure_exit"
+fi
+
 echo "Real-WordPress smoke test run complete."

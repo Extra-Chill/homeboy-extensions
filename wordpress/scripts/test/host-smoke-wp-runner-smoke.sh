@@ -11,6 +11,46 @@ EXTENSION_PATH="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 TMPDIR="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR"' EXIT
 
+# Standalone-execution context. When homeboy core drives this self-check it
+# injects the runtime helper wrappers; running the script directly (local dev,
+# `bash -n` follow-up) needs a minimal resolve-context that derives PLUGIN_PATH
+# /EXTENSION_PATH/COMPONENT_ID from the HOMEBOY_COMPONENT_* env the runner reads.
+RESOLVE_CONTEXT_STUB="${TMPDIR}/resolve-context.sh"
+cat > "$RESOLVE_CONTEXT_STUB" <<'SH'
+homeboy_resolve_context() {
+    PLUGIN_PATH="${HOMEBOY_COMPONENT_PATH:?HOMEBOY_COMPONENT_PATH is required}"
+    EXTENSION_PATH="${HOMEBOY_EXTENSION_PATH:?HOMEBOY_EXTENSION_PATH is required}"
+    COMPONENT_ID="${HOMEBOY_COMPONENT_ID:-$(basename "$PLUGIN_PATH")}"
+}
+SH
+export HOMEBOY_RUNTIME_RESOLVE_CONTEXT="${HOMEBOY_RUNTIME_RESOLVE_CONTEXT:-$RESOLVE_CONTEXT_STUB}"
+
+# Minimal runner-prelude for test-runner.sh routing cases. Homeboy core injects
+# the real prelude; standalone runs only need homeboy_runner_init to populate
+# the component-path alias from the HOMEBOY_COMPONENT_* env.
+RUNNER_PRELUDE_STUB="${TMPDIR}/runner-prelude.sh"
+cat > "$RUNNER_PRELUDE_STUB" <<'SH'
+homeboy_runner_init() {
+    local alias_var="PLUGIN_PATH"
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --component-alias)
+                shift
+                alias_var="${1:-PLUGIN_PATH}"
+                ;;
+            --bash)
+                shift
+                ;;
+        esac
+        shift
+    done
+    EXTENSION_PATH="${HOMEBOY_EXTENSION_PATH:?HOMEBOY_EXTENSION_PATH is required}"
+    COMPONENT_PATH="${HOMEBOY_COMPONENT_PATH:-$(pwd)}"
+    printf -v "$alias_var" '%s' "$COMPONENT_PATH"
+}
+SH
+export HOMEBOY_RUNTIME_RUNNER_PRELUDE="${HOMEBOY_RUNTIME_RUNNER_PRELUDE:-$RUNNER_PRELUDE_STUB}"
+
 assert_contains() {
     local file="$1" expected="$2"
     if ! grep -Fq "$expected" "$file"; then
@@ -187,6 +227,88 @@ FAKE_CODEBOX_CAPTURE_DIR="$CAPTURE_DIR" \
 assert_contains "${TMPDIR}/operator.out" "Backend: host-smoke-wp"
 assert_contains "${TMPDIR}/operator.out" "HOST_SMOKE_BEGIN:tests/alpha-smoke.php"
 assert_contains "${TMPDIR}/operator.out" "HOST_SMOKE_OK:tests/alpha-smoke.php"
+
+# --- Aggregation: multiple smoke files run in ONE pass. Even when an early
+# smoke fails, every remaining smoke still runs and all failures are reported
+# together (#4682), instead of stopping at the first failure (which forced an
+# iterative fix-one/rerun-CI loop). The overall status stays non-zero.
+make_aggregate_component() {
+    local target="$1"
+    mkdir -p "$target/tests"
+    for name in alpha beta gamma; do
+        cat > "$target/tests/${name}-smoke.php" <<PHP
+<?php
+echo "${name} ok\n";
+PHP
+    done
+}
+
+aggregate_component="${TMPDIR}/aggregate-component"
+make_aggregate_component "$aggregate_component"
+
+# Fake codebox that fails for any wrapper whose mounted smoke path contains a
+# blocked basename, and succeeds otherwise. Lets us fail beta + gamma while
+# alpha passes, and assert all failures surface in a single run.
+FAKE_CODEBOX_SELECTIVE="${TMPDIR}/fake-wp-codebox-selective.cjs"
+cat > "$FAKE_CODEBOX_SELECTIVE" <<'JS'
+#!/usr/bin/env node
+'use strict';
+const fs = require('fs');
+const args = process.argv.slice(2);
+const recipeIdx = args.indexOf('--recipe');
+const recipe = JSON.parse(fs.readFileSync(args[recipeIdx + 1], 'utf8'));
+const codeFileArg = recipe.workflow.steps[0].args.find((arg) => arg.startsWith('code-file='));
+const wrapper = fs.readFileSync(codeFileArg.slice('code-file='.length), 'utf8');
+const blocked = (process.env.FAKE_CODEBOX_FAIL_BASENAMES || '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+const fails = blocked.some((name) => wrapper.includes(name));
+if (fails) {
+  process.stdout.write(JSON.stringify({
+    success: false,
+    executions: [{ command: 'wordpress.run-php', exitCode: 1, stdout: '', stderr: 'smoke threw\n' }],
+  }));
+} else {
+  process.stdout.write(JSON.stringify({
+    success: true,
+    executions: [{ command: 'wordpress.run-php', exitCode: 0, stdout: 'OK fake smoke passed\n', stderr: '' }],
+  }));
+}
+JS
+
+set +e
+HOMEBOY_EXTENSION_PATH="$EXTENSION_PATH" \
+HOMEBOY_COMPONENT_ID="aggregate-component" \
+HOMEBOY_COMPONENT_PATH="$aggregate_component" \
+HOMEBOY_WP_CODEBOX_BIN="$FAKE_CODEBOX_SELECTIVE" \
+HOMEBOY_WORDPRESS_HOST_SMOKE_FILES=$'tests/alpha-smoke.php\ntests/beta-smoke.php\ntests/gamma-smoke.php' \
+FAKE_CODEBOX_FAIL_BASENAMES="beta-smoke.php,gamma-smoke.php" \
+FAKE_CODEBOX_CAPTURE_DIR="$CAPTURE_DIR" \
+    bash "${EXTENSION_PATH}/scripts/test/test-runner-host-smoke-wp.sh" > "${TMPDIR}/aggregate.out" 2>&1
+aggregate_exit=$?
+set -e
+
+# Overall run must fail because two smokes failed.
+if [ "$aggregate_exit" -eq 0 ]; then
+    echo "Expected aggregated real-WP smoke run to fail when any smoke fails" >&2
+    sed 's/^/  /' "${TMPDIR}/aggregate.out" >&2
+    exit 1
+fi
+
+# The passing smoke still ran and passed.
+assert_contains "${TMPDIR}/aggregate.out" "HOST_SMOKE_OK:tests/alpha-smoke.php"
+# BOTH failing smokes are reported in the same run — beta did not short-circuit
+# gamma. This is the core #4682 guarantee.
+assert_contains "${TMPDIR}/aggregate.out" "HOST_SMOKE_FAIL:tests/beta-smoke.php:exit=1"
+assert_contains "${TMPDIR}/aggregate.out" "HOST_SMOKE_FAIL:tests/gamma-smoke.php:exit=1"
+# Aggregated summary counts every smoke, and the failure roster lists each one.
+assert_contains "${TMPDIR}/aggregate.out" "HOST_SMOKE_SUMMARY:passed=1 failed=2"
+assert_contains "${TMPDIR}/aggregate.out" "Real-WordPress smoke tests failed (2 of 3):"
+# Roster entries are indented with "  - "; match on the indented prefix so the
+# leading dash is never read as a grep option.
+assert_contains "${TMPDIR}/aggregate.out" "  - tests/beta-smoke.php:exit=1"
+assert_contains "${TMPDIR}/aggregate.out" "  - tests/gamma-smoke.php:exit=1"
 
 help_output="$(HOMEBOY_EXTENSION_PATH="$EXTENSION_PATH" HOMEBOY_COMPONENT_ID="component" HOMEBOY_COMPONENT_PATH="$component" HOMEBOY_COMPONENT_SHAPE="plugin" bash "${EXTENSION_PATH}/scripts/test/test-runner.sh" --help)"
 if [[ "$help_output" != *"--host-smoke-file <path>"* ]] || [[ "$help_output" != *"HOST_SMOKE_BEGIN"* ]]; then

@@ -170,6 +170,11 @@ homeboy_wordpress_run_js_smoke_files() {
     echo "  Files: ${#smoke_files[@]}"
     echo ""
 
+    # Run every selected smoke even after one fails, then aggregate (#4682) so
+    # one run reports all failing smokes instead of one-per-CI-run.
+    local failed=0
+    local first_failure_exit=0
+    local failed_smokes=()
     for smoke_file in "${smoke_files[@]}"; do
         rel_path="${smoke_file#"${PLUGIN_PATH}/"}"
         echo "JS_SMOKE_BEGIN:${rel_path}"
@@ -179,14 +184,24 @@ homeboy_wordpress_run_js_smoke_files() {
         else
             exit_code=$?
             echo "JS_SMOKE_FAIL:${rel_path}:exit=${exit_code}"
-            echo ""
-            echo "JS smoke test failed: ${rel_path}"
-            exit "$exit_code"
+            failed=$((failed + 1))
+            failed_smokes+=("${rel_path}:exit=${exit_code}")
+            if [ "$first_failure_exit" -eq 0 ]; then
+                first_failure_exit="$exit_code"
+            fi
         fi
     done
 
     echo ""
-    echo "JS_SMOKE_SUMMARY:passed=${passed} failed=0"
+    echo "JS_SMOKE_SUMMARY:passed=${passed} failed=${failed}"
+    if [ "$failed" -gt 0 ]; then
+        echo ""
+        echo "JS smoke tests failed (${failed} of ${#smoke_files[@]}):"
+        for failed_smoke in "${failed_smokes[@]}"; do
+            echo "  - ${failed_smoke}"
+        done
+        exit "$first_failure_exit"
+    fi
     echo "Host JS smoke test run complete."
 }
 
@@ -227,6 +242,11 @@ homeboy_wordpress_run_shell_smoke_files() {
     echo "  Files: ${#smoke_files[@]}"
     echo ""
 
+    # Run every selected smoke even after one fails, then aggregate (#4682) so
+    # one run reports all failing smokes instead of one-per-CI-run.
+    local failed=0
+    local first_failure_exit=0
+    local failed_smokes=()
     for smoke_file in "${smoke_files[@]}"; do
         rel_path="${smoke_file#"${PLUGIN_PATH}/"}"
         echo "SHELL_SMOKE_BEGIN:${rel_path}"
@@ -236,14 +256,24 @@ homeboy_wordpress_run_shell_smoke_files() {
         else
             exit_code=$?
             echo "SHELL_SMOKE_FAIL:${rel_path}:exit=${exit_code}"
-            echo ""
-            echo "Shell smoke test failed: ${rel_path}"
-            exit "$exit_code"
+            failed=$((failed + 1))
+            failed_smokes+=("${rel_path}:exit=${exit_code}")
+            if [ "$first_failure_exit" -eq 0 ]; then
+                first_failure_exit="$exit_code"
+            fi
         fi
     done
 
     echo ""
-    echo "SHELL_SMOKE_SUMMARY:passed=${passed} failed=0"
+    echo "SHELL_SMOKE_SUMMARY:passed=${passed} failed=${failed}"
+    if [ "$failed" -gt 0 ]; then
+        echo ""
+        echo "Shell smoke tests failed (${failed} of ${#smoke_files[@]}):"
+        for failed_smoke in "${failed_smokes[@]}"; do
+            echo "  - ${failed_smoke}"
+        done
+        exit "$first_failure_exit"
+    fi
     echo "Host shell smoke test run complete."
 }
 
