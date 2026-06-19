@@ -471,16 +471,31 @@ function artifactDeclarationsFromAgentTaskRequest(request, config = {}, inputs =
     request.artifact_declarations,
     options.artifactDeclarations,
     []
-  );
-  if (declarations.length > 0) {
-    return declarations
-      .map((declaration) => wpCodeboxArtifactDeclarationFromHomeboy(declaration))
-      .filter(Boolean);
-  }
-  return legacyArtifactDeclarationsFromAgentTaskRequest(request, config, inputs, options);
+  )
+    .map((declaration) => wpCodeboxArtifactDeclarationFromHomeboy(declaration))
+    .filter(Boolean);
+  return uniqueArtifactDeclarations([
+    ...declarations,
+    ...legacyArtifactDeclarationsFromAgentTaskRequest(request, config, inputs, options),
+  ]);
+}
+
+function uniqueArtifactDeclarations(declarations) {
+  const seen = new Set();
+  return declarations.filter((declaration) => {
+    const name = typedArtifactNameFromDeclaration(declaration);
+    const schema = declaration?.artifact_schema || declaration?.artifactSchema || declaration?.schema || '';
+    const key = `${name}:${schema}`;
+    if (!name || seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
 }
 
 function legacyArtifactDeclarationsFromAgentTaskRequest(request, config = {}, inputs = {}, options = {}) {
+  const clientContext = agentTaskClientContext(request, config, inputs, options);
   const declarations = [
     request.artifactDeclarations,
     inputs.artifact_declarations,
@@ -511,6 +526,16 @@ function legacyArtifactDeclarationsFromAgentTaskRequest(request, config = {}, in
     inputs.outputs?.artifactOutputs,
     inputs.outputs?.typed_artifacts,
     inputs.outputs?.typedArtifacts,
+    clientContext.artifacts,
+    clientContext.artifact_outputs,
+    clientContext.artifactOutputs,
+    clientContext.output_artifacts,
+    clientContext.outputArtifacts,
+    clientContext.outputs?.artifacts,
+    clientContext.outputs?.artifact_outputs,
+    clientContext.outputs?.artifactOutputs,
+    clientContext.outputs?.typed_artifacts,
+    clientContext.outputs?.typedArtifacts,
     config.artifact_outputs,
     config.artifactOutputs,
     config.output_artifacts,
@@ -551,7 +576,7 @@ function wpCodeboxArtifactDeclarationFromLegacy(defaultName, declaration) {
   if (!declaration || typeof declaration !== 'object' || Array.isArray(declaration)) {
     return null;
   }
-  const name = declaration.name || declaration.id || declaration.output || declaration.artifact || defaultName;
+  const name = declaration.name || declaration.id || declaration.artifact_id || declaration.artifactId || declaration.output || declaration.artifact || defaultName;
   if (!name || typeof name !== 'string') {
     return null;
   }
@@ -559,14 +584,19 @@ function wpCodeboxArtifactDeclarationFromLegacy(defaultName, declaration) {
     || declaration.artifactSchema
     || declaration.content_schema
     || declaration.contentSchema
+    || (typeof declaration.kind === 'string' && declaration.kind.includes('/') ? declaration.kind : undefined)
     || (declaration.schema && ![
       AGENT_TASK_ARTIFACT_DECLARATION_SCHEMA,
       'wp-codebox/artifact-declaration/v1',
     ].includes(declaration.schema) ? declaration.schema : undefined);
+  const artifactType = declaration.type
+    || (typeof declaration.kind === 'string' && !declaration.kind.includes('/') ? declaration.kind : undefined)
+    || declaration.artifact_type
+    || declaration.artifactType;
   return Object.fromEntries(Object.entries({
     schema: 'wp-codebox/artifact-declaration/v1',
     name,
-    type: declaration.type || declaration.kind || declaration.artifact_type || declaration.artifactType,
+    type: artifactType,
     artifact_schema: artifactSchema,
     path: declaration.path,
     required: declaration.required === undefined ? true : declaration.required === true,
@@ -718,7 +748,38 @@ function genericAbilityRuntimeTask(request, config, inputs) {
     return null;
   }
   const input = runtimeTaskInputFromAgentTaskRequest(request, config, inputs, declared);
+  if (ability === 'agents/run-runtime-package') {
+    return { ability, input: agentBundleRuntimeTaskInputWithArtifactOutputs(input, request, config, inputs) };
+  }
   return { ability, input };
+}
+
+function agentBundleRuntimeTaskInputWithArtifactOutputs(input, request, config, inputs) {
+  const declarations = artifactDeclarationsFromAgentTaskRequest(request, config, inputs)
+    .filter((declaration) => declaration && typeof declaration === 'object' && declaration.required === true && typedArtifactNameFromDeclaration(declaration));
+  if (declarations.length === 0) {
+    return input;
+  }
+
+  const requiredArtifacts = Array.from(new Set([
+    ...normalizeArray(input.required_artifacts),
+    ...declarations.map((declaration) => typedArtifactNameFromDeclaration(declaration)).filter(Boolean),
+  ]));
+  const engineDataOutputs = {
+    ...(input.engine_data_outputs && typeof input.engine_data_outputs === 'object' && !Array.isArray(input.engine_data_outputs) ? input.engine_data_outputs : {}),
+  };
+  for (const declaration of declarations) {
+    const name = typedArtifactNameFromDeclaration(declaration);
+    if (name && !engineDataOutputs[name]) {
+      engineDataOutputs[name] = `metadata.engine_data.outputs.typed_artifacts.${name}.payload`;
+    }
+  }
+
+  return {
+    ...input,
+    required_artifacts: requiredArtifacts,
+    engine_data_outputs: engineDataOutputs,
+  };
 }
 
 function runtimeTaskInputFromAgentTaskRequest(request, config, inputs, declared = {}) {
@@ -777,7 +838,7 @@ function runtimeInputMappingSources(request, config, inputs) {
     request,
     inputs,
     config,
-    client_context: firstObject(inputs.client_context, inputs.clientContext, request.client_context, request.clientContext, config.client_context, config.clientContext) || {},
+    client_context: agentTaskClientContext(request, config, inputs),
     context: firstObject(inputs.context, request.context, config.context) || {},
   };
 }
@@ -809,14 +870,7 @@ function legacyWorkflowInputsFromAgentTaskRequest(request, config, inputs, decla
   if (legacyMerge !== true) {
     return {};
   }
-  return firstObject(
-    inputs.client_context?.inputs,
-    inputs.clientContext?.inputs,
-    request.client_context?.inputs,
-    request.clientContext?.inputs,
-    config.client_context?.inputs,
-    config.clientContext?.inputs,
-  ) || {};
+  return firstObject(agentTaskClientContext(request, config, inputs).inputs) || {};
 }
 
 function valueAtPath(source, fieldPath) {
@@ -1229,6 +1283,26 @@ function parseJsonObject(value) {
   } catch {
     return null;
   }
+}
+
+function agentTaskClientContext(request = {}, config = {}, inputs = {}, options = {}) {
+  return firstObject(
+    inputs.client_context,
+    inputs.clientContext,
+    request.client_context,
+    request.clientContext,
+    config.client_context,
+    config.clientContext,
+    options.clientContext,
+    parseJsonObject(inputs.client_context),
+    parseJsonObject(inputs.clientContext),
+    parseJsonObject(request.client_context),
+    parseJsonObject(request.clientContext),
+    parseJsonObject(request.dispatch?.client_context),
+    parseJsonObject(request.dispatch?.clientContext),
+    parseJsonObject(config.client_context),
+    parseJsonObject(config.clientContext),
+  ) || {};
 }
 
 function homeboyAgentTaskSecretEnvPlan() {
@@ -2081,6 +2155,8 @@ function typedArtifactsFromResult(result) {
     ...scenarios.map((scenario) => scenario?.typedArtifacts),
     ...scenarios.map((scenario) => scenario?.outputs?.typed_artifacts),
     ...scenarios.map((scenario) => scenario?.outputs?.typedArtifacts),
+    ...scenarios.map((scenario) => scenario?.metadata?.engine_data?.outputs?.typed_artifacts),
+    ...scenarios.map((scenario) => scenario?.metadata?.engine_data?.outputs?.typedArtifacts),
     ...scenarios.map((scenario) => scenario?.metadata?.outputs?.typed_artifacts),
     ...scenarios.map((scenario) => scenario?.metadata?.outputs?.typedArtifacts),
     ...scenarios.map((scenario) => scenario?.metadata?.typed_artifacts),
@@ -2214,6 +2290,135 @@ function requiredArtifactDeclarationsFromRequest(request) {
     .filter((declaration) => declaration && typeof declaration === 'object' && declaration.required === true && typedArtifactNameFromDeclaration(declaration));
 }
 
+function requiredArtifactDeclarationsFromResultTaskInput(result) {
+  const taskInput = result?.task_input || result?.taskInput || {};
+  return normalizeArray(taskInput.artifact_declarations || taskInput.artifactDeclarations)
+    .map((declaration) => wpCodeboxArtifactDeclarationFromHomeboy(declaration))
+    .filter((declaration) => declaration && typeof declaration === 'object' && declaration.required === true && typedArtifactNameFromDeclaration(declaration));
+}
+
+function requiredArtifactDeclarationsForResult(request, result) {
+  const declarations = [
+    ...requiredArtifactDeclarationsFromResultTaskInput(result),
+    ...requiredArtifactDeclarationsFromRequest(request),
+  ];
+  const seen = new Set();
+  return declarations.filter((declaration) => {
+    const key = `${typedArtifactNameFromDeclaration(declaration)}:${declaration.artifact_schema || declaration.artifactSchema || declaration.schema || ''}`;
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+}
+
+function isTranscriptArtifactDeclaration(declaration) {
+  const name = typedArtifactNameFromDeclaration(declaration);
+  const type = declaration?.type || declaration?.kind || declaration?.artifact_type || declaration?.artifactType || '';
+  const schema = declaration?.artifact_schema || declaration?.artifactSchema || declaration?.schema || '';
+  return /transcript|conversation|messages/i.test(`${name} ${type} ${schema}`);
+}
+
+function replyTextFromResult(result) {
+  const workload = agentRuntimeWorkload(result) || {};
+  const candidates = [
+    result?.reply,
+    result?.result?.reply,
+    result?.outputs?.reply,
+    result?.outputs?.text,
+    result?.outputs?.content,
+    result?.run?.agentResult?.reply,
+    result?.run?.agentResult?.result?.reply,
+    result?.run?.agentResult?.metadata?.result?.reply,
+    result?.agentResult?.reply,
+    result?.agentResult?.result?.reply,
+    result?.agentResult?.metadata?.result?.reply,
+    result?.agent_result?.reply,
+    result?.agent_result?.result?.reply,
+    result?.agent_result?.metadata?.result?.reply,
+    result?.metadata?.agent_runtime?.workload?.reply,
+    result?.metadata?.agent_runtime?.workload?.result?.reply,
+    result?.metadata?.agent_runtime?.workload?.metadata?.result?.reply,
+    workload.reply,
+    workload.result?.reply,
+    workload.metadata?.result?.reply,
+    replyTextFromResultExecutions(result),
+    replyTextFromTranscriptArtifact(result),
+  ];
+  return candidates.find((candidate) => typeof candidate === 'string' && candidate.trim() !== '') || '';
+}
+
+function replyTextFromResultExecutions(result) {
+  const executions = [
+    ...(Array.isArray(result?.executions) ? result.executions : []),
+    ...(Array.isArray(result?.run?.executions) ? result.run.executions : []),
+  ];
+  for (const execution of [...executions].reverse()) {
+    const reply = replyTextFromExecutionStdout(execution?.stdout || '');
+    if (reply) {
+      return reply;
+    }
+  }
+  return '';
+}
+
+function replyTextFromExecutionStdout(stdout) {
+  const wrapper = parseJsonObject(stdout || '');
+  const output = parseJsonObject(wrapper?.output || '') || parseJsonObject(stdout || '');
+  const reply = output?.agent_runtime?.result?.reply || output?.result?.reply || output?.reply;
+  return typeof reply === 'string' && reply.trim() !== '' ? reply : '';
+}
+
+function replyTextFromTranscriptArtifact(result) {
+  const transcriptRef = firstTranscriptArtifactRefFromResult(result);
+  if (!transcriptRef?.path) {
+    return '';
+  }
+  try {
+    const transcript = JSON.parse(fs.readFileSync(transcriptRef.path, 'utf8'));
+    const executions = Array.isArray(transcript.executions) ? transcript.executions : [];
+    for (const execution of [...executions].reverse()) {
+      const reply = replyTextFromExecutionStdout(execution?.stdout || '');
+      if (reply) {
+        return reply;
+      }
+    }
+  } catch {
+    return '';
+  }
+  return '';
+}
+
+function replyTypedArtifactsFromResult(request, result, existingTypedArtifacts = {}) {
+  const reply = replyTextFromResult(result);
+  if (!reply) {
+    return {};
+  }
+  return Object.fromEntries(requiredArtifactDeclarationsForResult(request, result)
+    .filter((declaration) => !isTranscriptArtifactDeclaration(declaration))
+    .map((declaration) => {
+      const name = typedArtifactNameFromDeclaration(declaration);
+      if (!name || existingTypedArtifacts[name]) {
+        return null;
+      }
+      return [name, normalizeCodeboxTypedArtifactEntry(name, {
+        name,
+        artifact_id: name,
+        kind: declaration.artifact_schema || declaration.artifactSchema || declaration.schema,
+        type: declaration.type || declaration.kind || declaration.artifact_type || declaration.artifactType || name,
+        artifact_schema: declaration.artifact_schema || declaration.artifactSchema || declaration.schema,
+        payload: {
+          content: reply,
+          format: 'markdown',
+        },
+        provenance: { source: 'agent_reply' },
+      })];
+    })
+    .filter(Boolean)
+    .filter(([, artifact]) => artifact));
+}
+
 function artifactDeclarationsMetadataFromRequest(request) {
   const config = request.executor?.config || {};
   return artifactDeclarationsFromAgentTaskRequest(request, config, request.inputs || {});
@@ -2317,6 +2522,12 @@ function normalizeOutputs(result, request = null) {
   const workload = agentRuntimeWorkload(result) || {};
   const typedArtifacts = typedArtifactsFromResult(result);
   Object.assign(typedArtifacts, transcriptTypedArtifactsFromCodeboxResult(request, result, typedArtifacts));
+  if (request) {
+    Object.assign(typedArtifacts, replyTypedArtifactsFromResult(request, result, typedArtifacts));
+  }
+  for (const [name, artifact] of Object.entries(typedArtifacts)) {
+    typedArtifacts[name] = controllerVisibleTypedArtifact(artifact);
+  }
   const appendTypedArtifacts = (outputs) => Object.keys(typedArtifacts).length > 0
     ? {
         ...outputs,
@@ -2781,7 +2992,42 @@ function agentTaskOutcomeFromCodeboxResult(request, result = {}, options = {}) {
   } else if (missingRequiredTypedArtifacts) {
     outcome.failure_classification = 'execution_failed';
   }
-  return outcome;
+  return outcomeWithOutputTypedArtifacts(outcome, outputs);
+}
+
+function outcomeWithOutputTypedArtifacts(outcome, outputs) {
+  const typedArtifacts = outputs?.typed_artifacts && typeof outputs.typed_artifacts === 'object' && !Array.isArray(outputs.typed_artifacts)
+    ? Object.values(outputs.typed_artifacts).filter((artifact) => artifact && typeof artifact === 'object').map(controllerVisibleTypedArtifact)
+    : [];
+  if (typedArtifacts.length === 0) {
+    return outcome;
+  }
+  const existing = Array.isArray(outcome.typed_artifacts) ? outcome.typed_artifacts : [];
+  const seen = new Set(existing.map((artifact) => artifact?.name).filter(Boolean));
+  const merged = [
+    ...existing,
+    ...typedArtifacts.filter((artifact) => {
+      if (!artifact.name || seen.has(artifact.name)) {
+        return false;
+      }
+      seen.add(artifact.name);
+      return true;
+    }),
+  ];
+  return {
+    ...outcome,
+    typed_artifacts: merged,
+  };
+}
+
+function controllerVisibleTypedArtifact(artifact) {
+  const artifactId = artifact.artifact_id || artifact.artifactId || artifact.name || artifact.id;
+  const kind = artifact.kind || artifact.artifact_schema || artifact.artifactSchema || artifact.type;
+  return {
+    ...artifact,
+    ...(artifactId ? { artifact_id: artifactId } : {}),
+    ...(kind ? { kind } : {}),
+  };
 }
 
 module.exports = {
