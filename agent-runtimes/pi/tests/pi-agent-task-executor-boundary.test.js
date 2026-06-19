@@ -15,11 +15,14 @@ const { spawnSync } = require('node:child_process');
 const {
 	executePiAgentTask,
 	providerContract,
-} = require('../../agent-runtimes/pi');
+} = require('..');
+
+const runtimeRoot = path.join(__dirname, '..');
 
 const provider = providerContract();
 assert.equal(provider.id, 'pi.agent-task-executor');
 assert.equal(provider.backend, 'pi');
+assert.equal(provider.runtime, 'pi');
 assert.equal(provider.status, 'experimental');
 assert.equal(provider.integration_contract, 'homeboy-pi-agent-task/v1');
 assert.equal(provider.lifecycle.max_concurrency_default, 1);
@@ -30,7 +33,7 @@ assert.equal(provider.capabilities.includes('cli_runtime'), true);
 assert.equal(provider.capabilities.includes('structured_outcome'), true);
 assert.equal(provider.capabilities.includes('repo_workspace'), false);
 
-const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'agent-runtimes', 'pi', 'pi.json'), 'utf8'));
+const manifest = JSON.parse(fs.readFileSync(path.join(runtimeRoot, 'pi.json'), 'utf8'));
 assert.equal(manifest.id, 'pi');
 assert.equal(manifest.name, 'Pi');
 assert.equal(manifest.agent_task_executors.length, 1);
@@ -61,7 +64,7 @@ try {
 	const runtimesRoot = path.join(root, 'agent-runtimes');
 	const runtimePath = path.join(runtimesRoot, 'pi');
 	fs.mkdirSync(runtimesRoot, { recursive: true });
-	fs.symlinkSync(path.join(__dirname, '..', '..', 'agent-runtimes', 'pi'), runtimePath, 'dir');
+	fs.symlinkSync(runtimeRoot, runtimePath, 'dir');
 
 	const command = provider.command.replaceAll('{{runtime_path}}', runtimePath);
 	const [, scriptPath] = command.match(/^node\s+(.+)$/) || [];
@@ -93,7 +96,7 @@ process.stdin.on('end', () => {
 	const configuredRequest = {
 		schema: 'homeboy/agent-task-request/v1',
 		task_id: 'pi-real-executor',
-	executor: {
+		executor: {
 			backend: 'pi',
 			runtime: 'pi',
 			config: {

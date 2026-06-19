@@ -13,16 +13,17 @@ const { spawnSync } = require('node:child_process');
  * Internal dependencies
  */
 const {
-	CODEX_DEFAULT_COMMAND,
-	CODEX_DEFAULT_COMMAND_ARGS,
-	CODEX_SECRET_ENV,
-	executeCodexAgentTask,
+	OPENCODE_INVOCATION,
+	OPENCODE_PROVIDER_DEFAULTS,
+	OPENCODE_PROVIDER_PREFLIGHT,
+	OPENCODE_RUNNER_READINESS,
+	OPENCODE_SECRET_ENV,
+	OPENCODE_WORKSPACE_TOOLS,
+	executeOpenCodeAgentTask,
 	providerContract,
-} = require('../../agent-runtimes/codex');
-const {
-	resolveRuntimeProvider,
-	runtimeRegistry,
-} = require('../../agent-runtimes/lib/runtime-provider-resolver.cjs');
+} = require('..');
+
+const runtimeRoot = path.join(__dirname, '..');
 
 function secretEnvRequirementForProvider(contract, provider) {
 	return contract.secret_env_requirements.find((requirement) => (
@@ -31,64 +32,54 @@ function secretEnvRequirementForProvider(contract, provider) {
 }
 
 const provider = providerContract();
-assert.equal(provider.id, 'codex.agent-task-executor');
-assert.equal(provider.backend, 'codex');
-assert.equal(provider.runtime, 'codex');
+assert.equal(provider.id, 'opencode.agent-task-executor');
+assert.equal(provider.backend, 'opencode');
+assert.equal(provider.runtime, 'opencode');
 assert.equal(provider.status, 'available');
-assert.equal(provider.integration_contract, 'homeboy-codex-agent-task/v1');
+assert.equal(provider.integration_contract, 'homeboy-opencode-agent-task/v1');
+assert.deepEqual(provider.invocation, OPENCODE_INVOCATION);
 assert.equal(provider.lifecycle.max_concurrency_default, 1);
 assert.equal(provider.lifecycle.cancellation, 'provider_signal');
-assert.deepEqual(secretEnvRequirementForProvider(provider, 'codex').env, CODEX_SECRET_ENV);
-assert.deepEqual(provider.provider_defaults.codex.secret_env, CODEX_SECRET_ENV);
+assert.deepEqual(secretEnvRequirementForProvider(provider, 'codex').env, OPENCODE_SECRET_ENV);
+assert.deepEqual(provider.provider_defaults.codex.secret_env, OPENCODE_SECRET_ENV);
 assert.equal(provider.provider_defaults.codex.model, 'gpt-5.5');
-assert.equal(provider.provider_defaults.codex.command, CODEX_DEFAULT_COMMAND);
-assert.deepEqual(provider.provider_defaults.codex.command_args, CODEX_DEFAULT_COMMAND_ARGS);
-assert.equal(provider.redacted_metadata_keys.includes('codex_auth'), true);
+assert.deepEqual(provider.provider_defaults.codex.secret_env_sources, OPENCODE_PROVIDER_DEFAULTS.codex.secret_env_sources);
+assert.deepEqual(provider.provider_preflight, OPENCODE_PROVIDER_PREFLIGHT);
+assert.deepEqual(provider.runner_readiness, OPENCODE_RUNNER_READINESS);
+assert.deepEqual(provider.workspace_tools, OPENCODE_WORKSPACE_TOOLS);
+assert.equal(provider.redacted_metadata_keys.includes('opencode_auth'), true);
 assert.equal(provider.capabilities.includes('repo_workspace'), true);
 assert.equal(provider.capabilities.includes('patch_artifacts'), true);
-assert.equal(provider.capabilities.includes('nested_orchestrator'), false);
-assert.equal(provider.capabilities.includes('wordpress_sandbox'), false);
+assert.equal(provider.capabilities.includes('browser_runtime'), false);
 
-const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'agent-runtimes', 'codex', 'codex.json'), 'utf8'));
-assert.equal(manifest.id, 'codex');
-assert.equal(manifest.name, 'Codex');
+const manifest = JSON.parse(fs.readFileSync(path.join(runtimeRoot, 'opencode.json'), 'utf8'));
+assert.equal(manifest.id, 'opencode');
+assert.equal(manifest.name, 'OpenCode');
 assert.equal(manifest.agent_task_executors.length, 1);
+assert.equal(manifest.agent_task_executors[0].capabilities.includes('nested_orchestrator'), true);
 assert.deepEqual(manifest.agent_task_executors[0], providerContract());
 
-const repoRoot = path.join(__dirname, '..', '..');
-const registry = runtimeRegistry({ repoRoot });
-assert.equal(registry.codex.id, 'codex');
-const resolvedRuntime = resolveRuntimeProvider('codex', { repoRoot, registry });
-assert.equal(resolvedRuntime.id, 'codex');
-assert.equal(resolvedRuntime.executor.backend, 'codex');
-assert.equal(
-	resolvedRuntime.executor.path,
-	path.join(repoRoot, 'agent-runtimes', 'codex', 'scripts', 'agent', 'homeboy-codex-agent-task-executor.cjs')
-);
-
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'homeboy-codex-provider-contract-'));
+const root = fs.mkdtempSync(path.join(os.tmpdir(), 'homeboy-opencode-provider-contract-'));
 try {
 	const runtimesRoot = path.join(root, 'agent-runtimes');
-	const runtimePath = path.join(runtimesRoot, 'codex');
+	const runtimePath = path.join(runtimesRoot, 'opencode');
 	fs.mkdirSync(runtimesRoot, { recursive: true });
-	fs.symlinkSync(path.join(__dirname, '..', '..', 'agent-runtimes', 'codex'), runtimePath, 'dir');
+	fs.symlinkSync(runtimeRoot, runtimePath, 'dir');
 
 	const command = provider.command.replaceAll('{{runtime_path}}', runtimePath);
 	const [, scriptPath] = command.match(/^node\s+(.+)$/) || [];
 	assert(scriptPath, 'provider command should be a node script command');
 	assert.equal(
 		path.normalize(scriptPath),
-		path.join(runtimePath, 'scripts', 'agent', 'homeboy-codex-agent-task-executor.cjs')
+		path.join(runtimePath, 'scripts', 'agent', 'homeboy-opencode-agent-task-executor.cjs')
 	);
 	assert.equal(fs.existsSync(scriptPath), true, `provider command target should exist: ${scriptPath}`);
 
-	const mockCliPath = path.join(root, 'mock-codex.cjs');
+	const mockCliPath = path.join(root, 'mock-opencode.cjs');
 	fs.writeFileSync(mockCliPath, `#!/usr/bin/env node
 const assert = require('node:assert/strict');
-assert.equal(process.argv[2], 'exec');
-assert.equal(process.argv[3], '--model');
-assert.equal(process.argv[4], 'gpt-5.5');
-assert.equal(process.argv.at(-1), 'Prove the Codex runtime boundary without leaking secrets.');
+assert.equal(process.argv[2], 'run');
+assert.equal(process.argv.at(-1), 'Prove the OpenCode provider boundary without leaking secrets.');
 process.stdout.write(process.env.AI_PROVIDER_OPENAI_CODEX_REFRESH_TOKEN || 'missing secret');
 process.stderr.write(process.env.AI_PROVIDER_OPENAI_CODEX_ACCESS_TOKEN || 'missing secret');
 process.exit(0);
@@ -100,18 +91,17 @@ process.exit(0);
 
 	const request = {
 		schema: 'homeboy/agent-task-request/v1',
-		task_id: 'codex-real-executor',
+		task_id: 'opencode-real-executor',
 		executor: {
-			backend: 'codex',
-			runtime: 'codex',
+			backend: 'opencode',
+			runtime: 'opencode',
 			config: {
 				provider: 'codex',
-				model: 'gpt-5.5',
-				command: process.execPath,
-				command_args: [mockCliPath, 'exec'],
+				runtime_bin: process.execPath,
+				command_args: [mockCliPath],
 			},
 		},
-		instructions: 'Prove the Codex runtime boundary without leaking secrets.',
+		instructions: 'Prove the OpenCode provider boundary without leaking secrets.',
 	};
 	const runResult = spawnSync(process.execPath, [scriptPath], {
 		encoding: 'utf8',
@@ -123,12 +113,11 @@ process.exit(0);
 		input: JSON.stringify(request),
 	});
 	assert.equal(runResult.status, 0, runResult.stderr);
-	assert.deepEqual(JSON.parse(runResult.stdout), executeCodexAgentTask(request));
+	assert.deepEqual(JSON.parse(runResult.stdout), executeOpenCodeAgentTask(request));
 	assert.equal(`${runResult.stdout}\n${runResult.stderr}`.includes('refresh-token-must-not-leak'), false);
 	assert.equal(`${runResult.stdout}\n${runResult.stderr}`.includes('access-token-must-not-leak'), false);
-	assert.equal(executeCodexAgentTask({ ...request, executor: { backend: 'codex', config: {} } }).failure_code, 'agent_task.invalid_codex_request');
 } finally {
 	fs.rmSync(root, { recursive: true, force: true });
 }
 
-process.stdout.write('Codex agent task executor boundary passed\n');
+process.stdout.write('OpenCode agent task executor boundary passed\n');

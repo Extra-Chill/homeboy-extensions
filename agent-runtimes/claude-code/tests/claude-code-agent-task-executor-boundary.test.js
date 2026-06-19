@@ -18,7 +18,9 @@ const {
 	CLAUDE_CODE_SECRET_ENV,
 	executeClaudeCodeAgentTask,
 	providerContract,
-} = require('../../agent-runtimes/claude-code');
+} = require('..');
+
+const runtimeRoot = path.join(__dirname, '..');
 
 function secretEnvRequirementForProvider(contract, provider) {
 	return contract.secret_env_requirements.find((requirement) => (
@@ -29,6 +31,7 @@ function secretEnvRequirementForProvider(contract, provider) {
 const provider = providerContract();
 assert.equal(provider.id, 'claude-code.agent-task-executor');
 assert.equal(provider.backend, 'claude-code');
+assert.equal(provider.runtime, 'claude-code');
 assert.equal(provider.status, 'available');
 assert.equal(provider.integration_contract, 'homeboy-claude-code-agent-task/v1');
 assert.equal(provider.lifecycle.max_concurrency_default, 1);
@@ -44,27 +47,21 @@ assert.equal(provider.capabilities.includes('repo_workspace'), true);
 assert.equal(provider.capabilities.includes('patch_artifacts'), true);
 assert.equal(provider.capabilities.includes('browser_runtime'), false);
 
-const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'agent-runtimes', 'claude-code', 'claude-code.json'), 'utf8'));
+const manifest = JSON.parse(fs.readFileSync(path.join(runtimeRoot, 'claude-code.json'), 'utf8'));
 assert.equal(manifest.id, 'claude-code');
 assert.equal(manifest.name, 'Claude Code');
 assert.equal(manifest.agent_task_executors.length, 1);
 assert.equal(manifest.agent_task_executors[0].capabilities.includes('nested_orchestrator'), true);
 assert.deepEqual(manifest.agent_task_executors[0], providerContract());
 
-const runtime = {
-	agent_task_executors: [providerContract({
-		command: 'node {{runtime_path}}/scripts/agent/homeboy-claude-code-agent-task-executor.cjs',
-	})],
-};
-
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'homeboy-claude-code-provider-contract-'));
 try {
 	const runtimesRoot = path.join(root, 'agent-runtimes');
 	const runtimePath = path.join(runtimesRoot, 'claude-code');
 	fs.mkdirSync(runtimesRoot, { recursive: true });
-	fs.symlinkSync(path.join(__dirname, '..', '..', 'agent-runtimes', 'claude-code'), runtimePath, 'dir');
+	fs.symlinkSync(runtimeRoot, runtimePath, 'dir');
 
-	const command = runtime.agent_task_executors[0].command.replaceAll('{{runtime_path}}', runtimePath);
+	const command = provider.command.replaceAll('{{runtime_path}}', runtimePath);
 	const [, scriptPath] = command.match(/^node\s+(.+)$/) || [];
 	assert(scriptPath, 'provider command should be a node script command');
 	assert.equal(
@@ -81,6 +78,7 @@ process.stdin.on('data', (chunk) => { raw += chunk; });
 process.stdin.on('end', () => {
   const request = JSON.parse(raw);
   assert.equal(request.executor.backend, 'claude-code');
+  assert.equal(request.executor.runtime, 'claude-code');
   assert.equal(request.instructions, 'Prove the Claude Code provider boundary without leaking secrets.');
   process.stdout.write(process.env.AI_PROVIDER_CLAUDE_CODE_REFRESH_TOKEN || 'missing secret');
   process.stderr.write(process.env.AI_PROVIDER_CLAUDE_CODE_ACCESS_TOKEN || 'missing secret');
@@ -97,6 +95,7 @@ process.stdin.on('end', () => {
 		task_id: 'claude-code-real-executor',
 		executor: {
 			backend: 'claude-code',
+			runtime: 'claude-code',
 			config: {
 				provider: 'claude-code',
 				command: process.execPath,

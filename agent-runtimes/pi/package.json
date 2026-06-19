@@ -11,7 +11,7 @@
     "homeboy-pi-agent-task-executor": "./scripts/agent/homeboy-pi-agent-task-executor.cjs"
   },
   "scripts": {
-    "test:pi-agent-task-executor-boundary": "node ../../wordpress/tests/pi-agent-task-executor-boundary.test.js"
+    "test:pi-agent-task-executor-boundary": "node tests/pi-agent-task-executor-boundary.test.js"
   },
   "engines": {
     "node": ">=18.12.0"

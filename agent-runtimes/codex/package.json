@@ -11,7 +11,7 @@
     "homeboy-codex-agent-task-executor": "./scripts/agent/homeboy-codex-agent-task-executor.cjs"
   },
   "scripts": {
-    "test:codex-agent-task-executor-boundary": "node ../../wordpress/tests/codex-agent-task-executor-boundary.test.js"
+    "test:codex-agent-task-executor-boundary": "node tests/codex-agent-task-executor-boundary.test.js"
   },
   "engines": {
     "node": ">=18.12.0"
