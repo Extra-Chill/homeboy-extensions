@@ -58,15 +58,8 @@ function normalizeTypedArtifacts(value, options = {}) {
 }
 
 function typedArtifactsFromCodeboxResult(result, options = {}) {
-  const workload = options.workload || agentRuntimeWorkload(result) || {};
   const artifactResult = artifactResultEnvelopeFromCodeboxResult(result);
-  const envelopeArtifacts = typedArtifactsFromArtifactResultEnvelope(artifactResult, options);
-  if (Object.keys(envelopeArtifacts).length > 0) {
-    return envelopeArtifacts;
-  }
-
-  return Object.assign({}, ...legacyTypedArtifactCandidatesFromCodeboxResult(result, workload)
-    .map((candidate) => normalizeTypedArtifacts(candidate, options)));
+  return typedArtifactsFromArtifactResultEnvelope(artifactResult, options);
 }
 
 function typedArtifactsFromArtifactResultEnvelope(artifactResult, options = {}) {
@@ -79,44 +72,6 @@ function typedArtifactsFromArtifactResultEnvelope(artifactResult, options = {}) 
   return Object.assign({}, ...candidates.map((candidate) => normalizeTypedArtifacts(candidate, options)));
 }
 
-function legacyTypedArtifactCandidatesFromCodeboxResult(result, workload = {}) {
-  const scenarios = Array.isArray(workload.scenarios) ? workload.scenarios : [];
-  return [
-    result?.outputs?.typed_artifacts,
-    result?.outputs?.typedArtifacts,
-    result?.run?.agentResult?.typed_artifacts,
-    result?.run?.agentResult?.typedArtifacts,
-    result?.run?.agentResult?.outputs?.typed_artifacts,
-    result?.run?.agentResult?.outputs?.typedArtifacts,
-    result?.agentResult?.outputs?.typed_artifacts,
-    result?.agentResult?.outputs?.typedArtifacts,
-    result?.agent_result?.outputs?.typed_artifacts,
-    result?.agent_result?.outputs?.typedArtifacts,
-    result?.metadata?.agent_runtime?.result?.typed_artifacts,
-    result?.metadata?.agent_runtime?.result?.typedArtifacts,
-    result?.metadata?.agent_runtime?.result?.outputs?.typed_artifacts,
-    result?.metadata?.agent_runtime?.result?.outputs?.typedArtifacts,
-    result?.metadata?.agent_runtime?.result?.outputs?.outputs?.typed_artifacts,
-    result?.metadata?.agent_runtime?.result?.outputs?.outputs?.typedArtifacts,
-    workload.typed_artifacts,
-    workload.typedArtifacts,
-    workload.outputs?.typed_artifacts,
-    workload.outputs?.typedArtifacts,
-    workload.outputs?.outputs?.typed_artifacts,
-    workload.outputs?.outputs?.typedArtifacts,
-    ...scenarios.map((scenario) => scenario?.typed_artifacts),
-    ...scenarios.map((scenario) => scenario?.typedArtifacts),
-    ...scenarios.map((scenario) => scenario?.outputs?.typed_artifacts),
-    ...scenarios.map((scenario) => scenario?.outputs?.typedArtifacts),
-    ...scenarios.map((scenario) => scenario?.metadata?.engine_data?.outputs?.typed_artifacts),
-    ...scenarios.map((scenario) => scenario?.metadata?.engine_data?.outputs?.typedArtifacts),
-    ...scenarios.map((scenario) => scenario?.metadata?.outputs?.typed_artifacts),
-    ...scenarios.map((scenario) => scenario?.metadata?.outputs?.typedArtifacts),
-    ...scenarios.map((scenario) => scenario?.metadata?.typed_artifacts),
-    ...scenarios.map((scenario) => scenario?.metadata?.typedArtifacts),
-  ];
-}
-
 function artifactResultEnvelopeFromCodeboxResult(result) {
   const candidates = [
     result,
@@ -127,10 +82,7 @@ function artifactResultEnvelopeFromCodeboxResult(result) {
     ...(Array.isArray(result?.projections) ? result.projections.map((projection) => projection?.envelope || projection?.artifact_result || projection) : []),
     ...(Array.isArray(result?.metadata?.projections) ? result.metadata.projections.map((projection) => projection?.envelope || projection?.artifact_result || projection) : []),
   ];
-  const legacyCandidates = [
-    result?.metadata?.agent_runtime?.result,
-  ];
-  return [...candidates, ...legacyCandidates].map(normalizeArtifactResultEnvelope).find(Boolean) || null;
+  return candidates.map(normalizeArtifactResultEnvelope).find(Boolean) || null;
 }
 
 function normalizeArtifactResultEnvelope(envelope) {
@@ -268,10 +220,6 @@ function artifactNameFromDeclaration(declaration) {
     return '';
   }
   return declaration.name || declaration.id || '';
-}
-
-function agentRuntimeWorkload(result = {}) {
-  return result.workload || result.metadata?.workload || result.metadata?.agent_runtime?.workload || result.run?.workload || {};
 }
 
 function artifactPath(root, relativePath) {

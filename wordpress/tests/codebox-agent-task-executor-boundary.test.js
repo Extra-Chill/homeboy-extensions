@@ -54,7 +54,7 @@ assert.equal(provider.provider_runtime_invocation.abilities.workspaceCommand, 'w
 assert.equal(provider.upstream_primitive_requirements.some((requirement) => requirement.id === 'artifact-apply-execution'), true);
 assert.equal(
   provider.upstream_primitive_requirements.find((requirement) => requirement.id === 'artifact-result-envelope').adapter_behavior,
-  'consume_canonical_envelope_with_legacy_package_fallback'
+  'require_canonical_envelope'
 );
 assert.doesNotMatch(JSON.stringify(provider.provider_runtime_invocation), /datamachine|data machine|wp-site-generator|wpsg|site generator/i);
 assert.deepEqual(secretEnvRequirementForProvider(provider, 'codex').env, codexSecretEnv);
@@ -82,6 +82,21 @@ assert.deepEqual(typedArtifactsFromCodeboxResult({
     },
   },
 }).review.payload, { ok: true });
+assert.deepEqual(typedArtifactsFromCodeboxResult({
+  schema: 'wp-codebox/agent-task-run/v1',
+  status: 'completed',
+  metadata: {
+    agent_runtime: {
+      workload: {
+        outputs: {
+          typed_artifacts: {
+            legacy_review: { type: 'json', payload: { legacy: true } },
+          },
+        },
+      },
+    },
+  },
+}), {});
 assert.equal(normalizeCodeboxArtifactOutcome({ id: 'patch.diff', kind: 'codebox-patch' }, {}, {
   roleAliases: provider.role_aliases,
 }).role, 'patch');

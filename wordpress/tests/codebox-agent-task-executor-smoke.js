@@ -128,7 +128,11 @@ process.stdout.write(JSON.stringify({
   status: 'completed',
   summary: 'Semantic output was produced before provider exit failure.',
   outputs: { issue_url: 'https://github.com/example/repo/issues/456' },
-  artifacts: [{ id: 'semantic-artifact', kind: 'codebox-patch', path: '/tmp/semantic.patch' }],
+  artifact_result: {
+    schema: 'wp-codebox/artifact-result-envelope/v1',
+    status: 'created',
+    artifactRefs: [{ id: 'semantic-artifact', kind: 'codebox-patch', path: '/tmp/semantic.patch' }]
+  },
   session: { id: 'sandbox-session-failed-exit', status: 'completed' }
 }));
 process.exit(7);
@@ -214,6 +218,14 @@ process.stdout.write(JSON.stringify({
   },
   task_input: input,
   artifacts: input.artifacts_path,
+  artifact_result: {
+    schema: 'wp-codebox/artifact-result-envelope/v1',
+    status: 'created',
+    artifactRefs: [
+      { id: 'agent-runtime-transcript-json', kind: 'agent-runtime-transcript', path: input.artifacts_path + '/transcript.json' },
+      { id: 'agent-runtime-replay-bundle', kind: 'agent-runtime-replay-bundle', path: input.artifacts_path + '/replay-bundle' }
+    ]
+  },
   agent_result: {
     scenarios: [{
       id: 'agent-bundle',
@@ -1464,8 +1476,8 @@ const upstreamRunnerOutcome = agentTaskOutcomeFromCodeboxResult(request, {
   artifacts: '/tmp/wp-codebox-artifacts',
 });
 assert.equal(upstreamRunnerOutcome.status, 'succeeded');
-assert.equal(upstreamRunnerOutcome.artifacts[0].kind, 'codebox-artifact-directory');
-assert.equal(upstreamRunnerOutcome.artifacts[0].path, '/tmp/wp-codebox-artifacts');
+assert.deepEqual(upstreamRunnerOutcome.artifacts, []);
+assert.deepEqual(upstreamRunnerOutcome.evidence_refs, []);
 
 const canonicalArtifactEnvelopeOutcome = agentTaskOutcomeFromCodeboxResult(request, {
   success: true,
@@ -1505,10 +1517,7 @@ const failedUpstreamRunnerOutcome = agentTaskOutcomeFromCodeboxResult(request, {
   }],
 });
 assert.equal(failedUpstreamRunnerOutcome.status, 'failed');
-assert.equal(
-  failedUpstreamRunnerOutcome.evidence_refs.some((ref) => ref.kind === 'codebox-command-evidence' && ref.uri === '/tmp/wp-codebox-artifacts/wp-codebox-command-evidence.json'),
-  true
-);
+assert.deepEqual(failedUpstreamRunnerOutcome.evidence_refs, []);
 
 const failedStatusBeatsSuccessfulNormalizerOutcome = agentTaskOutcomeFromCodeboxResult(request, {
   schema: 'wp-codebox/agent-task-run/v1',
@@ -1883,7 +1892,9 @@ const synthesizedArtifactRuntimeFailureOutcome = agentTaskOutcomeFromCodeboxResu
 });
 assert.equal(synthesizedArtifactRuntimeFailureOutcome.status, 'failed');
 assert.equal(synthesizedArtifactRuntimeFailureOutcome.failure_classification, 'execution_failed');
-assert.equal(synthesizedArtifactRuntimeFailureOutcome.diagnostics[0].class, 'agent_runtime.failed');
+assert.equal(synthesizedArtifactRuntimeFailureOutcome.diagnostics[0].class, 'codebox.required_typed_artifacts_missing');
+assert.equal(synthesizedArtifactRuntimeFailureOutcome.diagnostics.some((diagnostic) => diagnostic.class === 'agent_runtime.failed'), true);
+assert.deepEqual(synthesizedArtifactRuntimeFailureOutcome.metadata.typed_artifacts, {});
 
 const agentBundleOutcome = agentTaskOutcomeFromCodeboxResult({
   ...request,
@@ -1931,19 +1942,14 @@ const agentBundleOutcome = agentTaskOutcomeFromCodeboxResult({
 assert.equal(agentBundleOutcome.schema, 'homeboy/agent-task-outcome/v1');
 assert.equal(agentBundleOutcome.status, 'succeeded');
 assert.equal(agentBundleOutcome.outputs.example_pr_url, 'https://github.com/example-org/example-repo/pull/123');
-assert.equal(agentBundleOutcome.outputs.typed_artifacts.example_review.type, 'ExampleReviewArtifact');
-assert.equal(agentBundleOutcome.outputs.typed_artifacts.example_review.artifact_schema, 'example/review-artifact/v1');
-assert.equal(agentBundleOutcome.outputs.typed_artifacts.example_review.payload.review_ready, true);
-assert.equal(agentBundleOutcome.artifacts.some((artifact) => artifact.kind === 'typed-bundle-output' && artifact.name === 'example_review' && artifact.path === '/tmp/wp-codebox-artifacts/example-review.json'), true);
-assert.equal(agentBundleOutcome.artifacts.some((artifact) => artifact.kind === 'agent-runtime-transcript' && artifact.path === '/tmp/transcript.json'), true);
-assert.equal(agentBundleOutcome.artifacts.some((artifact) => artifact.kind === 'agent-runtime-replay-bundle' && artifact.path === '/tmp/replay-bundle'), true);
+assert.equal(agentBundleOutcome.outputs.typed_artifacts, undefined);
+assert.deepEqual(agentBundleOutcome.artifacts, []);
 assert.equal(agentBundleOutcome.evidence_refs.some((ref) => ref.uri === 'https://github.com/example-org/example-repo/pull/123'), true);
-assert.equal(agentBundleOutcome.evidence_refs.some((ref) => ref.uri === '/tmp/wp-codebox-artifacts/example-review.json'), true);
+assert.equal(agentBundleOutcome.evidence_refs.some((ref) => ref.uri === '/tmp/wp-codebox-artifacts/example-review.json'), false);
 assert.equal(agentBundleOutcome.metadata.sandbox_policy.policy.apply, 'review');
 assert.equal(agentBundleOutcome.metadata.sandbox_policy.sandbox_tool_policy.tools[0].allowed, false);
-assert.equal(upstreamRunnerOutcome.artifacts[1].kind, 'codebox-session-artifacts');
-assert.equal(upstreamRunnerOutcome.evidence_refs[0].uri, 'https://preview.example.test/sandbox-session-1');
-assert.equal(upstreamRunnerOutcome.evidence_refs[1].uri, '/tmp/wp-codebox-artifacts');
+assert.deepEqual(upstreamRunnerOutcome.artifacts, []);
+assert.deepEqual(upstreamRunnerOutcome.evidence_refs, []);
 
 const missingRequiredTypedArtifactOutcome = agentTaskOutcomeFromCodeboxResult({
   ...request,
@@ -2088,12 +2094,11 @@ const projectedTypedArtifactBundleOutcome = agentTaskOutcomeFromCodeboxResult({
     },
   },
 });
-assert.equal(projectedTypedArtifactBundleOutcome.status, 'succeeded');
+assert.equal(projectedTypedArtifactBundleOutcome.status, 'failed');
 assert.equal(projectedTypedArtifactBundleOutcome.outputs.example_review.review_ready, true);
-assert.equal(projectedTypedArtifactBundleOutcome.outputs.typed_artifacts.example_review.type, 'ExampleReviewArtifact');
-assert.equal(projectedTypedArtifactBundleOutcome.outputs.typed_artifacts.example_review.payload.slug, 'projected-review');
-assert.equal(projectedTypedArtifactBundleOutcome.diagnostics.some((diagnostic) => diagnostic.class === 'codebox.required_typed_artifacts_missing'), false);
-assert.equal(projectedTypedArtifactBundleOutcome.artifacts.some((artifact) => artifact.kind === 'typed-bundle-output' && artifact.path === '/tmp/wp-codebox-artifacts/projected-review.json'), true);
+assert.equal(projectedTypedArtifactBundleOutcome.outputs.typed_artifacts, undefined);
+assert.equal(projectedTypedArtifactBundleOutcome.diagnostics.some((diagnostic) => diagnostic.class === 'codebox.required_typed_artifacts_missing'), true);
+assert.equal(projectedTypedArtifactBundleOutcome.artifacts.some((artifact) => artifact.kind === 'typed-bundle-output' && artifact.path === '/tmp/wp-codebox-artifacts/projected-review.json'), false);
 
 const engineDataTypedArtifactBundleOutcome = agentTaskOutcomeFromCodeboxResult({
   ...request,
@@ -2132,10 +2137,9 @@ const engineDataTypedArtifactBundleOutcome = agentTaskOutcomeFromCodeboxResult({
     },
   },
 });
-assert.equal(engineDataTypedArtifactBundleOutcome.status, 'succeeded');
-assert.equal(engineDataTypedArtifactBundleOutcome.outputs.typed_artifacts.concept_packet.artifact_schema, 'example/concept-packet/v1');
-assert.equal(engineDataTypedArtifactBundleOutcome.outputs.typed_artifacts.concept_packet.payload.title, 'Projected concept');
-assert.equal(engineDataTypedArtifactBundleOutcome.diagnostics.some((diagnostic) => diagnostic.class === 'codebox.required_typed_artifacts_missing'), false);
+assert.equal(engineDataTypedArtifactBundleOutcome.status, 'failed');
+assert.equal(engineDataTypedArtifactBundleOutcome.outputs.typed_artifacts, undefined);
+assert.equal(engineDataTypedArtifactBundleOutcome.diagnostics.some((diagnostic) => diagnostic.class === 'codebox.required_typed_artifacts_missing'), true);
 
 const replyTypedArtifactBundleOutcome = agentTaskOutcomeFromCodeboxResult({
   ...request,
@@ -2167,15 +2171,10 @@ const replyTypedArtifactBundleOutcome = agentTaskOutcomeFromCodeboxResult({
     },
   },
 });
-assert.equal(replyTypedArtifactBundleOutcome.status, 'succeeded');
-assert.equal(replyTypedArtifactBundleOutcome.outputs.typed_artifacts.concept_packet.artifact_schema, 'example/concept-packet/v1');
-assert.equal(replyTypedArtifactBundleOutcome.outputs.typed_artifacts.concept_packet.artifact_id, 'concept_packet');
-assert.equal(replyTypedArtifactBundleOutcome.outputs.typed_artifacts.concept_packet.kind, 'example/concept-packet/v1');
-assert.match(replyTypedArtifactBundleOutcome.outputs.typed_artifacts.concept_packet.payload.content, /Commerce Concept Packet/);
-assert.equal(replyTypedArtifactBundleOutcome.diagnostics.some((diagnostic) => diagnostic.class === 'codebox.required_typed_artifacts_missing'), false);
-assert.equal(replyTypedArtifactBundleOutcome.typed_artifacts.some((artifact) => artifact.name === 'concept_packet'), true);
-assert.equal(replyTypedArtifactBundleOutcome.typed_artifacts.find((artifact) => artifact.name === 'concept_packet').artifact_id, 'concept_packet');
-assert.equal(replyTypedArtifactBundleOutcome.typed_artifacts.find((artifact) => artifact.name === 'concept_packet').kind, 'example/concept-packet/v1');
+assert.equal(replyTypedArtifactBundleOutcome.status, 'failed');
+assert.equal(replyTypedArtifactBundleOutcome.outputs.typed_artifacts, undefined);
+assert.equal(replyTypedArtifactBundleOutcome.diagnostics.some((diagnostic) => diagnostic.class === 'codebox.required_typed_artifacts_missing'), true);
+assert.equal(replyTypedArtifactBundleOutcome.typed_artifacts, undefined);
 
 const failedProjectedTypedArtifactBundleOutcome = agentTaskOutcomeFromCodeboxResult({
   ...request,
@@ -2290,15 +2289,8 @@ const canaryRunOutcome = agentTaskOutcomeFromCodeboxResult(request, {
   },
 });
 assert.equal(canaryRunOutcome.status, 'no_op');
-assert.equal(canaryRunOutcome.artifacts.some((artifact) => artifact.kind === 'artifact-bundle' && artifact.path === '/tmp/canary/runtime'), true);
-assert.equal(canaryRunOutcome.artifacts.some((artifact) => artifact.kind === 'codebox-changed-files' && artifact.path === '/tmp/canary/runtime/files/changed-files.json'), true);
-assert.equal(canaryRunOutcome.artifacts.some((artifact) => artifact.kind === 'codebox-patch' && artifact.path === '/tmp/canary/runtime/files/patch.diff'), true);
-assert.equal(canaryRunOutcome.artifacts.some((artifact) => artifact.kind === 'codebox-transcript' && artifact.path === '/tmp/canary/runtime/files/transcript.json'), true);
-assert.equal(canaryRunOutcome.artifacts.some((artifact) => artifact.role === 'patch' && artifact.metadata.wp_codebox.kind === 'codebox-patch' && artifact.metadata.wp_codebox.raw.metadata.artifact === 'files/patch.diff'), true);
-assert.equal(canaryRunOutcome.artifacts.some((artifact) => artifact.role === 'transcript' && artifact.metadata.wp_codebox.kind === 'codebox-transcript'), true);
-assert.equal(canaryRunOutcome.artifacts.some((artifact) => artifact.kind === 'codebox-runtime-log'), true);
-assert.equal(canaryRunOutcome.artifacts.some((artifact) => artifact.kind === 'codebox-command-log'), true);
-assert.equal(canaryRunOutcome.evidence_refs.some((ref) => ref.uri === '/tmp/canary/runtime/files/patch.diff'), true);
+assert.deepEqual(canaryRunOutcome.artifacts, []);
+assert.deepEqual(canaryRunOutcome.evidence_refs, []);
 assert.equal(canaryRunOutcome.metadata.decision_evidence.selected_backend, 'codebox');
 assert.equal(canaryRunOutcome.metadata.decision_evidence.run_id, 'run-canary');
 assert.equal(canaryRunOutcome.metadata.decision_evidence.runtime_status, 'destroyed');
@@ -2329,9 +2321,9 @@ const canaryTranscriptRequiredOutcome = agentTaskOutcomeFromCodeboxResult({
     },
   },
 });
-assert.equal(canaryTranscriptRequiredOutcome.status, 'no_op');
-assert.equal(canaryTranscriptRequiredOutcome.outputs.typed_artifacts['datamachine-transcript'].file_refs[0].path, '/tmp/canary/runtime/files/transcript.json');
-assert.equal(canaryTranscriptRequiredOutcome.diagnostics.some((diagnostic) => diagnostic.class === 'codebox.required_typed_artifacts_missing'), false);
+assert.equal(canaryTranscriptRequiredOutcome.status, 'failed');
+assert.equal(canaryTranscriptRequiredOutcome.outputs.typed_artifacts, undefined);
+assert.equal(canaryTranscriptRequiredOutcome.diagnostics.some((diagnostic) => diagnostic.class === 'codebox.required_typed_artifacts_missing'), true);
 
 const labArtifactRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'homeboy-codebox-lab-artifacts-'));
 const labRuntimeRoot = path.join(labArtifactRoot, 'runtime-fixture-123');
@@ -2363,8 +2355,9 @@ const labTranscriptRequiredOutcome = agentTaskOutcomeFromCodeboxResult({
   }],
   outputs: {},
 });
-assert.equal(labTranscriptRequiredOutcome.outputs.typed_artifacts['datamachine-transcript'].file_refs[0].path, path.join(labRuntimeRoot, 'files', 'transcript.json'));
-assert.equal(labTranscriptRequiredOutcome.diagnostics.some((diagnostic) => diagnostic.class === 'codebox.required_typed_artifacts_missing'), false);
+assert.equal(labTranscriptRequiredOutcome.status, 'failed');
+assert.equal(labTranscriptRequiredOutcome.outputs.typed_artifacts, undefined);
+assert.equal(labTranscriptRequiredOutcome.diagnostics.some((diagnostic) => diagnostic.class === 'codebox.required_typed_artifacts_missing'), true);
 
 const codexOutcome = agentTaskOutcomeFromCodeboxResult(request, {
   success: true,
