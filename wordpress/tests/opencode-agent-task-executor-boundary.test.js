@@ -13,7 +13,12 @@ const { spawnSync } = require('node:child_process');
  * Internal dependencies
  */
 const {
+	OPENCODE_INVOCATION,
+	OPENCODE_PROVIDER_DEFAULTS,
+	OPENCODE_PROVIDER_PREFLIGHT,
+	OPENCODE_RUNNER_READINESS,
 	OPENCODE_SECRET_ENV,
+	OPENCODE_WORKSPACE_TOOLS,
 	executeOpenCodeAgentTask,
 	providerContract,
 } = require('../../agent-runtimes/opencode');
@@ -29,11 +34,16 @@ assert.equal(provider.id, 'opencode.agent-task-executor');
 assert.equal(provider.backend, 'opencode');
 assert.equal(provider.status, 'available');
 assert.equal(provider.integration_contract, 'homeboy-opencode-agent-task/v1');
+assert.deepEqual(provider.invocation, OPENCODE_INVOCATION);
 assert.equal(provider.lifecycle.max_concurrency_default, 1);
 assert.equal(provider.lifecycle.cancellation, 'provider_signal');
 assert.deepEqual(secretEnvRequirementForProvider(provider, 'codex').env, OPENCODE_SECRET_ENV);
 assert.deepEqual(provider.provider_defaults.codex.secret_env, OPENCODE_SECRET_ENV);
 assert.equal(provider.provider_defaults.codex.model, 'gpt-5.5');
+assert.deepEqual(provider.provider_defaults.codex.secret_env_sources, OPENCODE_PROVIDER_DEFAULTS.codex.secret_env_sources);
+assert.deepEqual(provider.provider_preflight, OPENCODE_PROVIDER_PREFLIGHT);
+assert.deepEqual(provider.runner_readiness, OPENCODE_RUNNER_READINESS);
+assert.deepEqual(provider.workspace_tools, OPENCODE_WORKSPACE_TOOLS);
 assert.equal(provider.redacted_metadata_keys.includes('opencode_auth'), true);
 assert.equal(provider.capabilities.includes('repo_workspace'), true);
 assert.equal(provider.capabilities.includes('patch_artifacts'), true);
@@ -96,7 +106,7 @@ process.exit(0);
 				backend: 'opencode',
 				config: {
 					provider: 'codex',
-					command: process.execPath,
+					runtime_bin: process.execPath,
 					command_args: [mockCliPath],
 				},
 			},
@@ -111,7 +121,7 @@ process.exit(0);
 			backend: 'opencode',
 			config: {
 				provider: 'codex',
-				command: process.execPath,
+				runtime_bin: process.execPath,
 				command_args: [mockCliPath],
 			},
 		},
