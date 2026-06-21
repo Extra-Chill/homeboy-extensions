@@ -26,7 +26,6 @@ function runHeadlessDeterministicLoop(options = {}) {
 
   for (const task of tasks) {
     const plan = { ...spec, ...task, dry_run: dryRun };
-    let finalLoop = null;
     const request = buildGenericAgentLoopRequest({
       plan,
       runtime,
@@ -55,7 +54,6 @@ function runHeadlessDeterministicLoop(options = {}) {
       });
       finalOutcome = result.outcome;
       finalResults = result.results;
-      finalLoop = result.loop;
       pushEvent(events, 'task_completed', { task_id: request.task_id, status: result.outcome.status });
       if (result.assertion) {
         pushEvent(events, 'task_asserted', { task_id: request.task_id, assertion: result.assertion });
@@ -67,8 +65,6 @@ function runHeadlessDeterministicLoop(options = {}) {
 			request,
 			outcome: finalOutcome,
 			results: finalResults,
-			loop: finalLoop,
-			state: finalLoop?.state || null,
 		});
 	}
 
