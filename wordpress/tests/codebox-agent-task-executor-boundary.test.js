@@ -639,8 +639,8 @@ const providerAndControllerArtifactsTaskInput = codeboxTaskRequestFromAgentTaskR
     ability_request: { name: 'agents/run-runtime-package' },
   },
 });
-assert.deepEqual(providerAndControllerArtifactsTaskInput.artifact_declarations.map((declaration) => declaration.name), ['patch', 'concept_packet']);
-assert.deepEqual(providerAndControllerArtifactsTaskInput.runtime_task.input.required_artifacts, ['patch', 'concept_packet']);
+assert.deepEqual(providerAndControllerArtifactsTaskInput.artifact_declarations.map((declaration) => declaration.name), ['concept_packet']);
+assert.deepEqual(providerAndControllerArtifactsTaskInput.runtime_task.input.required_artifacts, ['concept_packet']);
 assert.equal(
   providerAndControllerArtifactsTaskInput.runtime_task.input.engine_data_outputs.concept_packet,
   'metadata.engine_data.outputs.typed_artifacts.concept_packet.payload'
