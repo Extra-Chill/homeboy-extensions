@@ -6,9 +6,16 @@ const {
 	DEFAULT_FUZZ_RUN_ABILITY,
 	DEFAULT_FUZZ_RUN_ARTIFACT_DECLARATIONS,
 	DEFAULT_FUZZ_SUITE_ABILITY,
+	DEFAULT_WORDPRESS_WORKLOAD_RUN_ABILITY,
+	DEFAULT_WORDPRESS_WORKLOAD_RUN_SCHEMA,
 	WP_CODEBOX_FUZZ_SUITE_RESULT_SCHEMA,
 	WP_CODEBOX_FUZZ_SUITE_SCHEMA,
 	WP_CODEBOX_FUZZ_RUN_SCHEMA,
+	wpCodeboxFuzzSuiteAbility,
+	wpCodeboxFuzzSuiteSchema,
+	wpCodeboxWordPressWorkloadRunAbility,
+	wpCodeboxWordPressWorkloadRunInput,
+	wpCodeboxWordPressWorkloadRunSchema,
 	normalizeWpCodeboxFuzzRunResult,
 	normalizeWpCodeboxFuzzSuiteResult,
 	runWpCodeboxFuzzRun,
@@ -38,6 +45,46 @@ assert.equal(DEFAULT_FUZZ_RUN_ABILITY, DEFAULT_FUZZ_SUITE_ABILITY);
 assert.equal(input.target.slug, 'sample-plugin');
 assert.deepEqual(input.metadata.limits, { max_cases: 1 });
 assert.equal(wpCodeboxFuzzSuiteInput({ id: 'suite-alias' }).schema, WP_CODEBOX_FUZZ_SUITE_SCHEMA);
+
+const manifest = {
+	schema: 'wp-codebox/runtime-contract-manifest/v1',
+	version: 1,
+	schemas: {
+		wordpressRuntime: {
+			workloadRun: 'wp-codebox/wordpress-workload-run/v1',
+			fuzzSuite: 'wp-codebox/fuzz-suite/v1',
+			fuzzSuiteResult: 'wp-codebox/fuzz-suite-result/v1',
+		},
+	},
+	abilities: {
+		wordpressRuntime: {
+			runWorkload: 'wp-codebox/run-wordpress-workload',
+			runFuzzSuite: 'wp-codebox/run-fuzz-suite',
+		},
+	},
+};
+
+assert.equal(wpCodeboxFuzzSuiteAbility({ runtimeContractManifest: manifest }), DEFAULT_FUZZ_SUITE_ABILITY);
+assert.equal(wpCodeboxFuzzSuiteSchema({ runtimeContractManifest: manifest }), WP_CODEBOX_FUZZ_SUITE_SCHEMA);
+assert.equal(wpCodeboxWordPressWorkloadRunAbility({ runtimeContractManifest: manifest }), DEFAULT_WORDPRESS_WORKLOAD_RUN_ABILITY);
+assert.equal(wpCodeboxWordPressWorkloadRunSchema({ runtimeContractManifest: manifest }), DEFAULT_WORDPRESS_WORKLOAD_RUN_SCHEMA);
+assert.deepEqual(wpCodeboxWordPressWorkloadRunInput({
+	id: 'workload-run',
+	steps: [{ command: 'wordpress.run-declarative-fuzz' }],
+	metadata: { source: 'smoke' },
+}), {
+	schema: DEFAULT_WORDPRESS_WORKLOAD_RUN_SCHEMA,
+	id: 'workload-run',
+	mounts: [],
+	runtime_stack_mounts: [],
+	runtime_overlays: [],
+	secret_env: [],
+	staged_files: [],
+	before: [],
+	steps: [{ command: 'wordpress.run-declarative-fuzz' }],
+	after: [],
+	metadata: { source: 'smoke' },
+});
 
 const taskRequest = wpCodeboxFuzzRunTaskRequest({
 	taskId: 'wp-codebox-fuzz-run-smoke',
