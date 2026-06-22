@@ -1137,7 +1137,11 @@ function runtimeComponentPathsFromContracts(contracts) {
   if (!Array.isArray(contracts)) {
     return {};
   }
-  const slugToKey = new Map();
+  const slugToKey = new Map([
+    ['agents-api', 'agents_api'],
+    ['agent-runtime', 'agent_runtime'],
+    ['agent-runtime-tools', 'agent_runtime_tools'],
+  ]);
   return Object.fromEntries(contracts
     .map((contract) => [slugToKey.get(contract?.slug), contract?.path || contract?.source])
     .filter(([key, value]) => key && value));
@@ -1165,6 +1169,10 @@ function runnerInput(request, artifacts) {
   const runtimeComponentPaths = {
     ...requestRuntimeComponents(request, mounts),
   };
+  const componentContracts = runtimeSubstrateComponentContracts(
+    uniqueComponentContracts(requestComponentContracts(request).map(remapRuntimeComponentContract)),
+    runtimeComponentPaths,
+  );
   return Object.fromEntries(Object.entries({
     parent_request: request,
     agent: argValue('--agent') || request.agent || '',
@@ -1194,7 +1202,7 @@ function runnerInput(request, artifacts) {
     artifacts_path: artifacts,
     wp_codebox_bin: argValue('--wp-codebox-bin') || request.wp_codebox_bin || '',
     runtime_component_paths: runtimeComponentPaths,
-    component_contracts: uniqueComponentContracts(requestComponentContracts(request).map(remapRuntimeComponentContract)),
+    component_contracts: componentContracts,
     homeboy_path: argValue('--homeboy') || request.homeboy_path || request.homeboy || '',
     homeboy_extensions_path: argValue('--homeboy-extensions') || request.homeboy_extensions_path || request.homeboy_extensions || path.resolve(__dirname, '..', '..'),
     wp_version: request.wordpress_runtime_version || request.wordpress_version || request.wp_codebox_wordpress_version || request.wp_version || request.wp || undefined,
@@ -1204,6 +1212,69 @@ function runnerInput(request, artifacts) {
 
 function runtimeComponentExtraPlugins() {
   return [];
+}
+
+function runtimeSubstrateComponentContracts(componentContracts, runtimeComponentPaths = {}) {
+  const contracts = uniqueComponentContracts(componentContracts || []);
+  if (contracts.some((contract) => contract.slug === 'agents-api')) {
+    return contracts;
+  }
+
+  const agentsApiPath = discoverAgentsApiPath(runtimeComponentPaths);
+  if (!agentsApiPath) {
+    return contracts;
+  }
+
+  return uniqueComponentContracts([
+    ...contracts,
+    {
+      slug: 'agents-api',
+      path: agentsApiPath,
+      pluginFile: 'agents-api/agents-api.php',
+      loadAs: 'mu-plugin',
+      activate: false,
+      metadata: { source: 'wp-codebox-default-agent-runtime-substrate' },
+    },
+  ]);
+}
+
+function discoverAgentsApiPath(runtimeComponentPaths = {}) {
+  return [
+    runtimeComponentPaths.agents_api,
+    process.env.WP_CODEBOX_AGENTS_API_PATH,
+    process.env.AGENTS_API_PATH,
+    ...agentsApiCandidatesFromRuntimeComponent(runtimeComponentPaths.agent_runtime),
+    ...agentsApiCandidatesFromRuntimeComponent(runtimeComponentPaths.runtime),
+    ...nearbyAgentsApiCandidates(process.cwd()),
+  ].find(isAgentsApiPluginRoot) || '';
+}
+
+function agentsApiCandidatesFromRuntimeComponent(componentPath) {
+  if (!componentPath) {
+    return [];
+  }
+  return [
+    path.join(componentPath, 'vendor', 'wordpress', 'agents-api'),
+    path.join(componentPath, 'vendor', 'automattic', 'agents-api'),
+  ];
+}
+
+function nearbyAgentsApiCandidates(startPath) {
+  const candidates = [];
+  let current = path.resolve(startPath || process.cwd());
+  for (let depth = 0; depth < 6; depth += 1) {
+    candidates.push(path.join(current, 'agents-api'), path.join(path.dirname(current), 'agents-api'));
+    const parent = path.dirname(current);
+    if (parent === current) {
+      break;
+    }
+    current = parent;
+  }
+  return candidates;
+}
+
+function isAgentsApiPluginRoot(candidate) {
+  return Boolean(candidate && fs.existsSync(path.join(candidate, 'agents-api.php')));
 }
 
 function pluginSlugFromPath(pluginPath) {
