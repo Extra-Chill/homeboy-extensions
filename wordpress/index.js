@@ -35,6 +35,7 @@ module.exports = {
 	...require('./lib/audit-fanout-runtime-provider'),
 	...require('./lib/agent-terminal-actions'),
 	...require('./lib/agent-task-runner-spec'),
+	...require('./lib/codebox-docs-agent-recipe-planner'),
 	...require('./lib/wp-codebox-apply-adapter'),
 	...require('./lib/codebox-provider-adapter'),
 	...require('./lib/wp-codebox-recipe-helper'),

@@ -663,6 +663,29 @@ shorthand; Homeboy core only sees generic durable agent-task plans.
 and runtime-path dispatch; it forwards to the WordPress payload so both monorepo
 and installed extension layouts use the same implementation.
 
+### Codebox Docs Agent recipe planner
+
+`lib/codebox-docs-agent-recipe-planner.js` and
+`scripts/agent/homeboy-codebox-docs-agent-recipe-plan.cjs` provide the public
+Docs Agent workflow boundary for recipe-oriented Codebox runs. Callers describe
+the recipe pack/name/path/ref, recipe inputs, target repo/ref metadata, expected
+artifacts, timeout, concurrency, and secret environment variable names. The
+planner owns the internal projection to Homeboy's generic agent-task request and
+the selected Codebox runner, so Docs Agent consumers do not pass Data Machine
+ability names, Codebox mounts, component paths, provider plugin paths, or runtime
+substrate details.
+
+```bash
+node wordpress/scripts/agent/homeboy-codebox-docs-agent-recipe-plan.cjs \
+  --plan-id docs-agent-update \
+  --recipe-pack public-codebox-docs-agent-recipes \
+  --recipe-name docs-agent-update \
+  --recipe-inputs '{"docsRoot":"docs"}' \
+  --target-repo Automattic/docs-agent \
+  --target-ref refs/pull/123/head \
+  --expected-artifact docs-agent-summary
+```
+
 ### Static-site fanout adapter
 
 `lib/static-site-fanout-adapter.js` groups static-site import validation findings
