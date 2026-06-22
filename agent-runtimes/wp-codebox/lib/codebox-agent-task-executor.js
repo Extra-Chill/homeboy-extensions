@@ -376,7 +376,7 @@ function codeboxTaskRequestFromAgentTaskRequest(request, options = {}) {
     target,
     workspace_materialization: workspaceMaterialization,
     allowed_tools: sandboxAllowedTools || [],
-    expected_artifacts: request.expected_artifacts || [],
+    expected_artifacts: expectedArtifactsForCodeboxTask(request, artifactDeclarations),
     artifact_declarations: artifactDeclarations,
     policy: request.policy || {},
     context,
@@ -441,6 +441,17 @@ function codeboxTaskRequestFromAgentTaskRequest(request, options = {}) {
     agent_bundle: agentBundle,
     parent_request: request,
   };
+}
+
+function expectedArtifactsForCodeboxTask(request, artifactDeclarations = []) {
+  const declarationNames = artifactDeclarations
+    .filter((declaration) => declaration && declaration.required === true)
+    .map((declaration) => typedArtifactNameFromDeclaration(declaration))
+    .filter(Boolean);
+  if (declarationNames.length > 0) {
+    return Array.from(new Set(declarationNames));
+  }
+  return normalizeArray(request.expected_artifacts);
 }
 
 function runtimeOptionsFromExecutorConfig(config = {}, options = {}) {
