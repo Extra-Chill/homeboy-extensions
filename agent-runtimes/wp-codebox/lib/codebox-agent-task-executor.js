@@ -164,6 +164,11 @@ function providerContract(options = {}) {
     label: options.label || WP_CODEBOX_PROVIDER_LABEL,
     backend: WP_CODEBOX_BACKEND,
     runtime_id: options.runtimeId || options.runtime_id || runtimeManifest().id || 'wp-codebox',
+    lab_runtime_components: normalizeArray(
+      options.labRuntimeComponents
+      || options.lab_runtime_components
+      || runtimeExecutorManifest().lab_runtime_components
+    ),
     command: options.command || 'node {{runtime_path}}/scripts/agent/homeboy-codebox-agent-task-executor.cjs',
     invocation: runtimeCommandInvocation(options),
     ...agentTaskProviderContractFields(),
