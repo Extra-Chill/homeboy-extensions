@@ -1139,6 +1139,7 @@ function runtimeComponentPathsFromContracts(contracts) {
   }
   const slugToKey = new Map([
     ['agents-api', 'agents_api'],
+    ['data-machine', 'data_machine'],
     ['agent-runtime', 'agent_runtime'],
     ['agent-runtime-tools', 'agent_runtime_tools'],
   ]);
@@ -1215,27 +1216,39 @@ function runtimeComponentExtraPlugins() {
 }
 
 function runtimeSubstrateComponentContracts(componentContracts, runtimeComponentPaths = {}) {
-  const contracts = uniqueComponentContracts(componentContracts || []);
-  if (contracts.some((contract) => contract.slug === 'agents-api')) {
-    return contracts;
-  }
+  let contracts = uniqueComponentContracts(componentContracts || []);
 
   const agentsApiPath = discoverAgentsApiPath(runtimeComponentPaths);
-  if (!agentsApiPath) {
-    return contracts;
+  if (agentsApiPath && !contracts.some((contract) => contract.slug === 'agents-api')) {
+    contracts = uniqueComponentContracts([
+      ...contracts,
+      {
+        slug: 'agents-api',
+        path: agentsApiPath,
+        pluginFile: 'agents-api/agents-api.php',
+        loadAs: 'mu-plugin',
+        activate: false,
+        metadata: { source: 'wp-codebox-default-agent-runtime-substrate' },
+      },
+    ]);
   }
 
-  return uniqueComponentContracts([
-    ...contracts,
-    {
-      slug: 'agents-api',
-      path: agentsApiPath,
-      pluginFile: 'agents-api/agents-api.php',
-      loadAs: 'mu-plugin',
-      activate: false,
-      metadata: { source: 'wp-codebox-default-agent-runtime-substrate' },
-    },
-  ]);
+  const dataMachinePath = discoverDataMachinePath(runtimeComponentPaths);
+  if (dataMachinePath && !contracts.some((contract) => contract.slug === 'data-machine')) {
+    contracts = uniqueComponentContracts([
+      ...contracts,
+      {
+        slug: 'data-machine',
+        path: dataMachinePath,
+        pluginFile: 'data-machine/data-machine.php',
+        loadAs: 'mu-plugin',
+        activate: false,
+        metadata: { source: 'wp-codebox-default-agent-runtime-substrate' },
+      },
+    ]);
+  }
+
+  return contracts;
 }
 
 function discoverAgentsApiPath(runtimeComponentPaths = {}) {
@@ -1249,6 +1262,17 @@ function discoverAgentsApiPath(runtimeComponentPaths = {}) {
   ].find(isAgentsApiPluginRoot) || '';
 }
 
+function discoverDataMachinePath(runtimeComponentPaths = {}) {
+  return [
+    runtimeComponentPaths.data_machine,
+    process.env.WP_CODEBOX_DATA_MACHINE_PATH,
+    process.env.DATA_MACHINE_PATH,
+    ...dataMachineCandidatesFromRuntimeComponent(runtimeComponentPaths.agent_runtime),
+    ...dataMachineCandidatesFromRuntimeComponent(runtimeComponentPaths.runtime),
+    ...nearbyDataMachineCandidates(process.cwd()),
+  ].find(isDataMachinePluginRoot) || '';
+}
+
 function agentsApiCandidatesFromRuntimeComponent(componentPath) {
   if (!componentPath) {
     return [];
@@ -1256,6 +1280,17 @@ function agentsApiCandidatesFromRuntimeComponent(componentPath) {
   return [
     path.join(componentPath, 'vendor', 'wordpress', 'agents-api'),
     path.join(componentPath, 'vendor', 'automattic', 'agents-api'),
+  ];
+}
+
+function dataMachineCandidatesFromRuntimeComponent(componentPath) {
+  if (!componentPath) {
+    return [];
+  }
+  return [
+    path.join(componentPath, 'vendor', 'extrachill', 'data-machine'),
+    path.join(componentPath, 'vendor', 'extra-chill', 'data-machine'),
+    path.join(componentPath, 'vendor', 'automattic', 'data-machine'),
   ];
 }
 
@@ -1273,8 +1308,26 @@ function nearbyAgentsApiCandidates(startPath) {
   return candidates;
 }
 
+function nearbyDataMachineCandidates(startPath) {
+  const candidates = [];
+  let current = path.resolve(startPath || process.cwd());
+  for (let depth = 0; depth < 6; depth += 1) {
+    candidates.push(path.join(current, 'data-machine'), path.join(path.dirname(current), 'data-machine'));
+    const parent = path.dirname(current);
+    if (parent === current) {
+      break;
+    }
+    current = parent;
+  }
+  return candidates;
+}
+
 function isAgentsApiPluginRoot(candidate) {
   return Boolean(candidate && fs.existsSync(path.join(candidate, 'agents-api.php')));
+}
+
+function isDataMachinePluginRoot(candidate) {
+  return Boolean(candidate && fs.existsSync(path.join(candidate, 'data-machine.php')));
 }
 
 function pluginSlugFromPath(pluginPath) {
