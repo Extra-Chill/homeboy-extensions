@@ -2385,7 +2385,7 @@ function typedArtifactNameFromDeclaration(declaration) {
 
 function requiredArtifactDeclarationsFromRequest(request) {
   const config = request.executor?.config || {};
-  return artifactDeclarationsFromAgentTaskRequest(request, config, request.inputs || {})
+  return codeboxTaskArtifactDeclarations(artifactDeclarationsFromAgentTaskRequest(request, config, request.inputs || {}))
     .filter((declaration) => declaration && typeof declaration === 'object' && declaration.required === true && typedArtifactNameFromDeclaration(declaration));
 }
 

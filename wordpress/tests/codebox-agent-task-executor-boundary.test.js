@@ -650,11 +650,15 @@ const placeholderArtifactOutcome = agentTaskOutcomeFromCodeboxResult({
   schema: 'homeboy/agent-task-request/v1',
   task_id: 'placeholder-artifact-task-1',
   executor: { backend: 'codebox', config: { provider: 'openai' } },
-  artifact_declarations: [{
-    name: 'concept_packet',
-    artifact_schema: 'wp-site-generator/ConceptPacket/v1',
-    required: true,
-  }],
+  artifact_declarations: [
+    { name: 'patch', required: true },
+    { name: 'agent_result', required: true },
+    {
+      name: 'concept_packet',
+      artifact_schema: 'wp-site-generator/ConceptPacket/v1',
+      required: true,
+    },
+  ],
 }, {
   success: true,
   status: 'completed',
