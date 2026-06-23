@@ -229,7 +229,7 @@ function runGenericDeterministicLoop(options = {}) {
           result: entry.outcome,
           artifacts: entry.artifacts,
           gate_result: entry.stop?.data?.gate_result,
-          accepted: entry.stop?.stop === true,
+          accepted: genericLoopIterationAccepted(entry),
         })),
         evidence,
       }),
@@ -410,6 +410,19 @@ function collectEvidence({ iteration, outcome, result, artifacts }) {
       evidence: ref,
     })),
   ];
+}
+
+function genericLoopIterationAccepted(entry = {}) {
+  const outcome = optionalObject(entry.outcome);
+  const state = optionalObject(entry.state);
+  if (outcome.accepted === false || state.accepted === false || outcome.success === false || outcome.status === 'failed') {
+    return false;
+  }
+  if (outcome.accepted === true || state.accepted === true || outcome.success === true) {
+    return true;
+  }
+  const status = outcome.status || outcome.state || '';
+  return ['accepted', 'succeeded', 'passed', 'no_op'].includes(status);
 }
 
 function materializeGenericAgentLoopResults(outcome, options = {}) {
