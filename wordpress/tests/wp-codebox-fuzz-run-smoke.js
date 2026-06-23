@@ -295,7 +295,7 @@ runWpCodeboxFuzzSuite({
 				},
 				artifacts: {
 					fuzz_report: { path: 'reports/fuzz-report.json', content_type: 'application/json' },
-					coverage: { path: 'reports/coverage.json', content_type: 'application/json', size_bytes: 123 },
+					coverage: { path: 'reports/coverage.json', content_type: 'application/json', size_bytes: 123, payload: { schema: 'wp-codebox/coverage-report/v1', covered: 1 } },
 					normalized_fuzz_result: { path: 'reports/wordpress-fuzz-result.json', content_type: 'application/json' },
 					fuzz_case: { path: 'cases/case-000.json', case_id: 'case-000' },
 					placeholder_case: { name: 'placeholder-only' },
@@ -337,6 +337,7 @@ runWpCodeboxFuzzSuite({
 	assert.equal(summary.artifacts[7].semantic_key, 'fuzz.case.repro');
 	assert.equal(summary.artifacts.find((artifact) => artifact.role === 'coverage').semantic_key, 'fuzz.coverage');
 	assert.equal(summary.artifacts.find((artifact) => artifact.role === 'coverage').size_bytes, 123);
+	assert.equal(summary.artifacts.find((artifact) => artifact.role === 'coverage').payload.schema, 'wp-codebox/coverage-report/v1');
 	assert.equal(summary.artifacts.find((artifact) => artifact.role === 'normalized_fuzz_result').semantic_key, 'fuzz.result.normalized');
 	assert.equal(summary.artifacts.find((artifact) => artifact.role === 'fuzz_case').semantic_key, 'fuzz.case');
 	assert.equal(summary.artifacts.find((artifact) => artifact.role === 'fuzz_case').case_id, 'case-000');

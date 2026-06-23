@@ -687,6 +687,9 @@ function normalizeFuzzArtifact(artifact) {
 		content_type: artifact.content_type || artifact.contentType || artifact.mime,
 		sha256,
 		size_bytes: numberOrUndefined(artifact.size_bytes ?? artifact.sizeBytes ?? artifact.bytes),
+		payload: objectOrUndefined(artifact.payload),
+		data: objectOrUndefined(artifact.data),
+		content: objectOrUndefined(artifact.content),
 		case_id: artifact.case_id || artifact.caseId,
 		status: artifact.status,
 		metadata: stripUndefined({
