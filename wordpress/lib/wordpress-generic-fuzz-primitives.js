@@ -1,12 +1,15 @@
 'use strict';
 
 const WORDPRESS_CRUD_OPERATION_SCHEMA = 'homeboy/wordpress-crud-operation/v1';
+const WORDPRESS_CRUD_OPERATION_RESULT_SCHEMA = 'homeboy/wordpress-crud-operation-result/v1';
 const WORDPRESS_FIXTURE_PERSONA_SCHEMA = 'homeboy/wordpress-fixture-persona/v1';
 const WORDPRESS_PERFORMANCE_OBSERVATION_SCHEMA = 'homeboy/wordpress-performance-observation/v1';
 
 const CRUD_ACTIONS = new Set(['create', 'read', 'update', 'delete']);
 const SAFETY_LEVELS = new Set(['safe', 'mutating', 'destructive']);
 const RESET_STRATEGIES = new Set(['none', 'delete-created', 'restore-snapshot', 'transaction', 'manual']);
+const CRUD_RESULT_STATUSES = new Set(['passed', 'failed', 'errored', 'skipped']);
+const ROLLBACK_RESULT_STATUSES = new Set(['not-required', 'passed', 'failed', 'errored', 'skipped']);
 const OBSERVATION_STATUSES = new Set(['passed', 'failed', 'errored', 'skipped']);
 
 function normalizeWordPressCrudOperation(operation) {
@@ -39,6 +42,52 @@ function normalizeWordPressCrudOperation(operation) {
 		expected: objectOrUndefined(operation.expected),
 		rollback_policy: normalizeResetPolicy(operation.rollback_policy || operation.rollbackPolicy || operation.reset_policy || operation.resetPolicy, action),
 		metadata: objectOrUndefined(operation.metadata) || {},
+	});
+}
+
+function normalizeWordPressCrudOperationResult(result) {
+	assertPlainObject(result, 'result');
+	assertSchema(result.schema, WORDPRESS_CRUD_OPERATION_RESULT_SCHEMA, 'WordPress CRUD operation result');
+
+	const operation = result.operation ? normalizeWordPressCrudOperation(result.operation) : undefined;
+	const action = result.action || result.operation_action || result.operationAction || operation?.action;
+	if (action !== undefined && !CRUD_ACTIONS.has(action)) {
+		throw new Error(`Unsupported WordPress CRUD result action: ${action}`);
+	}
+	const resourceType = result.resource_type || result.resourceType || operation?.resource_type;
+	if (!resourceType || typeof resourceType !== 'string') {
+		throw new Error('result.resource_type must be a string.');
+	}
+
+	const failures = asArray(result.failures || result.errors, 'result.failures');
+	const status = result.status || defaultCrudResultStatus(result, failures);
+	if (!CRUD_RESULT_STATUSES.has(status)) {
+		throw new Error(`Unsupported WordPress CRUD result status: ${status}`);
+	}
+
+	return stripUndefined({
+		schema: WORDPRESS_CRUD_OPERATION_RESULT_SCHEMA,
+		id: normalizeId(result.id, `${result.operation_id || result.operationId || operation?.id || resourceType}-result`, 'result.id'),
+		operation_id: result.operation_id || result.operationId || operation?.id || null,
+		operation,
+		action,
+		resource_type: resourceType,
+		resource_id: result.resource_id ?? result.resourceId ?? result.object_id ?? result.objectId ?? null,
+		auth_context: normalizeAuthContext(result.auth_context || result.authContext || result.auth || result.user),
+		persona_id: stringOrUndefined(result.persona_id || result.personaId),
+		capability_context: normalizeCapabilityContext(result.capability_context || result.capabilityContext || operation?.capability_context),
+		nonce_context: normalizeNonceContext(result.nonce_context || result.nonceContext || operation?.nonce_context),
+		before_state_hash: stringOrUndefined(result.before_state_hash || result.beforeStateHash || result.before_hash || result.beforeHash),
+		after_state_hash: stringOrUndefined(result.after_state_hash || result.afterStateHash || result.after_hash || result.afterHash),
+		rollback_policy: normalizeResetPolicy(result.rollback_policy || result.rollbackPolicy || operation?.rollback_policy, action || 'read'),
+		rollback_result: normalizeRollbackResult(result.rollback_result || result.rollbackResult),
+		created_refs: normalizeCreatedRefs(result.created_refs || result.createdRefs || result.created),
+		status,
+		skip_reason: result.skip_reason || result.skipReason || null,
+		skip_reasons: normalizeReasonCodes(result.skip_reasons || result.skipReasons || result.skip_reason || result.skipReason),
+		failures,
+		artifacts: asArray(result.artifacts, 'result.artifacts'),
+		metadata: objectOrUndefined(result.metadata) || {},
 	});
 }
 
@@ -222,6 +271,49 @@ function normalizeResetPolicy(policy, action) {
 	});
 }
 
+function normalizeRollbackResult(result) {
+	if (result === undefined || result === null) {
+		return undefined;
+	}
+	assertPlainObject(result, 'rollback_result');
+	const status = result.status || 'not-required';
+	if (!ROLLBACK_RESULT_STATUSES.has(status)) {
+		throw new Error(`Unsupported WordPress rollback result status: ${status}`);
+	}
+	return stripUndefined({
+		status,
+		strategy: stringOrUndefined(result.strategy),
+		started_at: stringOrUndefined(result.started_at || result.startedAt),
+		finished_at: stringOrUndefined(result.finished_at || result.finishedAt),
+		before_state_hash: stringOrUndefined(result.before_state_hash || result.beforeStateHash || result.before_hash || result.beforeHash),
+		after_state_hash: stringOrUndefined(result.after_state_hash || result.afterStateHash || result.after_hash || result.afterHash),
+		failures: asArray(result.failures || result.errors, 'rollback_result.failures'),
+		metadata: objectOrUndefined(result.metadata),
+	});
+}
+
+function defaultCrudResultStatus(result, failures) {
+	if (result.skipped || result.skip_reason || result.skipReason) {
+		return 'skipped';
+	}
+	return failures.length > 0 ? 'failed' : 'passed';
+}
+
+function normalizeCreatedRefs(value) {
+	return asArray(value, 'result.created_refs').map((entry, index) => {
+		if (typeof entry === 'string' || typeof entry === 'number') {
+			return { id: entry };
+		}
+		assertPlainObject(entry, `result.created_refs[${index}]`);
+		return stripUndefined({
+			resource_type: stringOrUndefined(entry.resource_type || entry.resourceType || entry.type),
+			id: entry.id ?? entry.resource_id ?? entry.resourceId,
+			operation_id: stringOrUndefined(entry.operation_id || entry.operationId),
+			metadata: objectOrUndefined(entry.metadata),
+		});
+	});
+}
+
 function defaultResetPolicyForAction(action) {
 	if (action === 'read') {
 		return { strategy: 'none', scope: 'operation', after_each_case: false };
@@ -243,6 +335,9 @@ function normalizePerformanceSample(sample, index) {
 }
 
 function normalizeReasonCodes(value) {
+	if (value === undefined || value === null) {
+		return [];
+	}
 	return [...new Set(asArray(Array.isArray(value) ? value : [value], 'reason_codes').map(String).filter(Boolean))].sort();
 }
 
@@ -312,9 +407,11 @@ function stripUndefined(value) {
 
 module.exports = {
 	WORDPRESS_CRUD_OPERATION_SCHEMA,
+	WORDPRESS_CRUD_OPERATION_RESULT_SCHEMA,
 	WORDPRESS_FIXTURE_PERSONA_SCHEMA,
 	WORDPRESS_PERFORMANCE_OBSERVATION_SCHEMA,
 	normalizeWordPressCrudOperation,
+	normalizeWordPressCrudOperationResult,
 	normalizeWordPressFixturePersona,
 	normalizeWordPressPerformanceObservation,
 };

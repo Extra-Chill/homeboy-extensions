@@ -32,6 +32,7 @@ assert.equal(typeof wordpress.normalizeWordPressRuntimeSurfaceType, 'function');
 assert.equal(typeof wordpress.normalizeWordPressCoverageSurfaceType, 'function');
 assert.equal(typeof wordpress.normalizeWordPressFuzzRuntimeCapabilities, 'function');
 assert.equal(typeof wordpress.normalizeWordPressCrudOperation, 'function');
+assert.equal(typeof wordpress.normalizeWordPressCrudOperationResult, 'function');
 assert.equal(typeof wordpress.normalizeWordPressFixturePersona, 'function');
 assert.equal(typeof wordpress.normalizeWordPressPerformanceObservation, 'function');
 assert.equal(typeof wordpress.buildWordPressPerformanceObservation, 'function');

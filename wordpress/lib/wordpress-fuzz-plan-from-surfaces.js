@@ -11,6 +11,7 @@ const {
 } = require('./wordpress-fuzz-schemas');
 const {
 	WORDPRESS_CRUD_OPERATION_SCHEMA,
+	WORDPRESS_CRUD_OPERATION_RESULT_SCHEMA,
 	normalizeWordPressCrudOperation,
 } = require('./wordpress-generic-fuzz-primitives');
 const {
@@ -286,13 +287,18 @@ function crudCaseForSurface(surface, resource, action, options = {}) {
 		intent: action.intent,
 		operation_id: operation.id,
 		operation,
+		expected_result_schema: WORDPRESS_CRUD_OPERATION_RESULT_SCHEMA,
 		seed: options.seed,
 		skip_reasons: [
 			...reasonList(surface.skip_reasons || surface.skipReasons || surface.skip_reason || surface.skipReason),
 			...gateReasons,
 		],
 		destructive_reasons: reasonList(surface.destructive_reasons || surface.destructiveReasons || surface.destructive_reason || surface.destructiveReason || surface.unsafeReasons),
-		metadata: { surface, crud: { resource_type: resource.type, intent: action.intent, action: action.action } },
+		metadata: {
+			surface,
+			crud: { resource_type: resource.type, intent: action.intent, action: action.action },
+			expected_result_schema: WORDPRESS_CRUD_OPERATION_RESULT_SCHEMA,
+		},
 	};
 	if (!mutatingCrudAction(action.action) || gateReasons.length > 0) {
 		return testCase;
