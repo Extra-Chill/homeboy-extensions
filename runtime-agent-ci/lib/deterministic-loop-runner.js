@@ -1,5 +1,12 @@
 'use strict';
 
+const {
+  CONTINUE,
+  evaluateLoopPolicy,
+  loopPolicyMaxRevolutions,
+  normalizeLoopPolicy,
+} = require('./loop-policy');
+
 const DETERMINISTIC_LOOP_RESULT_SCHEMA = 'homeboy/deterministic-loop-result/v1';
 const DETERMINISTIC_LOOP_ITERATION_SCHEMA = 'homeboy/deterministic-loop-iteration/v1';
 const DETERMINISTIC_LOOP_ARTIFACT_SCHEMA = 'homeboy/deterministic-loop-artifact/v1';
@@ -13,10 +20,12 @@ function runDeterministicLoop(options = {}) {
   const reconcile = options.reconcile || defaultReconcile;
   const shouldRetry = options.shouldRetry || options.should_retry || defaultShouldRetry;
   const stopCriteria = options.stopCriteria || options.stop_criteria || options.shouldStop || options.should_stop || defaultStopCriteria;
-  const maxIterations = positiveInteger(options.maxIterations || options.max_iterations, 1);
+  const loopPolicy = normalizeLoopPolicy(options, { defaultMode: 'count', defaultMaxRevolutions: 1 });
+  const maxIterations = loopPolicyMaxRevolutions(loopPolicy);
   const maxAttempts = positiveInteger(options.maxAttempts || options.max_attempts || options.retry?.max_attempts, 1);
   let state = clonePlainObject(options.state || options.initialState || options.initial_state || {});
   const iterations = [];
+  const startedAt = numericNow(options.startedAt || options.started_at || options.startAt || options.start_at || options.now);
 
   for (let iterationIndex = 0; iterationIndex < maxIterations; iterationIndex += 1) {
     const iteration = iterationIndex + 1;
@@ -74,6 +83,14 @@ function runDeterministicLoop(options = {}) {
       state,
       iterations,
     }));
+    const policyStatus = stop.stop ? null : evaluateLoopPolicy(loopPolicy, {
+      completed_revolutions: iteration,
+      started_at: startedAt,
+      now: options.now,
+      cancelled: options.cancelled,
+      cancellation_signal: options.cancellation_signal || options.cancellationSignal,
+    });
+    const finalStop = stop.stop ? stop : normalizeStopDecision(policyStatus.reason === CONTINUE ? false : { stop: true, reason: policyStatus.reason, data: { loop_policy_status: policyStatus } });
     const record = {
       schema: DETERMINISTIC_LOOP_ITERATION_SCHEMA,
       loop_id: loopId,
@@ -83,10 +100,10 @@ function runDeterministicLoop(options = {}) {
       outcome,
       artifacts,
       state,
-      stop,
+      stop: finalStop,
     };
     iterations.push(record);
-    if (stop.stop) {
+    if (finalStop.stop) {
       break;
     }
   }
@@ -108,7 +125,8 @@ function createDurableDeterministicLoop(options = {}) {
   const reconcile = options.reconcile || defaultReconcile;
   const shouldRetry = options.shouldRetry || options.should_retry || defaultShouldRetry;
   const stopCriteria = options.stopCriteria || options.stop_criteria || options.shouldStop || options.should_stop || defaultStopCriteria;
-  const maxIterations = positiveInteger(options.maxIterations || options.max_iterations, 1);
+  const loopPolicy = normalizeLoopPolicy(options, { defaultMode: 'count', defaultMaxRevolutions: 1 });
+  const maxIterations = loopPolicyMaxRevolutions(loopPolicy);
   const maxAttempts = positiveInteger(options.maxAttempts || options.max_attempts || options.retry?.max_attempts, 1);
   const timeoutMs = nonNegativeInteger(options.timeoutMs || options.timeout_ms || options.timeout?.ms, 0);
   const backoffMs = nonNegativeInteger(options.backoffMs || options.backoff_ms || options.backoff?.ms || options.retry?.backoff_ms, 0);
@@ -123,6 +141,7 @@ function createDurableDeterministicLoop(options = {}) {
         submit,
         buildIteration,
         maxIterations,
+        loopPolicy,
         maxAttempts,
         timeoutMs,
         now,
@@ -138,6 +157,7 @@ function createDurableDeterministicLoop(options = {}) {
         shouldRetry,
         stopCriteria,
         maxIterations,
+        loopPolicy,
         maxAttempts,
         timeoutMs,
         backoffMs,
@@ -154,7 +174,7 @@ function createDurableDeterministicLoop(options = {}) {
   };
 }
 
-function submitDurableIteration({ loopId, state, submit, buildIteration, maxIterations, maxAttempts, timeoutMs, now }) {
+function submitDurableIteration({ loopId, state, submit, buildIteration, maxIterations, maxAttempts, timeoutMs, now, loopPolicy }) {
   if (state.done) {
     return state;
   }
@@ -162,8 +182,9 @@ function submitDurableIteration({ loopId, state, submit, buildIteration, maxIter
     return state;
   }
   const iteration = state.iterations.length + 1;
-  if (iteration > maxIterations) {
-    return completeDurableState(state, 'failed', 'max_iterations_reached');
+  const policyStatus = evaluateLoopPolicy(loopPolicy, { completed_revolutions: state.iterations.length, started_at: state.started_at, now });
+  if (policyStatus.stop || iteration > maxIterations) {
+    return completeDurableState(state, loopStatus(state.iterations), policyStatus.stop ? policyStatus.reason : 'max_revolutions_reached');
   }
   const attempt = 1;
   const input = buildIteration({ loop_id: loopId, iteration, state: state.state, iterations: state.iterations });
@@ -183,7 +204,7 @@ function submitDurableIteration({ loopId, state, submit, buildIteration, maxIter
   return checkpointState({ ...state, current }, 'submitted', { iteration, attempt, token: current.token });
 }
 
-function pollDurableIteration({ loopId, state, submit, poll, reconcile, shouldRetry, stopCriteria, maxIterations, maxAttempts, timeoutMs, backoffMs, now }) {
+function pollDurableIteration({ loopId, state, submit, poll, reconcile, shouldRetry, stopCriteria, maxIterations, maxAttempts, timeoutMs, backoffMs, now, loopPolicy }) {
   if (state.done || !state.current) {
     return state;
   }
@@ -285,8 +306,9 @@ function pollDurableIteration({ loopId, state, submit, poll, reconcile, shouldRe
   if (stop.stop) {
     return completeDurableState(nextDurableState, loopStatus(nextDurableState.iterations), stop.reason || 'stop_criteria_satisfied');
   }
-  if (nextDurableState.iterations.length >= maxIterations) {
-    return completeDurableState(nextDurableState, loopStatus(nextDurableState.iterations), 'max_iterations_reached');
+  const policyStatus = evaluateLoopPolicy(loopPolicy, { completed_revolutions: nextDurableState.iterations.length, started_at: nextDurableState.started_at, now });
+  if (policyStatus.stop || nextDurableState.iterations.length >= maxIterations) {
+    return completeDurableState(nextDurableState, loopStatus(nextDurableState.iterations), policyStatus.stop ? policyStatus.reason : 'max_revolutions_reached');
   }
   return nextDurableState;
 }
@@ -301,6 +323,7 @@ function normalizeDurableState(value, context = {}) {
       checkpoints: Array.isArray(value.checkpoints) ? value.checkpoints : [],
       current: isPlainObject(value.current) ? value.current : null,
       done: Boolean(value.done),
+      started_at: value.started_at || value.startedAt || Date.now(),
     };
   }
   const input = isPlainObject(value) ? value : {};
@@ -308,6 +331,7 @@ function normalizeDurableState(value, context = {}) {
     schema: DETERMINISTIC_LOOP_DURABLE_STATE_SCHEMA,
     loop_id: context.loopId || context.loop_id || 'deterministic-loop',
     status: 'running',
+    started_at: input.started_at || input.startedAt || Date.now(),
     state: clonePlainObject(input.state || input.initialState || input.initial_state || (Object.keys(input).length > 0 ? input : context.initialState)),
     iterations: Array.isArray(input.iterations) ? input.iterations : [],
     checkpoints: Array.isArray(input.checkpoints) ? input.checkpoints : [],
@@ -441,6 +465,14 @@ function positiveInteger(value, fallback) {
 function nonNegativeInteger(value, fallback) {
   const parsed = Number.parseInt(value || '', 10);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+function numericNow(value) {
+  if (typeof value === 'function') {
+    return numericNow(value());
+  }
+  const parsed = Number.parseInt(value || '', 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : Date.now();
 }
 
 function isPlainObject(value) {
