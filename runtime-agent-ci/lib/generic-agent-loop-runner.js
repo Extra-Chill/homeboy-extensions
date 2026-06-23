@@ -8,6 +8,7 @@ const { runBoundedProductionLoop } = require('./bounded-production-loop-runner')
 const { validateControllerLoopProof } = require('./controller-loop-proof-validator');
 const { runtimeAgentCiTaskExecutorConfig } = require('./runtime-agent-ci-plan');
 const { evaluateGatePlan } = require('./gate-plan-evaluator');
+const { assertLoopSuccess, loopEvidence, loopIteration, loopRun } = require('./loop-lifecycle.cjs');
 
 function buildGenericAgentLoopRequest(options = {}) {
   const plan = requiredObject(options.plan, 'plan');
@@ -216,6 +217,22 @@ function runGenericDeterministicLoop(options = {}) {
       task_count: tasks.length,
       result_count: results.length,
       evidence,
+      loop_run: loopRun({
+        loop_id: loopId,
+        status: loop.status,
+        stop_reason: loop.iterations[loop.iterations.length - 1]?.stop?.reason || '',
+        max_iterations: maxIterations,
+        iterations: loop.iterations.map((entry) => loopIteration({
+          loop_id: loopId,
+          iteration: entry.iteration,
+          task: entry.input,
+          result: entry.outcome,
+          artifacts: entry.artifacts,
+          gate_result: entry.stop?.data?.gate_result,
+          accepted: entry.stop?.stop === true,
+        })),
+        evidence,
+      }),
     },
   };
 }
@@ -374,22 +391,22 @@ function defaultStopPolicy({ iteration, maxIterations }) {
 function collectEvidence({ iteration, outcome, result, artifacts }) {
   const resultEvidence = result === outcome ? [] : normalizeArray(result?.evidence_refs || result?.evidence);
   return [
-    ...normalizeArray(artifacts).map((artifact) => ({
+    ...normalizeArray(artifacts).map((artifact) => loopEvidence({
       kind: 'artifact',
       iteration,
-      ref: artifact.path || artifact.url || artifact.id || artifact.name || '',
+      uri: artifact.path || artifact.url || artifact.id || artifact.name || '',
       artifact,
     })),
-    ...normalizeArray(outcome?.evidence_refs || outcome?.evidence).map((ref) => ({
+    ...normalizeArray(outcome?.evidence_refs || outcome?.evidence).map((ref) => loopEvidence({
       kind: ref.kind || 'evidence_ref',
       iteration,
-      ref: evidenceRefUrl(ref),
+      uri: evidenceRefUrl(ref),
       evidence: ref,
     })),
-    ...resultEvidence.map((ref) => ({
+    ...resultEvidence.map((ref) => loopEvidence({
       kind: ref.kind || 'evidence_ref',
       iteration,
-      ref: evidenceRefUrl(ref),
+      uri: evidenceRefUrl(ref),
       evidence: ref,
     })),
   ];
@@ -422,32 +439,12 @@ function materializeGenericAgentLoopResults(outcome, options = {}) {
 }
 
 function assertGenericAgentLoopOutcome(results, validationPolicy = {}) {
-  const scenarioId = validationPolicy.scenario_id || validationPolicy.workload_id || validationPolicy.flow_slug || '';
-  const scenario = findScenario(results, scenarioId);
-  const metadata = scenario.metadata || {};
-  const jobStatus = metadata.job_status || '';
-  const successStatus = metadata.success_status || '';
-  const errorMessage = metadata.error_message || '';
-  const noChangesAllowed = validationPolicy.success_requires_pr === false;
-  const allowedCompletionOutcomes = normalizeArray(validationPolicy.success_completion_outcomes);
-  const completionOutcome = metadata.completion_outcome || metadata.completionOutcome || '';
-  const completionOutcomeSatisfied = metadata.completion_outcome_satisfied === true || Boolean(completionOutcome && allowedCompletionOutcomes.includes(completionOutcome));
-  const assertion = {
-    scenario_id: scenario.id || scenarioId,
-    job_status: jobStatus,
-    success_status: successStatus,
-    error_message: errorMessage,
-    completion_outcome_satisfied: completionOutcomeSatisfied,
-    no_changes_allowed: noChangesAllowed,
-  };
-
-  if (errorMessage) {
-    throw new Error(`scenario ${assertion.scenario_id} completed with error_message=${errorMessage}`);
-  }
-  if (successStatus === 'pr_opened' || completionOutcomeSatisfied || (['no_changes', 'no_op'].includes(successStatus) && noChangesAllowed)) {
-    return assertion;
-  }
-  throw new Error(`scenario ${assertion.scenario_id} expected opened PR, satisfied completion outcome, or allowed no-changes result, got job_status=${jobStatus} success_status=${successStatus} completion_outcome_satisfied=${completionOutcomeSatisfied ? 'true' : 'false'} no_changes_allowed=${noChangesAllowed ? 'true' : 'false'}`);
+  return assertLoopSuccess({
+    results,
+    scenario_id: validationPolicy.scenario_id || validationPolicy.workload_id || validationPolicy.flow_slug || '',
+    success_requires_pr: validationPolicy.success_requires_pr,
+    success_completion_outcomes: validationPolicy.success_completion_outcomes,
+  });
 }
 
 function buildBoundedProductionProof(options = {}) {
