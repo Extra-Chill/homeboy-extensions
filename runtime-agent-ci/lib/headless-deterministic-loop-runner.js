@@ -8,7 +8,10 @@ const {
   runGenericDeterministicLoop,
   writeGenericAgentLoopArtifacts,
 } = require('./generic-agent-loop-runner');
-const { normalizeLoopPolicy: normalizeSharedLoopPolicy } = require('./loop-policy');
+const {
+  loopPolicyMaxRevolutions,
+  normalizeLoopPolicy: normalizeSharedLoopPolicy,
+} = require('./loop-policy');
 const { resolveRuntimeProvider } = require('./runtime-provider-resolver.cjs');
 
 function runHeadlessDeterministicLoop(options = {}) {
@@ -315,7 +318,9 @@ function policyIterationOutcome(task, candidate, validation) {
 function normalizeLoopPolicy(plan) {
   const raw = optionalObject(plan.loop_policy || plan.loopPolicy);
   const primitive = normalizeSharedLoopPolicy({ ...plan, ...raw }, { defaultMode: 'count', defaultMaxRevolutions: 1 });
-  const maxIterations = primitive.mode === 'count' ? primitive.max_revolutions : Number.MAX_SAFE_INTEGER;
+  const maxIterations = loopPolicyMaxRevolutions(primitive, {
+    nonCountMaxRevolutions: plan.max_synchronous_revolutions || plan.maxSynchronousRevolutions,
+  });
   const enabled = Object.keys(raw).length > 0 || maxIterations > 1;
   return {
     enabled,

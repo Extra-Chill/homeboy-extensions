@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 
 const {
   evaluateLoopPolicy,
+  loopPolicyMaxRevolutions,
   normalizeLoopPolicy,
 } = require('../lib/loop-policy');
 const {
@@ -32,6 +33,7 @@ assert.equal(counted.iterations.at(-1).stop.reason, 'max_revolutions_reached');
 const durationPolicy = normalizeLoopPolicy({ mode: 'duration', duration_ms: 5000 });
 assert.equal(evaluateLoopPolicy(durationPolicy, { started_at: 1000, now: 5999 }).reason, 'continue');
 assert.equal(evaluateLoopPolicy(durationPolicy, { started_at: 1000, now: 6000 }).reason, 'duration_elapsed');
+assert.equal(loopPolicyMaxRevolutions(durationPolicy), 1);
 
 const deadlinePolicy = normalizeLoopPolicy({ mode: 'duration', deadline_at: 3000 });
 assert.equal(evaluateLoopPolicy(deadlinePolicy, { now: 2999 }).reason, 'continue');
@@ -39,6 +41,32 @@ assert.equal(evaluateLoopPolicy(deadlinePolicy, { now: 3000 }).reason, 'deadline
 
 const cancelledPolicy = normalizeLoopPolicy({ mode: 'indefinite', cancelled: true });
 assert.equal(evaluateLoopPolicy(cancelledPolicy, { now: 1000 }).reason, 'cancelled');
+
+let durationExecutions = 0;
+const durationSync = runDeterministicLoop({
+  mode: 'duration',
+  duration_ms: 60_000,
+  now: () => 1000,
+  execute: () => {
+    durationExecutions += 1;
+    return { status: 'succeeded' };
+  },
+  stopCriteria: () => false,
+});
+assert.equal(durationExecutions, 1);
+assert.equal(durationSync.iterations.length, 1);
+
+let indefiniteExecutions = 0;
+const indefiniteSync = runDeterministicLoop({
+  mode: 'indefinite',
+  execute: () => {
+    indefiniteExecutions += 1;
+    return { status: 'succeeded' };
+  },
+  stopCriteria: () => false,
+});
+assert.equal(indefiniteExecutions, 1);
+assert.equal(indefiniteSync.iterations.length, 1);
 
 let now = 1000;
 const submitted = [];

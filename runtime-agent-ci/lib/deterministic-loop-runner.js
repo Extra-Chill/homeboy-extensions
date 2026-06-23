@@ -21,7 +21,9 @@ function runDeterministicLoop(options = {}) {
   const shouldRetry = options.shouldRetry || options.should_retry || defaultShouldRetry;
   const stopCriteria = options.stopCriteria || options.stop_criteria || options.shouldStop || options.should_stop || defaultStopCriteria;
   const loopPolicy = normalizeLoopPolicy(options, { defaultMode: 'count', defaultMaxRevolutions: 1 });
-  const maxIterations = loopPolicyMaxRevolutions(loopPolicy);
+  const maxIterations = loopPolicyMaxRevolutions(loopPolicy, {
+    nonCountMaxRevolutions: options.maxSynchronousRevolutions || options.max_synchronous_revolutions,
+  });
   const maxAttempts = positiveInteger(options.maxAttempts || options.max_attempts || options.retry?.max_attempts, 1);
   let state = clonePlainObject(options.state || options.initialState || options.initial_state || {});
   const iterations = [];
@@ -126,18 +128,18 @@ function createDurableDeterministicLoop(options = {}) {
   const shouldRetry = options.shouldRetry || options.should_retry || defaultShouldRetry;
   const stopCriteria = options.stopCriteria || options.stop_criteria || options.shouldStop || options.should_stop || defaultStopCriteria;
   const loopPolicy = normalizeLoopPolicy(options, { defaultMode: 'count', defaultMaxRevolutions: 1 });
-  const maxIterations = loopPolicyMaxRevolutions(loopPolicy);
+  const maxIterations = loopPolicyMaxRevolutions(loopPolicy, { nonCountMaxRevolutions: Number.POSITIVE_INFINITY });
   const maxAttempts = positiveInteger(options.maxAttempts || options.max_attempts || options.retry?.max_attempts, 1);
   const timeoutMs = nonNegativeInteger(options.timeoutMs || options.timeout_ms || options.timeout?.ms, 0);
   const backoffMs = nonNegativeInteger(options.backoffMs || options.backoff_ms || options.backoff?.ms || options.retry?.backoff_ms, 0);
-  const now = typeof options.now === 'function' ? options.now : () => Date.now();
+  const now = typeof options.now === 'function' ? options.now : () => numericNow(options.now);
   const initialState = clonePlainObject(options.state || options.initialState || options.initial_state || {});
 
   return {
     submitIteration(state = {}) {
       return submitDurableIteration({
         loopId,
-        state: normalizeDurableState(state, { loopId, initialState }),
+        state: normalizeDurableState(state, { loopId, initialState, now }),
         submit,
         buildIteration,
         maxIterations,
@@ -150,7 +152,7 @@ function createDurableDeterministicLoop(options = {}) {
     pollIteration(state = {}) {
       return pollDurableIteration({
         loopId,
-        state: normalizeDurableState(state, { loopId, initialState }),
+        state: normalizeDurableState(state, { loopId, initialState, now }),
         submit,
         poll,
         reconcile,
@@ -165,7 +167,7 @@ function createDurableDeterministicLoop(options = {}) {
       });
     },
     resume(state = {}) {
-      const durableState = normalizeDurableState(state, { loopId, initialState });
+      const durableState = normalizeDurableState(state, { loopId, initialState, now });
       if (!durableState.current) {
         return this.submitIteration(durableState);
       }
@@ -314,6 +316,7 @@ function pollDurableIteration({ loopId, state, submit, poll, reconcile, shouldRe
 }
 
 function normalizeDurableState(value, context = {}) {
+  const startedAt = () => numericNow(context.now);
   if (isPlainObject(value) && value.schema === DETERMINISTIC_LOOP_DURABLE_STATE_SCHEMA) {
     return {
       ...value,
@@ -323,7 +326,7 @@ function normalizeDurableState(value, context = {}) {
       checkpoints: Array.isArray(value.checkpoints) ? value.checkpoints : [],
       current: isPlainObject(value.current) ? value.current : null,
       done: Boolean(value.done),
-      started_at: value.started_at || value.startedAt || Date.now(),
+      started_at: value.started_at || value.startedAt || startedAt(),
     };
   }
   const input = isPlainObject(value) ? value : {};
@@ -331,7 +334,7 @@ function normalizeDurableState(value, context = {}) {
     schema: DETERMINISTIC_LOOP_DURABLE_STATE_SCHEMA,
     loop_id: context.loopId || context.loop_id || 'deterministic-loop',
     status: 'running',
-    started_at: input.started_at || input.startedAt || Date.now(),
+    started_at: input.started_at || input.startedAt || startedAt(),
     state: clonePlainObject(input.state || input.initialState || input.initial_state || (Object.keys(input).length > 0 ? input : context.initialState)),
     iterations: Array.isArray(input.iterations) ? input.iterations : [],
     checkpoints: Array.isArray(input.checkpoints) ? input.checkpoints : [],

@@ -117,7 +117,9 @@ function runGenericDeterministicLoop(options = {}) {
   const shouldContinue = options.shouldContinue || options.should_continue || defaultShouldContinue;
   const stopPolicy = options.stopPolicy || options.stop_policy || defaultStopPolicy;
   const loopPolicy = normalizeLoopPolicy(options, { defaultMode: 'count', defaultMaxRevolutions: 1 });
-  const maxIterations = loopPolicyMaxRevolutions(loopPolicy);
+  const maxIterations = loopPolicyMaxRevolutions(loopPolicy, {
+    nonCountMaxRevolutions: options.maxSynchronousRevolutions || options.max_synchronous_revolutions,
+  });
   const initialState = optionalObject(options.state || options.initialState || options.initial_state);
   const tasks = [];
   const results = [];

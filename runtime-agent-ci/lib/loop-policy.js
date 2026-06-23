@@ -44,9 +44,15 @@ function evaluateLoopPolicy(policyInput, context = {}) {
   return status(CONTINUE, context);
 }
 
-function loopPolicyMaxRevolutions(policyInput) {
+function loopPolicyMaxRevolutions(policyInput, options = {}) {
   const policy = policyInput?.schema === LOOP_POLICY_SCHEMA ? policyInput : normalizeLoopPolicy(policyInput);
-  return policy.mode === 'count' ? policy.max_revolutions : Number.MAX_SAFE_INTEGER;
+  if (policy.mode === 'count') {
+    return policy.max_revolutions;
+  }
+  if ((options.nonCountMaxRevolutions ?? options.non_count_max_revolutions) === Number.POSITIVE_INFINITY) {
+    return Number.POSITIVE_INFINITY;
+  }
+  return positiveInteger(options.nonCountMaxRevolutions ?? options.non_count_max_revolutions, 1);
 }
 
 function status(reason, context = {}) {
@@ -101,9 +107,9 @@ function signalCancelled(signal) {
   return Boolean(signal && (signal.aborted || signal.cancelled));
 }
 
-function positiveInteger(value) {
+function positiveInteger(value, fallback = 0) {
   const parsed = Number.parseInt(value ?? '', 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 function nonNegativeInteger(value) {
