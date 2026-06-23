@@ -214,6 +214,10 @@ const planWorkloadManifest = {
 					namespaces: ['sample/v1', 'sample/v2'],
 					artifact: 'route_inventory',
 				},
+				inputs: {
+					observation_surfaces: ['rest_generated_cases'],
+					budget_keys: ['max_rest_p95_duration_ms'],
+				},
 				metadata: { expected_artifact: 'route_inventory' },
 			}],
 		}],
@@ -241,6 +245,7 @@ assert.deepEqual(planWorkloadInput.cases[0].phases.action, [{
 assert.equal(JSON.stringify(planWorkloadInput).includes('/host-only/workload.php'), false);
 assert.equal(planWorkloadInput.cases[0].metadata.source_plan_case, true);
 assert.equal(planWorkloadInput.cases[0].metadata.target_id, 'sample-rest-routes');
+assert.deepEqual(planWorkloadInput.cases[0].inputs.budget_keys, ['max_rest_p95_duration_ms']);
 
 let invoked = false;
 runWpCodeboxFuzzSuite({

@@ -193,6 +193,7 @@ function homeboyFuzzWorkloadPlanCaseToWpCodeboxCase(entry = {}, manifest = {}, i
 		target: { kind: 'runtime', id: command, entrypoint: command },
 		description: entry.description || manifest.label,
 		input: objectOrUndefined(entry.input),
+		inputs: objectOrUndefined(entry.inputs),
 		phases: homeboyFuzzWorkloadPlanCasePhases(entry, manifest, artifacts),
 		artifacts,
 		metadata: stripUndefined({
@@ -272,6 +273,7 @@ function homeboyFuzzWorkloadCaseToWpCodeboxCase(entry = {}, manifest = {}, index
 			entry: execute.entry || manifest.workload?.entry,
 			parameters: objectOrUndefined(execute.parameters),
 		}),
+		inputs: objectOrUndefined(entry.inputs),
 		phases: homeboyFuzzWorkloadCasePhases(entry, manifest, intent, artifacts),
 		artifacts,
 		metadata: stripUndefined({
