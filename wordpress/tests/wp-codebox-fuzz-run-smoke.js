@@ -374,7 +374,7 @@ runWpCodeboxFuzzSuite({
 	assert.equal(summary.derived_artifacts.coverage_gap_reports[0].coverage_gaps[0].id, 'route:/wp/v2/comments');
 	assert.equal(summary.hotspot_summary.items[0].value, 99);
 	assert.equal(summary.derived_artifacts.artifacts.some((artifact) => artifact.role === 'hotspot_summary'), true);
-	assert.deepEqual(summary.artifacts.map((artifact) => artifact.role), ['fuzz_report', 'coverage', 'normalized_fuzz_result', 'coverage_gap_report', 'hotspot_summary', 'fuzz_case', 'failing_case', 'case_artifact', 'repro_case', 'repro_case']);
+	assert.deepEqual(summary.artifacts.map((artifact) => artifact.role), ['fuzz_report', 'coverage', 'normalized_fuzz_result', 'coverage_gap_report', 'hotspot_summary', 'fuzz_case', 'failing_case', 'case_artifact', 'repro_case', 'repro_case', 'result_envelope', 'coverage_summary', 'case_log']);
 	assert.equal(summary.artifacts[0].semantic_key, 'fuzz.report');
 	assert.equal(summary.artifacts[9].semantic_key, 'fuzz.case.repro');
 	assert.equal(summary.artifacts.find((artifact) => artifact.role === 'coverage').semantic_key, 'fuzz.coverage');
@@ -398,11 +398,12 @@ runWpCodeboxFuzzSuite({
 				{ name: 'replay-data', path: 'replay/replay-data.json' },
 				{ name: 'coverage-summary', path: 'coverage/summary.json' },
 			],
-		},
+	},
 	}).artifacts.map((artifact) => [artifact.role, artifact.semantic_key]), [
 		['case_log', 'fuzz.case.log'],
 		['replay_data', 'fuzz.replay.data'],
 		['coverage_summary', 'fuzz.coverage.summary'],
+		['result_envelope', 'fuzz.result.envelope'],
 	]);
 
 	const normalized = normalizeWpCodeboxFuzzSuiteResult({ status: 'failed', failures: [{ message: 'boom' }] });

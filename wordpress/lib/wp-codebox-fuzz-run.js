@@ -925,6 +925,7 @@ function normalizeWpCodeboxFuzzArtifacts(source = {}, result = {}) {
 	appendCaseArtifacts(artifacts, source?.wordpress_fuzz_result?.cases || source?.wordpressFuzzResult?.cases, 'fuzz_case');
 	appendCaseArtifacts(artifacts, source?.failures || source?.errors || source?.failed_cases || source?.failedCases, 'failing_case');
 	appendCaseArtifacts(artifacts, source?.repro_cases || source?.reproCases || source?.reproductions, 'repro_case');
+	appendFuzzArtifactRefs(artifacts, fuzzArtifactRefsFromResultSections(source, artifacts));
 	return dedupeArtifacts(artifacts.map(normalizeFuzzArtifact).filter(Boolean));
 }
 
@@ -946,6 +947,39 @@ function fuzzArtifactRefsFromEmbeddedWordPressResult(source = {}) {
 		source?.wordpress_fuzz_result?.artifacts || source?.wordpressFuzzResult?.artifacts,
 		source?.wordpress_fuzz_result?.artifactRefs || source?.wordpress_fuzz_result?.artifact_refs || source?.wordpressFuzzResult?.artifactRefs || source?.wordpressFuzzResult?.artifact_refs,
 	];
+}
+
+function fuzzArtifactRefsFromResultSections(source = {}, existingArtifacts = []) {
+	const cases = source?.cases || source?.fuzz_cases || source?.fuzzCases || source?.wordpress_fuzz_result?.cases || source?.wordpressFuzzResult?.cases;
+	const coverageSummary = source?.coverage_summary || source?.coverageSummary || source?.coverage?.summary;
+	const hasResultSections = normalizeArray(cases).length > 0 || objectOrUndefined(coverageSummary);
+	return [stripUndefined({
+		result_envelope: !hasFuzzArtifactRole(existingArtifacts, 'result_envelope') && hasResultSections && objectOrUndefined(source) ? {
+			content_type: 'application/json',
+			content: stripUndefined({
+				schema: source.schema,
+				suite: source.suite,
+				request_id: source.request_id || source.requestId,
+				status: source.status,
+				success: source.success,
+				summary: source.summary,
+				coverage_summary: coverageSummary,
+				diagnostics: source.diagnostics,
+			}),
+		} : undefined,
+		coverage_summary: !hasFuzzArtifactRole(existingArtifacts, 'coverage_summary') && objectOrUndefined(coverageSummary) ? {
+			content_type: 'application/json',
+			content: coverageSummary,
+		} : undefined,
+		case_log: !hasFuzzArtifactRole(existingArtifacts, 'case_log') && normalizeArray(cases).length > 0 ? {
+			content_type: 'application/jsonl',
+			content: { cases: normalizeArray(cases) },
+		} : undefined,
+	})];
+}
+
+function hasFuzzArtifactRole(artifacts, role) {
+	return normalizeArray(artifacts).some((artifact) => fuzzArtifactIdentity(artifact).role === role);
 }
 
 function appendFuzzArtifactRefs(artifacts, refs = []) {

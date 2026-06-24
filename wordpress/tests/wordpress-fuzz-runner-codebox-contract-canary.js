@@ -144,7 +144,7 @@ assert.equal(result.homeboy_fuzz_campaign.metadata.status, 'succeeded');
 assert.equal(result.homeboy_fuzz_campaign.metadata.wp_codebox_result_schema, 'wp-codebox/fuzz-suite-result/v1');
 assert.deepEqual(
 	result.homeboy_fuzz_campaign.metadata.artifact_refs.map((artifact) => artifact.semantic_key),
-	['fuzz.report', 'fuzz.coverage']
+	['fuzz.report', 'fuzz.coverage', 'fuzz.result.envelope', 'fuzz.coverage.summary', 'fuzz.case.log']
 );
 
 const observedRequest = JSON.parse(fs.readFileSync(observedRequestPath, 'utf8'));
