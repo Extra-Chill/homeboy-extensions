@@ -9,7 +9,18 @@ const { spawnSync } = require('node:child_process');
 const fixtureCodeboxCoreModule = path.join(__dirname, 'fixtures', 'wp-codebox-core-agent-task-normalizer.mjs');
 process.env.HOMEBOY_WP_CODEBOX_CORE_MODULE ||= fixtureCodeboxCoreModule;
 // Keep this smoke test hermetic when it runs inside a configured Homeboy runner.
-delete process.env.HOMEBOY_SETTINGS_JSON;
+for (const envName of [
+  'HOMEBOY_SETTINGS_JSON',
+  'HOMEBOY_WP_CODEBOX_BIN',
+  'HOMEBOY_WP_CODEBOX_INSTALL_DIR',
+  'WP_CODEBOX_AGENTS_API_PATH',
+  'WP_CODEBOX_DATA_MACHINE_PATH',
+  'WP_CODEBOX_DATA_MACHINE_CODE_PATH',
+  'WP_CODEBOX_PHP_AI_CLIENT_PATH',
+  'WP_CODEBOX_CODEX_PROVIDER_PLUGIN_PATH',
+]) {
+  delete process.env[envName];
+}
 
 const {
   agentTaskOutcomeFromCodeboxResult: rawAgentTaskOutcomeFromCodeboxResult,
