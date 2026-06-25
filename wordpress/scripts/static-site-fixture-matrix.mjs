@@ -16,6 +16,7 @@ const {
 	buildStaticSiteFixtureMatrixRecipe,
 	collectStaticSiteFixtureMatrixRunResults,
 	createStaticSiteFixtureMatrix,
+	writeStaticSiteFixtureMatrixComparisonArtifact,
 	writeStaticSiteFixtureMatrixResultArtifacts,
 	writeStaticSiteFixtureMatrixArtifacts,
 } = require('../lib/static-site-fixture-matrix');
@@ -23,9 +24,17 @@ const { runWpCodeboxRecipe } = require('../lib/wp-codebox-recipe-helper');
 
 async function main() {
 	const options = parseArgs(process.argv.slice(2));
-	if (options.help || !options.fixtureRoot) {
+	if (options.help) {
 		printHelp();
-		process.exit(options.help ? 0 : 1);
+		process.exit(0);
+	}
+	if (options.compareTo && options.candidate) {
+		writeComparisonReport(options);
+		return;
+	}
+	if (!options.fixtureRoot) {
+		printHelp();
+		process.exit(1);
 	}
 
 	const outputDirectory = path.resolve(options.outputDirectory || path.join(process.cwd(), 'artifacts', 'static-site-fixture-matrix'));
@@ -84,6 +93,14 @@ async function main() {
 			result: collectedResult,
 		});
 	}
+	let comparisonArtifact = null;
+	if (options.compareTo) {
+		comparisonArtifact = writeStaticSiteFixtureMatrixComparisonArtifact({
+			outputDirectory,
+			baseline: path.resolve(options.compareTo),
+			candidate: collectedResult,
+		});
+	}
 
 	const summary = {
 		schema: 'homeboy/static-site-fixture-matrix-cli-run/v1',
@@ -92,9 +109,11 @@ async function main() {
 		fixture_count: matrix.count,
 		output_directory: outputDirectory,
 		recipe_file: recipeFile,
-		artifact_refs: written.artifact_refs,
+		artifact_refs: comparisonArtifact ? [...written.artifact_refs, comparisonArtifact.artifact_ref] : written.artifact_refs,
 		result_file: path.join(outputDirectory, 'static-site-fixture-matrix-result.json'),
 		result_summary: collectedResult.summary,
+		comparison_file: comparisonArtifact ? comparisonArtifact.artifact_ref.path : null,
+		comparison_summary: comparisonArtifact ? comparisonArtifact.comparison.summary : null,
 		runtime: runtime ? { exit_code: runtime.exitCode, output_file: runtime.outputFile, error: runtimeError ? runtimeError.message : '' } : null,
 	};
 	fs.writeFileSync(path.join(outputDirectory, 'cli-run.json'), `${JSON.stringify(summary, null, 2)}\n`);
@@ -102,6 +121,24 @@ async function main() {
 	if (runtimeError) {
 		process.exitCode = runtime.exitCode || 1;
 	}
+}
+
+function writeComparisonReport(options) {
+	const candidate = path.resolve(options.candidate);
+	const outputDirectory = path.resolve(options.outputDirectory || path.dirname(candidate));
+	fs.mkdirSync(outputDirectory, { recursive: true });
+	const comparisonArtifact = writeStaticSiteFixtureMatrixComparisonArtifact({
+		outputDirectory,
+		baseline: path.resolve(options.compareTo),
+		candidate,
+	});
+	const summary = {
+		schema: 'homeboy/static-site-fixture-matrix-comparison-cli-run/v1',
+		comparison_file: comparisonArtifact.artifact_ref.path,
+		comparison_summary: comparisonArtifact.comparison.summary,
+	};
+	fs.writeFileSync(path.join(outputDirectory, 'cli-run.json'), `${JSON.stringify(summary, null, 2)}\n`);
+	process.stdout.write(`${JSON.stringify(summary, null, 2)}\n`);
 }
 
 function parseJsonText(text) {
@@ -146,7 +183,7 @@ function camelCase(value) {
 }
 
 function printHelp() {
-	process.stdout.write(`Usage: node scripts/static-site-fixture-matrix.mjs --fixture-root <path> [options]\n\nOptions:\n  --output-directory <path>             Directory for matrix artifacts and WP Codebox recipe.\n  --entrypoint <file>                   Fixture entry file name. Default: index.html.\n  --max-depth <number>                  Discovery depth below fixture root. Default: 2.\n  --wordpress-version <ver>             WP Codebox WordPress runtime version. Default: latest.\n  --static-site-importer-path <path>    Local Static Site Importer plugin source to mount/install.\n  --static-site-importer-plugin <file>  Plugin file to activate. Default: <slug>/<slug>.php.\n  --static-site-importer-slug <slug>    Plugin slug for the mounted source. Default: source basename.\n  --wp-codebox-bin <path>               WP Codebox CLI binary for --run.\n  --run                                 Execute the generated recipe with WP Codebox.\n`);
+	process.stdout.write(`Usage: node scripts/static-site-fixture-matrix.mjs --fixture-root <path> [options]\n       node scripts/static-site-fixture-matrix.mjs --compare-to <old> --candidate <new> [--output-directory <path>]\n\nOptions:\n  --output-directory <path>             Directory for matrix artifacts and WP Codebox recipe.\n  --entrypoint <file>                   Fixture entry file name. Default: index.html.\n  --max-depth <number>                  Discovery depth below fixture root. Default: 2.\n  --wordpress-version <ver>             WP Codebox WordPress runtime version. Default: latest.\n  --static-site-importer-path <path>    Local Static Site Importer plugin source to mount/install.\n  --static-site-importer-plugin <file>  Plugin file to activate. Default: <slug>/<slug>.php.\n  --static-site-importer-slug <slug>    Plugin slug for the mounted source. Default: source basename.\n  --compare-to <path>                   Previous matrix result artifact, finding packet artifact, or artifact directory.\n  --candidate <path>                    Current matrix result artifact, finding packet artifact, or artifact directory for comparison-only mode.\n  --wp-codebox-bin <path>               WP Codebox CLI binary for --run.\n  --run                                 Execute the generated recipe with WP Codebox.\n`);
 }
 
 main().catch((error) => {

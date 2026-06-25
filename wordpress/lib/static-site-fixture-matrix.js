@@ -10,6 +10,7 @@ const path = require('node:path');
 
 const FIXTURE_MATRIX_SCHEMA = 'homeboy/static-site-fixture-matrix/v1';
 const FIXTURE_MATRIX_RESULT_SCHEMA = 'homeboy/static-site-fixture-matrix-result/v1';
+const FIXTURE_MATRIX_COMPARISON_SCHEMA = 'homeboy/static-site-fixture-matrix-comparison/v1';
 const WEBSITE_ARTIFACT_SCHEMA = 'blocks-engine/php-transformer/site-artifact/v1';
 
 const DEFAULT_ENTRYPOINT = 'website/index.html';
@@ -250,6 +251,63 @@ function writeStaticSiteFixtureMatrixResultArtifacts(input = {}) {
 	return result;
 }
 
+function compareStaticSiteFixtureMatrixArtifacts(input = {}) {
+	const baseline = normalizeComparisonInput(input.baseline || input.compareTo || input.compare_to, 'baseline');
+	const candidate = normalizeComparisonInput(input.candidate || input.result || input.current, 'candidate');
+	const baselineFindings = normalizedComparisonFindings(baseline);
+	const candidateFindings = normalizedComparisonFindings(candidate);
+	const baselineByIdentity = new Map(baselineFindings.map((finding) => [finding.identity, finding]));
+	const candidateByIdentity = new Map(candidateFindings.map((finding) => [finding.identity, finding]));
+	const resolved = baselineFindings.filter((finding) => !candidateByIdentity.has(finding.identity));
+	const added = candidateFindings.filter((finding) => !baselineByIdentity.has(finding.identity));
+	const persistent = candidateFindings.filter((finding) => baselineByIdentity.has(finding.identity));
+	const groupDeltas = deltaCounts(countBy(candidateFindings, 'group_key'), countBy(baselineFindings, 'group_key'));
+	const kindDeltas = deltaCounts(countBy(candidateFindings, 'kind'), countBy(baselineFindings, 'kind'));
+	const fixtureDeltas = deltaCounts(countBy(candidateFindings, 'fixture_id'), countBy(baselineFindings, 'fixture_id'));
+	const bucketDeltas = parserBucketDeltas(baselineFindings, candidateFindings);
+
+	return {
+		schema: FIXTURE_MATRIX_COMPARISON_SCHEMA,
+		baseline: comparisonSourceSummary(baseline),
+		candidate: comparisonSourceSummary(candidate),
+		summary: {
+			baseline_finding_count: baselineFindings.length,
+			candidate_finding_count: candidateFindings.length,
+			finding_delta: candidateFindings.length - baselineFindings.length,
+			resolved_count: resolved.length,
+			new_count: added.length,
+			persistent_count: persistent.length,
+			group_deltas: groupDeltas,
+			kind_deltas: kindDeltas,
+			fixture_deltas: fixtureDeltas,
+		},
+		stable_finding_identities: {
+			resolved: resolved.map(comparisonFindingRef),
+			new: added.map(comparisonFindingRef),
+			persistent: persistent.map(comparisonFindingRef),
+		},
+		parser_improvement_diagnostics: {
+			total_delta: candidateFindings.length - baselineFindings.length,
+			group_deltas: groupDeltas,
+			kind_deltas: kindDeltas,
+			fixture_deltas: fixtureDeltas,
+			top_improved_parser_buckets: bucketDeltas.filter((bucket) => bucket.delta < 0).slice(0, 10),
+			top_regressed_parser_buckets: bucketDeltas.filter((bucket) => bucket.delta > 0).slice(0, 10),
+		},
+	};
+}
+
+function writeStaticSiteFixtureMatrixComparisonArtifact(input = {}) {
+	const outputDirectory = requiredString(input.outputDirectory || input.output_directory, 'outputDirectory');
+	const comparison = input.comparison || compareStaticSiteFixtureMatrixArtifacts(input);
+	const filePath = path.join(outputDirectory, 'static-site-fixture-matrix-comparison.json');
+	writeJsonFile(filePath, comparison);
+	return {
+		comparison,
+		artifact_ref: artifactRef('static-site-fixture-matrix-comparison', filePath, 'diagnostic'),
+	};
+}
+
 function writeStaticSiteFixtureMatrixArtifacts(input = {}) {
 	const outputDirectory = requiredString(input.outputDirectory || input.output_directory, 'outputDirectory');
 	const matrix = input.matrix || createStaticSiteFixtureMatrix(input);
@@ -277,6 +335,145 @@ function writeStaticSiteFixtureMatrixArtifacts(input = {}) {
 			artifactRef('finding-packets', path.join(outputDirectory, 'finding-packets.json'), 'diagnostic'),
 		],
 	};
+}
+
+function normalizeComparisonInput(value, name) {
+	if (typeof value === 'string') {
+		return normalizeComparisonPayload(readStaticSiteFixtureMatrixArtifact(value), { source_path: path.resolve(value) });
+	}
+	if (!value || typeof value !== 'object') {
+		throw new TypeError(`${name} comparison input must be a matrix result, finding packet array, artifact file, or artifact directory.`);
+	}
+	return normalizeComparisonPayload(value, {});
+}
+
+function readStaticSiteFixtureMatrixArtifact(sourcePath) {
+	const resolved = path.resolve(requiredString(sourcePath, 'comparison artifact path'));
+	const stats = fs.statSync(resolved);
+	if (stats.isDirectory()) {
+		for (const fileName of ['static-site-fixture-matrix-result.json', 'finding-packets.json']) {
+			const artifactPath = path.join(resolved, fileName);
+			const artifact = readJsonFileIfExists(artifactPath);
+			if (artifact) {
+				return artifactWithSourcePath(artifact, artifactPath);
+			}
+		}
+		throw new Error(`No static-site fixture matrix result artifact found in ${resolved}.`);
+	}
+	return artifactWithSourcePath(JSON.parse(fs.readFileSync(resolved, 'utf8')), resolved);
+}
+
+function artifactWithSourcePath(artifact, sourcePath) {
+	if (Array.isArray(artifact)) {
+		return { source_path: sourcePath, findings: artifact };
+	}
+	return { ...artifact, source_path: sourcePath };
+}
+
+function normalizeComparisonPayload(payload, context = {}) {
+	if (Array.isArray(payload)) {
+		return {
+			source_path: context.source_path || '',
+			summary: { finding_count: payload.length },
+			findings: payload,
+			fixtures: [],
+		};
+	}
+	return {
+		source_path: payload.source_path || context.source_path || '',
+		matrix_id: payload.matrix_id || '',
+		summary: payload.summary || { finding_count: normalizeArray(payload.findings).length },
+		findings: normalizeArray(payload.findings || payload.finding_packets || payload.findingPackets),
+		fixtures: normalizeArray(payload.fixtures),
+	};
+}
+
+function normalizedComparisonFindings(source) {
+	return normalizeArray(source.findings).map((finding, index) => {
+		const normalized = normalizeComparisonFinding(finding, index);
+		return {
+			...normalized,
+			identity: stableFindingIdentity(normalized),
+		};
+	});
+}
+
+function normalizeComparisonFinding(finding, index) {
+	const raw = finding && typeof finding === 'object' ? finding : { reason: String(finding || '') };
+	return {
+		id: raw.id || '',
+		kind: raw.kind || raw.code || 'static_site_fixture_diagnostic',
+		group_key: raw.group_key || raw.category || 'static_site_import_quality',
+		fixture_id: raw.fixture_id || raw.fixtureId || '',
+		path: raw.path || raw.source_path || '',
+		selector: raw.selector || '',
+		reason: raw.reason || raw.message || raw.detail || '',
+		index,
+		raw,
+	};
+}
+
+function stableFindingIdentity(finding) {
+	return [
+		finding.fixture_id,
+		finding.group_key,
+		finding.kind,
+		finding.selector,
+		finding.path,
+		finding.reason,
+	].map((part) => String(part || '').trim().toLowerCase()).join('::');
+}
+
+function comparisonFindingRef(finding) {
+	return {
+		identity: finding.identity,
+		id: finding.id,
+		fixture_id: finding.fixture_id,
+		group_key: finding.group_key,
+		kind: finding.kind,
+		reason: finding.reason,
+	};
+}
+
+function comparisonSourceSummary(source) {
+	return compactObject({
+		source_path: source.source_path,
+		matrix_id: source.matrix_id,
+		fixture_count: source.summary?.fixture_count || source.fixtures?.length,
+		finding_count: source.findings.length,
+	});
+}
+
+function countBy(items, key) {
+	return items.reduce((counts, item) => {
+		const value = item[key] || 'unknown';
+		counts[value] = (counts[value] || 0) + 1;
+		return counts;
+	}, {});
+}
+
+function deltaCounts(candidateCounts, baselineCounts) {
+	const keys = [...new Set([...Object.keys(candidateCounts), ...Object.keys(baselineCounts)])].sort();
+	return keys.map((key) => ({
+		key,
+		baseline: baselineCounts[key] || 0,
+		candidate: candidateCounts[key] || 0,
+		delta: (candidateCounts[key] || 0) - (baselineCounts[key] || 0),
+	}));
+}
+
+function parserBucketDeltas(baselineFindings, candidateFindings) {
+	return deltaCounts(countParserBuckets(candidateFindings), countParserBuckets(baselineFindings))
+		.filter((bucket) => bucket.delta !== 0)
+		.sort((left, right) => Math.abs(right.delta) - Math.abs(left.delta) || left.key.localeCompare(right.key));
+}
+
+function countParserBuckets(findings) {
+	return findings.reduce((counts, finding) => {
+		const key = `${finding.group_key || 'unknown'}:${finding.kind || 'unknown'}`;
+		counts[key] = (counts[key] || 0) + 1;
+		return counts;
+	}, {});
 }
 
 function findingsForFixtureResult(result, context = {}) {
@@ -824,16 +1021,19 @@ function shellToken(value) {
 }
 
 module.exports = {
+	FIXTURE_MATRIX_COMPARISON_SCHEMA,
 	FIXTURE_MATRIX_RESULT_SCHEMA,
 	FIXTURE_MATRIX_SCHEMA,
 	WEBSITE_ARTIFACT_SCHEMA,
 	buildStaticSiteFixtureArtifact,
 	buildStaticSiteFixtureMatrixRecipe,
 	classifyStaticSiteFinding,
+	compareStaticSiteFixtureMatrixArtifacts,
 	collectStaticSiteFixtureMatrixRunResults,
 	createStaticSiteFixtureMatrix,
 	discoverStaticSiteFixtures,
 	normalizeStaticSiteFixtureMatrixResult,
+	writeStaticSiteFixtureMatrixComparisonArtifact,
 	writeStaticSiteFixtureMatrixResultArtifacts,
 	writeStaticSiteFixtureMatrixArtifacts,
 };

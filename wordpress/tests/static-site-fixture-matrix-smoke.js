@@ -3,6 +3,7 @@
 /* eslint-disable no-console */
 
 const assert = require('node:assert/strict');
+const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -12,10 +13,12 @@ const {
 	buildStaticSiteFixtureArtifact,
 	buildStaticSiteFixtureMatrixRecipe,
 	classifyStaticSiteFinding,
+	compareStaticSiteFixtureMatrixArtifacts,
 	collectStaticSiteFixtureMatrixRunResults,
 	createStaticSiteFixtureMatrix,
 	discoverStaticSiteFixtures,
 	normalizeStaticSiteFixtureMatrixResult,
+	writeStaticSiteFixtureMatrixComparisonArtifact,
 	writeStaticSiteFixtureMatrixResultArtifacts,
 	writeStaticSiteFixtureMatrixArtifacts,
 } = require('../lib/static-site-fixture-matrix');
@@ -137,6 +140,59 @@ async function main() {
 		assert.equal(written.artifact_refs.length, 4);
 		assert.equal(readJson(path.join(outputDirectory, 'summary.json')).finding_count, 3);
 		assert.equal(readJson(path.join(outputDirectory, '41-generative-art-studio', 'artifact.json')).entry_path, 'website/index.html');
+
+		const candidateResult = normalizeStaticSiteFixtureMatrixResult({
+			matrix,
+			results: [
+				{
+					fixture_id: 'saveweb2zip-com-liquidbonsai-com',
+					status: 'failed',
+					diagnostics: [
+						{ code: 'runtime_dependency_target_missing', message: 'Missing target #canvas' },
+					],
+				},
+				{
+					fixture_id: '41-generative-art-studio',
+					status: 'failed',
+					diagnostics: [
+						{ message: 'The imported page has default gray buttons' },
+					],
+				},
+			],
+		});
+		const candidateDirectory = path.join(root, 'candidate-artifacts');
+		writeStaticSiteFixtureMatrixArtifacts({ outputDirectory: candidateDirectory, matrix, result: candidateResult });
+		const comparison = compareStaticSiteFixtureMatrixArtifacts({
+			baseline: outputDirectory,
+			candidate: candidateDirectory,
+		});
+		assert.equal(comparison.schema, 'homeboy/static-site-fixture-matrix-comparison/v1');
+		assert.equal(comparison.summary.finding_delta, -1);
+		assert.equal(comparison.summary.resolved_count, 2);
+		assert.equal(comparison.summary.new_count, 1);
+		assert.equal(comparison.summary.persistent_count, 1);
+		assert.equal(comparison.stable_finding_identities.persistent[0].fixture_id, 'saveweb2zip-com-liquidbonsai-com');
+		assert.equal(comparison.summary.group_deltas.find((delta) => delta.key === 'dropped_images').delta, -1);
+		assert.equal(comparison.summary.kind_deltas.find((delta) => delta.key === 'static_site_fixture_diagnostic').delta, -1);
+		assert.equal(comparison.summary.fixture_deltas.find((delta) => delta.key === '41-generative-art-studio').delta, -1);
+		assert.equal(comparison.parser_improvement_diagnostics.total_delta, -1);
+		assert.equal(comparison.parser_improvement_diagnostics.top_improved_parser_buckets[0].key, 'dropped_images:static_site_fixture_diagnostic');
+		assert.equal(comparison.parser_improvement_diagnostics.top_regressed_parser_buckets[0].key, 'button_style_loss:static_site_fixture_diagnostic');
+		const comparisonArtifact = writeStaticSiteFixtureMatrixComparisonArtifact({
+			outputDirectory: candidateDirectory,
+			baseline: outputDirectory,
+			candidate: candidateResult,
+		});
+		assert.equal(readJson(comparisonArtifact.artifact_ref.path).schema, 'homeboy/static-site-fixture-matrix-comparison/v1');
+		const cliComparisonDirectory = path.join(root, 'cli-comparison');
+		const cliComparison = JSON.parse(execFileSync(process.execPath, [
+			path.join(__dirname, '..', 'scripts', 'static-site-fixture-matrix.mjs'),
+			'--compare-to', outputDirectory,
+			'--candidate', candidateDirectory,
+			'--output-directory', cliComparisonDirectory,
+		], { encoding: 'utf8' }));
+		assert.equal(cliComparison.schema, 'homeboy/static-site-fixture-matrix-comparison-cli-run/v1');
+		assert.equal(readJson(cliComparison.comparison_file).summary.resolved_count, 2);
 
 		write(
 			path.join(outputDirectory, '41-generative-art-studio', 'validation-result.json'),
