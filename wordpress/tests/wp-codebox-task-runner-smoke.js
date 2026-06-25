@@ -92,15 +92,24 @@ const bundleRun = isAgentBundle && process.env.FIXTURE_WP_CODEBOX_BUNDLE_RUN
         flow_slug: 'example-manual-flow',
         pipeline_slug: 'example-pipeline',
       },
-      typed_artifacts: {
-        example_review: {
-          schema: 'example/review-artifact/v1',
-          type: 'ExampleReviewArtifact',
-          payload: { slug: 'example-agent', review_ready: true },
-          provenance: { bundle_slug: 'example-agent', task_id: input.orchestrator.agent_task_id },
-          file_refs: [{ path: input.artifacts_path + '/example-review.json', mime: 'application/json' }]
-        }
-      },
+      typed_artifacts: process.env.FIXTURE_WP_CODEBOX_BUNDLE_TYPED_ARRAY
+        ? [{
+            name: 'example_review',
+            schema: 'example/review-artifact/v1',
+            type: 'ExampleReviewArtifact',
+            payload: { slug: 'example-agent', review_ready: true },
+            provenance: { bundle_slug: 'example-agent', task_id: input.orchestrator.agent_task_id },
+            file_refs: [{ path: input.artifacts_path + '/example-review.json', mime: 'application/json' }]
+          }]
+        : {
+            example_review: {
+              schema: 'example/review-artifact/v1',
+              type: 'ExampleReviewArtifact',
+              payload: { slug: 'example-agent', review_ready: true },
+              provenance: { bundle_slug: 'example-agent', task_id: input.orchestrator.agent_task_id },
+              file_refs: [{ path: input.artifacts_path + '/example-review.json', mime: 'application/json' }]
+            }
+          },
       artifacts: {
         result: { path: input.artifacts_path + '/datamachine-result.json', mime: 'application/json' }
       },
@@ -1106,6 +1115,44 @@ try {
   assert.equal(canonicalBundleRunOutput.outputs.typed_artifacts.example_review.type, 'ExampleReviewArtifact');
   assert.equal(canonicalBundleRunOutput.outputs.typed_artifacts.example_review.artifact_schema, 'example/review-artifact/v1');
   assert.equal(canonicalBundleRunOutput.outputs.typed_artifacts.example_review.payload.review_ready, true);
+
+  const arrayTypedArtifactBundleCapturePath = path.join(root, 'capture-array-typed-artifact-bundle-run.json');
+  const arrayTypedArtifactBundleResult = spawnSync(process.execPath, [
+    wpCodeboxTaskRunner,
+    '--wp-codebox-bin',
+    fixtureWpCodebox,
+    '--artifacts',
+    path.join(root, 'array-typed-artifact-bundle-run-artifacts'),
+  ], {
+    encoding: 'utf8',
+    input: JSON.stringify({
+      ...request,
+      agent_bundle: {
+        runtime_bundle_ability: 'example/run-agent-bundle',
+        bundle_path: '/workspace/example-repo/bundles/example-agent',
+        dry_run: true,
+      },
+      artifact_declarations: [{
+        schema: 'wp-codebox/artifact-declaration/v1',
+        name: 'example_review',
+        type: 'ExampleReviewArtifact',
+        artifact_schema: 'example/review-artifact/v1',
+        required: true,
+      }],
+      provider_plugin_paths: [],
+    }),
+    env: {
+      ...process.env,
+      FIXTURE_WP_CODEBOX_CAPTURE: arrayTypedArtifactBundleCapturePath,
+      FIXTURE_WP_CODEBOX_BUNDLE_RUN: '1',
+      FIXTURE_WP_CODEBOX_BUNDLE_TYPED_ARRAY: '1',
+      OPENCODE_API_KEY: 'redacted-test-key',
+    },
+  });
+  assert.equal(arrayTypedArtifactBundleResult.status, 0, arrayTypedArtifactBundleResult.stderr || arrayTypedArtifactBundleResult.stdout);
+  const arrayTypedArtifactBundleOutput = JSON.parse(arrayTypedArtifactBundleResult.stdout);
+  assert.equal(arrayTypedArtifactBundleOutput.outputs.typed_artifacts.example_review.payload.review_ready, true);
+  assert.equal(arrayTypedArtifactBundleOutput.diagnostics.some((diagnostic) => diagnostic.class === 'wp-codebox.required_typed_artifacts_missing'), false);
 
   const recorderBundleRunCapturePath = path.join(root, 'capture-recorder-datamachine-bundle-run.json');
   const recorderBundleRunResult = spawnSync(process.execPath, [

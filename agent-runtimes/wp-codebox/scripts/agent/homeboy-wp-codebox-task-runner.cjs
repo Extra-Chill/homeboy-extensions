@@ -1309,7 +1309,9 @@ function missingRequiredTypedArtifactDiagnostic(input, workload, config = {}) {
   if (required.length === 0) {
     return null;
   }
-  const typedArtifacts = plainObject(workload?.outputs?.typed_artifacts) ? workload.outputs.typed_artifacts : {};
+  const typedArtifacts = normalizeTypedArtifacts(
+    workload?.outputs?.typed_artifacts || workload?.outputs?.typedArtifacts || {}
+  );
   const missing = required
     .map((declaration) => ({
       name: artifactDeclarationName(declaration),
