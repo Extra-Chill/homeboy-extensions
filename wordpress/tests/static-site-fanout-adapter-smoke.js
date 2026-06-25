@@ -74,6 +74,35 @@ async function main() {
   assert.equal(explicitCodeboxCompatibilityPlan.orchestrator.request_schema, 'wp-codebox/task-input/v1');
   assert.equal(explicitCodeboxCompatibilityPlan.task_requests[0].schema, 'wp-codebox/task-input/v1');
 
+  const parserDiagnosticsPlan = createStaticSiteFanoutPlan({
+    run_id: 'parser-diagnostics-run',
+    findings: [
+      {
+        id: 'fixture-a:runtime_target_gap:1',
+        fixture_id: 'fixture-a',
+        source_fixture: 'fixture-a',
+        source_path: 'website/index.html',
+        selector: '#canvas',
+        tag: 'canvas',
+        block_primitive: 'core/html',
+        fallback_primitive: 'core/html',
+        parser_owner: 'blocks-engine',
+        repair_bucket: 'runtime_target_gap',
+        suggested_primitive: 'runtime mount target',
+        runtime_target_selector: '#canvas',
+        semantic_parity_subtype: 'runtime-target',
+        evidence_refs: [{ artifact_id: 'import-report', kind: 'diagnostic', path: 'fixture-a/import-report.json' }],
+      },
+    ],
+  });
+  assert.deepEqual(parserDiagnosticsPlan.summary.top_parser_buckets, [
+    { parser_owner: 'blocks-engine', repair_bucket: 'runtime_target_gap', count: 1 },
+  ]);
+  assert.equal(parserDiagnosticsPlan.task_requests[0].inputs.findings[0].source_fixture, 'fixture-a');
+  assert.equal(parserDiagnosticsPlan.task_requests[0].inputs.findings[0].parser_owner, 'blocks-engine');
+  assert.equal(parserDiagnosticsPlan.task_requests[0].inputs.findings[0].runtime_target_selector, '#canvas');
+  assert.equal(parserDiagnosticsPlan.task_requests[0].inputs.findings[0].evidence_refs[0].path, 'fixture-a/import-report.json');
+
   const emptyPlan = createStaticSiteFanoutPlan({ run_id: 'empty-run', findings: [] });
   assert.equal(emptyPlan.static_site.no_actionable_findings, true);
   assert.equal(emptyPlan.task_requests.length, 0);

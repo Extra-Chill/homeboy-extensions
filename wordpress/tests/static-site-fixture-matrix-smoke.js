@@ -107,7 +107,7 @@ async function main() {
 					fixture_id: 'saveweb2zip-com-liquidbonsai-com',
 					status: 'failed',
 					diagnostics: [
-						{ code: 'runtime_dependency_target_missing', message: 'Missing target #canvas' },
+						{ code: 'runtime_dependency_target_missing', message: 'Missing target #canvas', selector: '#canvas', element: 'canvas', suggested_primitive: 'core/html runtime mount' },
 					],
 				},
 				{
@@ -126,6 +126,18 @@ async function main() {
 		assert.equal(result.summary.groups.runtime_target_gap, 1);
 		assert.equal(result.summary.groups.invalid_block_content, 1);
 		assert.equal(result.summary.groups.dropped_images, 1);
+		assert.deepEqual(result.summary.top_parser_buckets, [
+			{ parser_owner: 'blocks-engine', repair_bucket: 'runtime_target_gap', count: 1 },
+			{ parser_owner: 'blocks-engine', repair_bucket: 'invalid_block_content', count: 1 },
+			{ parser_owner: 'static-site-importer', repair_bucket: 'dropped_images', count: 1 },
+		].sort((left, right) => right.count - left.count || left.parser_owner.localeCompare(right.parser_owner) || left.repair_bucket.localeCompare(right.repair_bucket)));
+		const runtimeFinding = result.findings.find((finding) => finding.group_key === 'runtime_target_gap');
+		assert.equal(runtimeFinding.source_fixture, 'saveweb2zip-com-liquidbonsai-com');
+		assert.equal(runtimeFinding.element, 'canvas');
+		assert.equal(runtimeFinding.parser_owner, 'blocks-engine');
+		assert.equal(runtimeFinding.repair_bucket, 'runtime_target_gap');
+		assert.equal(runtimeFinding.suggested_primitive, 'core/html runtime mount');
+		assert.equal(runtimeFinding.runtime_target_selector, '#canvas');
 		assert.deepEqual(result.fanout_groups.map((group) => group.key).sort(), [
 			'dropped_images',
 			'invalid_block_content',
@@ -145,7 +157,7 @@ async function main() {
 				success: false,
 				ssi_validation: { valid: false },
 				import_report: { report: { quality: { invalid_block_count: 2, fallback_count: 1 } } },
-				missing_assets: [{ path: 'missing.svg', message: 'SVG asset missing.svg was not materialized' }],
+				missing_assets: [{ path: 'missing.svg', source_path: 'index.html', selector: 'img[src="missing.svg"]', tag: 'img', message: 'SVG asset missing.svg was not materialized' }],
 				artifacts: { import_report: '41-generative-art-studio/import-report.json' },
 			})
 		);
@@ -199,6 +211,13 @@ async function main() {
 		assert.equal(studioResult.import_report.report.quality.fallback_count, 1);
 		assert.equal(studioResult.missing_assets[0].path, 'missing.svg');
 		assert.ok(studioResult.artifact_refs.some((ref) => ref.path.endsWith('validation-result.json')));
+		const missingAssetFinding = collected.findings.find((finding) => finding.fixture_id === '41-generative-art-studio' && finding.group_key === 'broken_svg');
+		assert.equal(missingAssetFinding.parser_owner, 'static-site-importer');
+		assert.equal(missingAssetFinding.source_path, 'index.html');
+		assert.equal(missingAssetFinding.selector, 'img[src="missing.svg"]');
+		assert.equal(missingAssetFinding.tag, 'img');
+		assert.equal(missingAssetFinding.missing_asset_path, 'missing.svg');
+		assert.ok(missingAssetFinding.evidence_refs.some((ref) => ref.path.endsWith('validation-result.json')));
 
 		const partialDirectory = path.join(root, 'partial-artifacts');
 		const partialMatrix = createStaticSiteFixtureMatrix({

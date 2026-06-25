@@ -28,15 +28,17 @@ function createStaticSiteFanoutPlan(input = {}) {
   const groups = normalizeFanoutGroups(input.groups || input.fanout_groups || input.controller?.fanout_groups, findings, input);
   const orchestrator = normalizeOrchestrator(input);
   const requestKind = input.request_kind || input.requestKind || 'agent-task';
+  const topParserBuckets = topParserBucketsForFindings(findings);
   const plan = createFanoutReconcilePlan({
     schema: PLAN_SCHEMA,
     orchestrator,
     groups,
-    summary: {
+    summary: stripUndefined({
       preset: orchestrator.preset,
       finding_count: groups.reduce((count, group) => count + group.items.length, 0),
       no_actionable_findings: groups.length === 0,
-    },
+      top_parser_buckets: topParserBuckets.length > 0 ? topParserBuckets : undefined,
+    }),
     render_task_request: (group) => createTaskRequest(group, orchestrator, { ...input, request_kind: requestKind }),
     reconcile_plan: ({ groups: fanoutGroups, task_requests }) => staticSiteReconciliation({
       plan: { task_requests, summary: { group_count: fanoutGroups.length } },
@@ -91,25 +93,39 @@ function normalizeFinding(finding, index) {
   const reason = text(raw.reason) || text(raw.message) || text(raw.excerpt) || text(raw.preview) || '';
   const group_key = text(raw.group_key) || text(raw.groupKey) || text(raw.suggested_repair_class) || text(raw.candidate_repo) || category;
 
-  return {
+  return stripUndefined({
     id,
     kind,
     category,
     group_key,
     path,
+    fixture_id: text(raw.fixture_id) || text(raw.fixtureId) || undefined,
+    source_fixture: text(raw.source_fixture) || text(raw.sourceFixture) || text(raw.fixture_id) || text(raw.fixtureId) || undefined,
     source_path: text(raw.source_path) || path,
     selector: text(raw.selector),
+    element: text(raw.element) || text(raw.tag) || text(raw.tag_name) || text(raw.tagName) || text(raw.node_name) || text(raw.nodeName) || undefined,
+    tag: text(raw.tag) || text(raw.tag_name) || text(raw.tagName) || text(raw.element) || undefined,
+    block_primitive: text(raw.block_primitive) || text(raw.blockPrimitive) || text(raw.block_name) || text(raw.blockName) || text(raw.block) || undefined,
+    fallback_primitive: text(raw.fallback_primitive) || text(raw.fallbackPrimitive) || text(raw.fallback_block) || text(raw.fallbackBlock) || text(raw.primitive) || undefined,
+    parser_owner: parserOwnerForFinding(raw) || undefined,
+    repair_bucket: text(raw.repair_bucket) || text(raw.repairBucket) || undefined,
+    suggested_primitive: text(raw.suggested_primitive) || text(raw.suggestedPrimitive) || text(raw.suggested_block) || text(raw.suggestedBlock) || undefined,
+    runtime_target_selector: text(raw.runtime_target_selector) || text(raw.runtimeTargetSelector) || text(raw.target_selector) || text(raw.targetSelector) || text(raw.target) || undefined,
+    missing_asset_path: text(raw.missing_asset_path) || text(raw.missingAssetPath) || text(raw.asset_path) || text(raw.assetPath) || undefined,
+    semantic_parity_subtype: text(raw.semantic_parity_subtype) || text(raw.semanticParitySubtype) || text(raw.parity_subtype) || text(raw.paritySubtype) || undefined,
     severity: text(raw.severity) || 'warning',
     reason,
     repair_mode: text(raw.repair_mode),
+    candidate_repo: undefined,
     artifact_refs: normalizeArtifactRefs([
       ...(normalizeArray(raw.artifact_refs || raw.artifacts).map((ref) => ({ source: 'finding', ...objectRef(ref) }))),
       ...normalizeArray(raw.diagnostic_refs).map((ref) => ({ artifact_id: ref, kind: 'diagnostic' })),
       ...normalizeArray(raw.asset_map_refs).map((ref) => ({ artifact_id: ref, kind: 'asset_map' })),
     ]),
+    evidence_refs: normalizeArtifactRefs(raw.evidence_refs || raw.evidenceRefs || []).length > 0 ? normalizeArtifactRefs(raw.evidence_refs || raw.evidenceRefs || []) : undefined,
     raw,
     index,
-  };
+  });
 }
 
 function normalizeFanoutGroups(groups, findings, input = {}) {
@@ -248,18 +264,32 @@ function staticSitePrompt(group) {
 }
 
 function publicFinding(finding) {
-  return {
+  return stripUndefined({
     id: finding.id,
     kind: finding.kind,
     category: finding.category,
     severity: finding.severity,
+    fixture_id: finding.fixture_id,
+    source_fixture: finding.source_fixture,
     path: finding.path,
     source_path: finding.source_path,
     selector: finding.selector,
+    element: finding.element,
+    tag: finding.tag,
+    block_primitive: finding.block_primitive,
+    fallback_primitive: finding.fallback_primitive,
+    parser_owner: finding.parser_owner,
+    repair_bucket: finding.repair_bucket,
+    suggested_primitive: finding.suggested_primitive,
+    runtime_target_selector: finding.runtime_target_selector,
+    missing_asset_path: finding.missing_asset_path,
+    semantic_parity_subtype: finding.semantic_parity_subtype,
     reason: finding.reason,
     repair_mode: finding.repair_mode,
+    candidate_repo: finding.candidate_repo,
     artifact_refs: finding.artifact_refs,
-  };
+    evidence_refs: finding.evidence_refs,
+  });
 }
 
 function groupArtifactRefs(group) {
@@ -458,6 +488,37 @@ function codeboxCompatibilityRequested(input = {}) {
     || input.codeboxCompatibility === true
     || input.wp_codebox_compatibility === true
     || input.wpCodeboxCompatibility === true;
+}
+
+function parserOwnerForFinding(raw) {
+  const explicit = text(raw.parser_owner) || text(raw.parserOwner) || text(raw.owner);
+  if (explicit === 'blocks-engine' || explicit === 'static-site-importer') {
+    return explicit;
+  }
+  const candidate = text(raw.candidate_repo);
+  if (/blocks-engine/i.test(candidate)) {
+    return 'blocks-engine';
+  }
+  if (/static-site-importer/i.test(candidate)) {
+    return 'static-site-importer';
+  }
+  return '';
+}
+
+function topParserBucketsForFindings(findings) {
+  const buckets = new Map();
+  for (const finding of findings) {
+    if (!finding.parser_owner && !finding.repair_bucket) {
+      continue;
+    }
+    const parserOwner = finding.parser_owner || 'unknown';
+    const repairBucket = finding.repair_bucket || finding.group_key || 'static_site_import_quality';
+    const key = `${parserOwner}:${repairBucket}`;
+    const current = buckets.get(key) || { parser_owner: parserOwner, repair_bucket: repairBucket, count: 0 };
+    current.count += 1;
+    buckets.set(key, current);
+  }
+  return Array.from(buckets.values()).sort((left, right) => right.count - left.count || left.parser_owner.localeCompare(right.parser_owner) || left.repair_bucket.localeCompare(right.repair_bucket));
 }
 
 function safeSlug(value) {

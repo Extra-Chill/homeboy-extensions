@@ -192,6 +192,7 @@ function normalizeStaticSiteFixtureMatrixResult(input = {}) {
 	const fixtureResults = matrix.fixtures.map((fixture) => resultByFixture.get(fixture.id) || normalizeFixtureResult({ fixture_id: fixture.id, status: 'not_run' }));
 	const findings = fixtureResults.flatMap((result) => findingsForFixtureResult(result, { matrix }));
 	const grouped = groupFindings(findings);
+	const topParserBuckets = topParserBucketsForFindings(findings);
 
 	return {
 		schema: FIXTURE_MATRIX_RESULT_SCHEMA,
@@ -204,6 +205,7 @@ function normalizeStaticSiteFixtureMatrixResult(input = {}) {
 			not_run: fixtureResults.filter((result) => result.status === 'not_run').length,
 			finding_count: findings.length,
 			groups: Object.fromEntries(Object.entries(grouped).map(([key, items]) => [key, items.length])),
+			top_parser_buckets: topParserBuckets,
 		},
 		fixtures: fixtureResults,
 		findings,
@@ -302,23 +304,40 @@ function normalizeDiagnosticFinding(diagnostic, result, index) {
 	const message = raw.message || raw.reason || raw.detail || raw.code || result.error || '';
 	const group = classifyStaticSiteFinding({ ...raw, message });
 	const id = raw.id || `${result.fixture_id || 'fixture'}:${group.group_key}:${index + 1}`;
+	const parserOwner = parserOwnerForDiagnostic(raw, group);
+	const artifactRefs = normalizeArray(raw.artifact_refs || raw.artifactRefs);
+	const evidenceRefs = normalizeArray(raw.evidence_refs || raw.evidenceRefs || artifactRefs).length > 0
+		? normalizeArray(raw.evidence_refs || raw.evidenceRefs || artifactRefs)
+		: normalizeArray(result.artifact_refs || result.artifactRefs);
 
-	return {
+	return compactObject({
 		id,
 		kind: raw.kind || raw.code || 'static_site_fixture_diagnostic',
 		category: raw.category || group.group_key,
 		group_key: group.group_key,
 		severity: raw.severity || (result.status === 'failed' ? 'error' : 'warning'),
 		fixture_id: result.fixture_id || '',
+		source_fixture: raw.source_fixture || raw.sourceFixture || result.fixture_id || '',
 		path: raw.path || raw.source_path || result.fixture_path || '',
 		source_path: raw.source_path || raw.path || result.fixture_path || '',
 		selector: raw.selector || '',
+		element: raw.element || raw.tag || raw.tag_name || raw.tagName || raw.node_name || raw.nodeName || '',
+		tag: raw.tag || raw.tag_name || raw.tagName || raw.element || '',
+		block_primitive: raw.block_primitive || raw.blockPrimitive || raw.block_name || raw.blockName || raw.block || '',
+		fallback_primitive: raw.fallback_primitive || raw.fallbackPrimitive || raw.fallback_block || raw.fallbackBlock || raw.primitive || '',
+		parser_owner: parserOwner,
+		repair_bucket: raw.repair_bucket || raw.repairBucket || group.group_key,
+		suggested_primitive: raw.suggested_primitive || raw.suggestedPrimitive || raw.suggested_block || raw.suggestedBlock || '',
+		runtime_target_selector: raw.runtime_target_selector || raw.runtimeTargetSelector || raw.target_selector || raw.targetSelector || raw.target || raw.selector || '',
+		missing_asset_path: missingAssetPathForDiagnostic(raw),
+		semantic_parity_subtype: raw.semantic_parity_subtype || raw.semanticParitySubtype || raw.parity_subtype || raw.paritySubtype || '',
 		reason: message,
 		repair_mode: raw.repair_mode || group.repair_mode,
 		candidate_repo: raw.candidate_repo || group.candidate_repo,
-		artifact_refs: normalizeArray(raw.artifact_refs),
+		artifact_refs: artifactRefs,
+		evidence_refs: evidenceRefs,
 		raw,
-	};
+	});
 }
 
 function classifyStaticSiteFinding(input = {}) {
@@ -337,6 +356,37 @@ function classifyStaticSiteFinding(input = {}) {
 		candidate_repo: input.candidate_repo || 'static-site-importer',
 		repair_mode: input.repair_mode || 'import-validation',
 	};
+}
+
+function parserOwnerForDiagnostic(raw, group) {
+	const explicit = raw.parser_owner || raw.parserOwner || raw.owner;
+	if (explicit === 'blocks-engine' || explicit === 'static-site-importer') {
+		return explicit;
+	}
+	if (missingAssetPathForDiagnostic(raw)) {
+		return 'static-site-importer';
+	}
+	const candidate = raw.candidate_repo || group.candidate_repo || '';
+	if (/blocks-engine/i.test(candidate)) {
+		return 'blocks-engine';
+	}
+	if (/static-site-importer/i.test(candidate)) {
+		return 'static-site-importer';
+	}
+	return group.candidate_repo === 'blocks-engine' ? 'blocks-engine' : 'static-site-importer';
+}
+
+function topParserBucketsForFindings(findings) {
+	const buckets = new Map();
+	for (const finding of findings) {
+		const parserOwner = finding.parser_owner || parserOwnerForDiagnostic(finding, { candidate_repo: finding.candidate_repo });
+		const repairBucket = finding.repair_bucket || finding.group_key || 'static_site_import_quality';
+		const key = `${parserOwner}:${repairBucket}`;
+		const current = buckets.get(key) || { parser_owner: parserOwner, repair_bucket: repairBucket, count: 0 };
+		current.count += 1;
+		buckets.set(key, current);
+	}
+	return Array.from(buckets.values()).sort((left, right) => right.count - left.count || left.parser_owner.localeCompare(right.parser_owner) || left.repair_bucket.localeCompare(right.repair_bucket));
 }
 
 function normalizeFixture(input) {
@@ -738,6 +788,14 @@ function diagnosticMessage(value) {
 function missingAssetKind(value) {
 	const message = diagnosticMessage(value);
 	return /\.svg(?:\b|$)/i.test(message) ? 'broken_svg' : 'dropped_images';
+}
+
+function missingAssetPathForDiagnostic(raw) {
+	if (raw.missing_asset_path || raw.missingAssetPath || raw.asset_path || raw.assetPath) {
+		return raw.missing_asset_path || raw.missingAssetPath || raw.asset_path || raw.assetPath;
+	}
+	const kind = raw.kind || raw.code || '';
+	return /missing|asset|image|svg/i.test(kind) ? raw.path || '' : '';
 }
 
 function readJsonFileIfExists(filePath) {
