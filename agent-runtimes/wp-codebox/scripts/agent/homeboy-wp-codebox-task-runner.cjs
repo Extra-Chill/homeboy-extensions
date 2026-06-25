@@ -1291,7 +1291,13 @@ function visibleGoalWithRuntimeInput(input) {
   if (!plainObject(runtimeInput) || Object.keys(runtimeInput).length === 0) {
     return baseGoal;
   }
-  return `${baseGoal}\n\nRuntime task input JSON:\n\`\`\`json\n${JSON.stringify(runtimeInput, null, 2)}\n\`\`\``;
+  const namedInputs = Object.fromEntries(Object.entries(runtimeInput).filter(([key]) => key !== 'artifacts'));
+  const sections = [];
+  if (Object.keys(namedInputs).length > 0) {
+    sections.push(`Runtime task named inputs JSON:\n\`\`\`json\n${JSON.stringify(namedInputs, null, 2)}\n\`\`\``);
+  }
+  sections.push(`Runtime task input JSON:\n\`\`\`json\n${JSON.stringify(runtimeInput, null, 2)}\n\`\`\``);
+  return `${baseGoal}\n\n${sections.join('\n\n')}`;
 }
 
 function plainObject(value) {
