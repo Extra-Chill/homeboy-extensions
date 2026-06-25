@@ -161,6 +161,7 @@ function buildStaticSiteFixtureMatrixRecipe(input = {}) {
 		artifacts: {
 			directory: artifactsDirectory,
 		},
+		...(staticSiteImporter ? { metadata: { static_site_importer: staticSiteImporter.metadata } } : {}),
 	};
 }
 
@@ -170,19 +171,78 @@ function normalizeStaticSiteImporterPlugin(input = {}) {
 		return null;
 	}
 
-	const slugValue = input.staticSiteImporterSlug || input.static_site_importer_slug || path.basename(source);
-	const pluginFile = input.staticSiteImporterPlugin || input.static_site_importer_plugin || `${slugValue}/${slugValue}.php`;
+	const resolved = resolveStaticSiteImporterPlugin(source, input);
 	return {
 		extraPlugin: {
-			source,
-			slug: slugValue,
+			source: resolved.source,
+			slug: resolved.slug,
 			activate: true,
 		},
 		activationStep: {
 			command: 'wordpress.wp-cli',
-			args: [`command=plugin activate ${pluginFile}`],
+			args: [`command=plugin activate ${resolved.plugin_file}`],
 		},
+		metadata: resolved,
 	};
+}
+
+function resolveStaticSiteImporterPlugin(source, input = {}) {
+	const sourceDirectory = requiredDirectory(source, 'staticSiteImporterPath');
+	const explicitSlug = firstString([input.staticSiteImporterSlug, input.static_site_importer_slug]);
+	const explicitPluginFile = firstString([input.staticSiteImporterPlugin, input.static_site_importer_plugin]);
+	const sourcePluginFile = explicitPluginFile ? validateStaticSiteImporterPluginFile(sourceDirectory, explicitPluginFile) : inferStaticSiteImporterSourcePluginFile(sourceDirectory);
+	const slugValue = explicitSlug || (explicitPluginFile ? pluginSlugFromPluginFile(explicitPluginFile) : path.basename(sourcePluginFile, '.php'));
+	const pluginFile = `${slugValue}/${sourcePluginFile}`;
+
+	return {
+		source: sourceDirectory,
+		slug: slugValue,
+		plugin_file: pluginFile,
+		source_plugin_file: sourcePluginFile,
+	};
+}
+
+function validateStaticSiteImporterPluginFile(sourceDirectory, pluginFile) {
+	if (!/^[^/\\]+\/[^/\\]+\.php$/.test(pluginFile)) {
+		throw new Error(`staticSiteImporterPlugin must be a plugin path like slug/plugin.php: ${pluginFile}`);
+	}
+	const sourcePluginFile = path.basename(pluginFile);
+	const sourcePluginPath = path.join(sourceDirectory, sourcePluginFile);
+	if (!fs.existsSync(sourcePluginPath) || !fs.statSync(sourcePluginPath).isFile()) {
+		throw new Error(`Static Site Importer plugin file ${sourcePluginFile} was not found in ${sourceDirectory}. Pass --static-site-importer-plugin with the installed plugin path or use a source directory containing the plugin entry file.`);
+	}
+	return sourcePluginFile;
+}
+
+function inferStaticSiteImporterSourcePluginFile(sourceDirectory) {
+	const staticSiteImporterFile = path.join(sourceDirectory, 'static-site-importer.php');
+	if (fs.existsSync(staticSiteImporterFile) && fs.statSync(staticSiteImporterFile).isFile()) {
+		return 'static-site-importer.php';
+	}
+
+	const candidates = fs.readdirSync(sourceDirectory, { withFileTypes: true })
+		.filter((entry) => entry.isFile() && entry.name.endsWith('.php'))
+		.map((entry) => entry.name)
+		.filter((fileName) => hasWordPressPluginHeader(path.join(sourceDirectory, fileName)))
+		.sort((left, right) => left.localeCompare(right));
+
+	if (candidates.length === 1) {
+		return candidates[0];
+	}
+	if (candidates.length > 1) {
+		throw new Error(`Ambiguous Static Site Importer plugin entry file in ${sourceDirectory}: ${candidates.join(', ')}. Pass --static-site-importer-plugin <slug/plugin.php> and --static-site-importer-slug <slug>.`);
+	}
+
+	throw new Error(`Unable to infer Static Site Importer plugin entry file in ${sourceDirectory}. Expected static-site-importer.php or exactly one root PHP file with a WordPress Plugin Name header.`);
+}
+
+function hasWordPressPluginHeader(filePath) {
+	const header = fs.readFileSync(filePath, 'utf8').slice(0, 8192);
+	return /^\s*\*?\s*Plugin Name\s*:/im.test(header);
+}
+
+function pluginSlugFromPluginFile(pluginFile) {
+	return pluginFile.split(/[\\/]/)[0];
 }
 
 function normalizeStaticSiteFixtureMatrixResult(input = {}) {
@@ -197,6 +257,7 @@ function normalizeStaticSiteFixtureMatrixResult(input = {}) {
 		schema: FIXTURE_MATRIX_RESULT_SCHEMA,
 		matrix_id: matrix.id,
 		fixture_root: matrix.fixture_root,
+		metadata: normalizeStaticSiteFixtureMatrixMetadata(input),
 		summary: {
 			fixture_count: matrix.fixtures.length,
 			succeeded: fixtureResults.filter((result) => result.status === 'passed').length,
@@ -235,7 +296,7 @@ function collectStaticSiteFixtureMatrixRunResults(input = {}) {
 		});
 	});
 
-	return normalizeStaticSiteFixtureMatrixResult({ matrix, results });
+	return normalizeStaticSiteFixtureMatrixResult({ ...input, matrix, results });
 }
 
 function writeStaticSiteFixtureMatrixResultArtifacts(input = {}) {
@@ -383,6 +444,15 @@ function normalizeFixtureResult(input) {
 		artifacts: input.artifacts || {},
 		raw: input,
 	};
+}
+
+function normalizeStaticSiteFixtureMatrixMetadata(input = {}) {
+	const metadata = compactObject(objectValue(input.metadata));
+	const staticSiteImporter = normalizeStaticSiteImporterPlugin(input);
+	if (staticSiteImporter) {
+		metadata.static_site_importer = staticSiteImporter.metadata;
+	}
+	return metadata;
 }
 
 function normalizeCollectedFixtureResult({ fixture, payloads, fixtureArtifactsDirectory, codeboxError }) {

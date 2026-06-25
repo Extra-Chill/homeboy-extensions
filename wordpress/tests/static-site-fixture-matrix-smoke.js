@@ -71,24 +71,30 @@ async function main() {
 		assert.match(recipe.workflow.steps[0].args[0], /--allow-failure/);
 		assert.match(recipe.workflow.steps[0].args[0], /--artifact=\/artifacts\/matrix\/41-generative-art-studio\/artifact.json/);
 
+		const renamedStaticSiteImporterSource = path.join(root, 'static-site-importer-matrix');
+		write(path.join(renamedStaticSiteImporterSource, 'static-site-importer.php'), '<?php\n/**\n * Plugin Name: Static Site Importer\n */\n');
 		const staticSiteImporterRecipe = buildStaticSiteFixtureMatrixRecipe({
 			matrix,
 			artifactsDirectory: '/host/artifacts/matrix',
 			playgroundArtifactsDirectory: '/wordpress/wp-content/uploads/static-site-fixture-matrix',
-			staticSiteImporterPath: '/workspace/static-site-importer',
-			staticSiteImporterPlugin: 'static-site-importer/static-site-importer.php',
-			staticSiteImporterSlug: 'static-site-importer',
+			staticSiteImporterPath: renamedStaticSiteImporterSource,
 		});
-		assert.deepEqual(Object.keys(staticSiteImporterRecipe).sort(), ['artifacts', 'inputs', 'runtime', 'schema', 'workflow']);
+		assert.deepEqual(Object.keys(staticSiteImporterRecipe).sort(), ['artifacts', 'inputs', 'metadata', 'runtime', 'schema', 'workflow']);
 		assert.deepEqual(staticSiteImporterRecipe.inputs.mounts, [{
 			source: '/host/artifacts/matrix',
 			target: '/wordpress/wp-content/uploads/static-site-fixture-matrix',
 			mode: 'readwrite',
 		}]);
 		assert.deepEqual(staticSiteImporterRecipe.inputs.extra_plugins[0], {
-			source: '/workspace/static-site-importer',
+			source: renamedStaticSiteImporterSource,
 			slug: 'static-site-importer',
 			activate: true,
+		});
+		assert.deepEqual(staticSiteImporterRecipe.metadata.static_site_importer, {
+			source: renamedStaticSiteImporterSource,
+			slug: 'static-site-importer',
+			plugin_file: 'static-site-importer/static-site-importer.php',
+			source_plugin_file: 'static-site-importer.php',
 		});
 		assert.equal(staticSiteImporterRecipe.workflow.steps[0].command, 'wordpress.wp-cli');
 		assert.equal(Object.hasOwn(staticSiteImporterRecipe.workflow.steps[0], 'metadata'), false);
@@ -96,12 +102,30 @@ async function main() {
 		assert.equal(staticSiteImporterRecipe.workflow.steps[1].command, 'wordpress.wp-cli');
 		assert.match(staticSiteImporterRecipe.workflow.steps[1].args[0], /--artifact=\/wordpress\/wp-content\/uploads\/static-site-fixture-matrix\/41-generative-art-studio\/artifact.json/);
 
+		const explicitStaticSiteImporterRecipe = buildStaticSiteFixtureMatrixRecipe({
+			matrix,
+			artifactsDirectory: '/host/artifacts/matrix',
+			staticSiteImporterPath: renamedStaticSiteImporterSource,
+			staticSiteImporterPlugin: 'custom-static-site-importer/static-site-importer.php',
+		});
+		assert.equal(explicitStaticSiteImporterRecipe.inputs.extra_plugins[0].slug, 'custom-static-site-importer');
+		assert.deepEqual(explicitStaticSiteImporterRecipe.workflow.steps[0].args, ['command=plugin activate custom-static-site-importer/static-site-importer.php']);
+
+		const ambiguousStaticSiteImporterSource = path.join(root, 'ambiguous-static-site-importer');
+		write(path.join(ambiguousStaticSiteImporterSource, 'one.php'), '<?php\n/**\n * Plugin Name: One\n */\n');
+		write(path.join(ambiguousStaticSiteImporterSource, 'two.php'), '<?php\n/**\n * Plugin Name: Two\n */\n');
+		assert.throws(
+			() => buildStaticSiteFixtureMatrixRecipe({ matrix, staticSiteImporterPath: ambiguousStaticSiteImporterSource }),
+			/Ambiguous Static Site Importer plugin entry file.*one\.php, two\.php.*--static-site-importer-plugin/
+		);
+
 		assert.equal(classifyStaticSiteFinding({ message: 'This block contains unexpected or invalid content' }).group_key, 'invalid_block_content');
 		assert.equal(classifyStaticSiteFinding({ code: 'runtime_dependency_target_missing', message: '#canvas' }).group_key, 'runtime_target_gap');
 		assert.equal(classifyStaticSiteFinding({ message: 'The imported page has default gray buttons' }).group_key, 'button_style_loss');
 
 		const result = normalizeStaticSiteFixtureMatrixResult({
 			matrix,
+			staticSiteImporterPath: renamedStaticSiteImporterSource,
 			results: [
 				{
 					fixture_id: 'saveweb2zip-com-liquidbonsai-com',
@@ -121,6 +145,7 @@ async function main() {
 			],
 		});
 		assert.equal(result.schema, 'homeboy/static-site-fixture-matrix-result/v1');
+		assert.equal(result.metadata.static_site_importer.plugin_file, 'static-site-importer/static-site-importer.php');
 		assert.equal(result.summary.failed, 2);
 		assert.equal(result.summary.finding_count, 3);
 		assert.equal(result.summary.groups.runtime_target_gap, 1);
@@ -160,6 +185,7 @@ async function main() {
 		const collected = collectStaticSiteFixtureMatrixRunResults({
 			matrix,
 			outputDirectory,
+			staticSiteImporterPath: renamedStaticSiteImporterSource,
 			codeboxOutput: {
 				ok: false,
 				executions: [
@@ -190,6 +216,7 @@ async function main() {
 			},
 		});
 		assert.equal(collected.summary.failed, 2);
+		assert.equal(collected.metadata.static_site_importer.slug, 'static-site-importer');
 		assert.ok(collected.fixtures.find((fixture) => fixture.fixture_id === '41-generative-art-studio').diagnostics.some((diagnostic) => diagnostic.code === 'missing_provider'));
 		assert.equal(collected.summary.groups.runtime_target_gap, 2);
 		assert.equal(collected.summary.groups.invalid_block_content, 1);

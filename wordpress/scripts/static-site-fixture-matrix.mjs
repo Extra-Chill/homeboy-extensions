@@ -38,6 +38,9 @@ async function main() {
 	const written = writeStaticSiteFixtureMatrixArtifacts({
 		outputDirectory,
 		matrix,
+		staticSiteImporterPath: options.staticSiteImporterPath ? path.resolve(options.staticSiteImporterPath) : undefined,
+		staticSiteImporterPlugin: options.staticSiteImporterPlugin,
+		staticSiteImporterSlug: options.staticSiteImporterSlug,
 	});
 	const recipe = buildStaticSiteFixtureMatrixRecipe({
 		matrix,
@@ -77,6 +80,9 @@ async function main() {
 			outputFile,
 			codeboxOutput: runtime?.json,
 			codeboxError: runtimeError,
+			staticSiteImporterPath: options.staticSiteImporterPath ? path.resolve(options.staticSiteImporterPath) : undefined,
+			staticSiteImporterPlugin: options.staticSiteImporterPlugin,
+			staticSiteImporterSlug: options.staticSiteImporterSlug,
 		});
 		writeStaticSiteFixtureMatrixResultArtifacts({
 			outputDirectory,
@@ -93,6 +99,7 @@ async function main() {
 		output_directory: outputDirectory,
 		recipe_file: recipeFile,
 		artifact_refs: written.artifact_refs,
+		static_site_importer: collectedResult.metadata?.static_site_importer || null,
 		result_file: path.join(outputDirectory, 'static-site-fixture-matrix-result.json'),
 		result_summary: collectedResult.summary,
 		runtime: runtime ? { exit_code: runtime.exitCode, output_file: runtime.outputFile, error: runtimeError ? runtimeError.message : '' } : null,
