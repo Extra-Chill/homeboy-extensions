@@ -192,6 +192,7 @@ function normalizeStaticSiteFixtureMatrixResult(input = {}) {
 	const fixtureResults = matrix.fixtures.map((fixture) => resultByFixture.get(fixture.id) || normalizeFixtureResult({ fixture_id: fixture.id, status: 'not_run' }));
 	const findings = fixtureResults.flatMap((result) => findingsForFixtureResult(result, { matrix }));
 	const grouped = groupFindings(findings);
+	const summaryRollups = buildFindingSummaryRollups(findings, fixtureResults);
 
 	return {
 		schema: FIXTURE_MATRIX_RESULT_SCHEMA,
@@ -204,6 +205,7 @@ function normalizeStaticSiteFixtureMatrixResult(input = {}) {
 			not_run: fixtureResults.filter((result) => result.status === 'not_run').length,
 			finding_count: findings.length,
 			groups: Object.fromEntries(Object.entries(grouped).map(([key, items]) => [key, items.length])),
+			...summaryRollups,
 		},
 		fixtures: fixtureResults,
 		findings,
@@ -638,6 +640,134 @@ function groupFindings(findings) {
 		groups[key].push(finding);
 		return groups;
 	}, {});
+}
+
+function buildFindingSummaryRollups(findings, fixtureResults) {
+	const fixtureStatusById = new Map(fixtureResults.map((fixture) => [fixture.fixture_id, fixture.status]));
+	const fixtureFindingCounts = new Map();
+	const runtimeTargetSelectors = new Map();
+	const coreHtmlSources = new Map();
+	const candidateBuckets = {};
+
+	for (const finding of findings) {
+		incrementMap(fixtureFindingCounts, finding.fixture_id || 'unknown');
+		const selector = runtimeTargetSelector(finding);
+		if (selector) {
+			incrementMap(runtimeTargetSelectors, selector);
+		}
+		const coreHtmlSource = coreHtmlElementSource(finding);
+		if (coreHtmlSource) {
+			incrementMap(coreHtmlSources, coreHtmlSource);
+		}
+
+		const bucketKey = candidateBucketKey(finding.candidate_repo);
+		candidateBuckets[bucketKey] = candidateBuckets[bucketKey] || {
+			candidate_repo: bucketKey,
+			count: 0,
+			groups: {},
+			fixtures: {},
+		};
+		candidateBuckets[bucketKey].count += 1;
+		const groupKey = finding.group_key || finding.category || 'unknown';
+		candidateBuckets[bucketKey].groups[groupKey] = (candidateBuckets[bucketKey].groups[groupKey] || 0) + 1;
+		candidateBuckets[bucketKey].fixtures[finding.fixture_id || 'unknown'] = (candidateBuckets[bucketKey].fixtures[finding.fixture_id || 'unknown'] || 0) + 1;
+	}
+
+	return {
+		top_diagnostic_kinds: topCounts(findings.map((finding) => finding.kind || 'static_site_fixture_diagnostic')),
+		top_fixtures: topCounts([...fixtureFindingCounts.entries()]).map((item) => ({
+			fixture_id: item.key,
+			count: item.count,
+			status: fixtureStatusById.get(item.key) || 'unknown',
+		})),
+		severity_counts: countBy(findings, (finding) => finding.severity || 'unknown'),
+		category_counts: countBy(findings, (finding) => finding.category || finding.group_key || 'unknown'),
+		top_runtime_target_selectors: topCounts([...runtimeTargetSelectors.entries()]),
+		top_core_html_sources: topCounts([...coreHtmlSources.entries()]),
+		parser_candidate_buckets: Object.fromEntries(Object.entries(candidateBuckets).map(([key, bucket]) => [key, {
+			candidate_repo: bucket.candidate_repo,
+			count: bucket.count,
+			groups: bucket.groups,
+			top_fixtures: topCounts(Object.entries(bucket.fixtures)).map((item) => ({ fixture_id: item.key, count: item.count })),
+		}])),
+	};
+}
+
+function countBy(items, keyCallback) {
+	const counts = {};
+	for (const item of items) {
+		const key = keyCallback(item);
+		counts[key] = (counts[key] || 0) + 1;
+	}
+	return counts;
+}
+
+function incrementMap(map, key) {
+	map.set(key, (map.get(key) || 0) + 1);
+}
+
+function topCounts(values, limit = 10) {
+	const entries = Array.isArray(values[0])
+		? values
+		: Object.entries(countBy(values, (value) => value || 'unknown'));
+	return entries
+		.map(([key, count]) => ({ key, count }))
+		.sort((left, right) => right.count - left.count || String(left.key).localeCompare(String(right.key)))
+		.slice(0, limit);
+}
+
+function runtimeTargetSelector(finding) {
+	if (finding.group_key !== 'runtime_target_gap' && finding.kind !== 'runtime_target_gap') {
+		return '';
+	}
+	return firstString([
+		finding.selector,
+		finding.raw?.selector,
+		finding.raw?.target,
+		finding.raw?.runtime_selector,
+		finding.raw?.runtimeSelector,
+	]);
+}
+
+function coreHtmlElementSource(finding) {
+	const text = [
+		finding.kind,
+		finding.category,
+		finding.group_key,
+		finding.reason,
+		finding.raw?.block_name,
+		finding.raw?.blockName,
+		finding.raw?.block,
+	]
+		.filter(Boolean)
+		.join(' ');
+	if (!/core\/html/i.test(text)) {
+		return '';
+	}
+	return firstString([
+		finding.raw?.source_tag,
+		finding.raw?.sourceTag,
+		finding.raw?.html_tag,
+		finding.raw?.htmlTag,
+		finding.raw?.tag_name,
+		finding.raw?.tagName,
+		finding.raw?.tag,
+		finding.raw?.element,
+		finding.raw?.source_element,
+		finding.raw?.sourceElement,
+		finding.raw?.source?.tag,
+		finding.raw?.source?.element,
+	]).toLowerCase();
+}
+
+function candidateBucketKey(candidateRepo) {
+	if (/blocks-engine/i.test(candidateRepo || '')) {
+		return 'blocks_engine';
+	}
+	if (/static-site-importer/i.test(candidateRepo || '')) {
+		return 'static_site_importer';
+	}
+	return slug(candidateRepo || 'unknown');
 }
 
 function fileType(filePath) {

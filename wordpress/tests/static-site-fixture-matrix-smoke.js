@@ -107,7 +107,7 @@ async function main() {
 					fixture_id: 'saveweb2zip-com-liquidbonsai-com',
 					status: 'failed',
 					diagnostics: [
-						{ code: 'runtime_dependency_target_missing', message: 'Missing target #canvas' },
+						{ code: 'runtime_dependency_target_missing', selector: '#canvas', message: 'Missing target #canvas' },
 					],
 				},
 				{
@@ -116,26 +116,44 @@ async function main() {
 					diagnostics: [
 						{ message: 'This block contains unexpected or invalid content' },
 						{ message: 'Dropped image asset missing.svg' },
+						{
+							kind: 'core_html_block',
+							category: 'fallback_block',
+							severity: 'warning',
+							message: 'Generated block document contains core/html for custom element.',
+							source_tag: 'fancy-card',
+							candidate_repo: 'static-site-importer',
+						},
 					],
 				},
 			],
 		});
 		assert.equal(result.schema, 'homeboy/static-site-fixture-matrix-result/v1');
 		assert.equal(result.summary.failed, 2);
-		assert.equal(result.summary.finding_count, 3);
+		assert.equal(result.summary.finding_count, 4);
 		assert.equal(result.summary.groups.runtime_target_gap, 1);
 		assert.equal(result.summary.groups.invalid_block_content, 1);
 		assert.equal(result.summary.groups.dropped_images, 1);
+		assert.equal(result.summary.groups.static_site_import_quality, 1);
+		assert.deepEqual(result.summary.severity_counts, { error: 3, warning: 1 });
+		assert.equal(result.summary.category_counts.fallback_block, 1);
+		assert.deepEqual(result.summary.top_fixtures[0], { fixture_id: '41-generative-art-studio', count: 3, status: 'failed' });
+		assert.ok(result.summary.top_diagnostic_kinds.some((item) => item.key === 'core_html_block' && item.count === 1));
+		assert.deepEqual(result.summary.top_runtime_target_selectors[0], { key: '#canvas', count: 1 });
+		assert.deepEqual(result.summary.top_core_html_sources[0], { key: 'fancy-card', count: 1 });
+		assert.equal(result.summary.parser_candidate_buckets.blocks_engine.count, 2);
+		assert.equal(result.summary.parser_candidate_buckets.static_site_importer.count, 2);
 		assert.deepEqual(result.fanout_groups.map((group) => group.key).sort(), [
 			'dropped_images',
 			'invalid_block_content',
 			'runtime_target_gap',
+			'static_site_import_quality',
 		]);
 
 		const outputDirectory = path.join(root, 'artifacts');
 		const written = writeStaticSiteFixtureMatrixArtifacts({ outputDirectory, matrix, result });
 		assert.equal(written.artifact_refs.length, 4);
-		assert.equal(readJson(path.join(outputDirectory, 'summary.json')).finding_count, 3);
+		assert.equal(readJson(path.join(outputDirectory, 'summary.json')).finding_count, 4);
 		assert.equal(readJson(path.join(outputDirectory, '41-generative-art-studio', 'artifact.json')).entry_path, 'website/index.html');
 
 		write(
