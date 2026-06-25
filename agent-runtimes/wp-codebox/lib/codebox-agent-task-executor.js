@@ -2595,9 +2595,7 @@ function missingRequiredTypedArtifactDiagnostic(request, outputs) {
   if (required.length === 0) {
     return null;
   }
-  const typedArtifacts = outputs?.typed_artifacts && typeof outputs.typed_artifacts === 'object' && !Array.isArray(outputs.typed_artifacts)
-    ? outputs.typed_artifacts
-    : {};
+  const typedArtifacts = outputTypedArtifactsMap(outputs);
   const missing = required
     .map((declaration) => ({
       name: typedArtifactNameFromDeclaration(declaration),
@@ -2616,9 +2614,7 @@ function missingRequiredTypedArtifactDiagnostic(request, outputs) {
 }
 
 function invalidRequiredTypedArtifactDiagnostic(request, outputs) {
-  const typedArtifacts = outputs?.typed_artifacts && typeof outputs.typed_artifacts === 'object' && !Array.isArray(outputs.typed_artifacts)
-    ? outputs.typed_artifacts
-    : {};
+  const typedArtifacts = outputTypedArtifactsMap(outputs);
   const invalid = requiredArtifactDeclarationsFromRequest(request)
     .map((declaration) => typedArtifactNameFromDeclaration(declaration))
     .filter((name) => name && unexecutedWorkspaceToolCallArtifact(typedArtifacts[name]));
@@ -2632,6 +2628,10 @@ function invalidRequiredTypedArtifactDiagnostic(request, outputs) {
   };
 }
 
+function outputTypedArtifactsMap(outputs) {
+  return normalizeTypedArtifacts(outputs?.typed_artifacts || outputs?.typedArtifacts || {});
+}
+
 function unexecutedWorkspaceToolCallArtifact(artifact) {
   if (!artifact || typeof artifact !== 'object') {
     return false;
@@ -2641,9 +2641,7 @@ function unexecutedWorkspaceToolCallArtifact(artifact) {
 }
 
 function outputsWithInputTypedArtifacts(outputs, request) {
-  const typedArtifacts = outputs?.typed_artifacts && typeof outputs.typed_artifacts === 'object' && !Array.isArray(outputs.typed_artifacts)
-    ? { ...outputs.typed_artifacts }
-    : {};
+  const typedArtifacts = { ...outputTypedArtifactsMap(outputs) };
   let added = false;
   for (const declaration of requiredArtifactDeclarationsFromRequest(request)) {
     const name = typedArtifactNameFromDeclaration(declaration);

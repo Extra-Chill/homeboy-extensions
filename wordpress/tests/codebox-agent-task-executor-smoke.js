@@ -1578,6 +1578,33 @@ assert.equal(runtimeExecutionBundleRequest.agent_bundle.agent_slug, 'store-idea-
 assert.equal(runtimeExecutionBundleRequest.agent_bundle.flow_slug, 'store-idea-artifact-flow');
 assert.equal(runtimeExecutionBundleRequest.agent_bundle.runtime_bundle_ability, 'runtime-package/run');
 
+const typedArtifactArrayOutcome = agentTaskOutcomeFromCodeboxResult({
+  ...request,
+  task_id: 'typed-artifact-array-task-123',
+  artifact_declarations: [{
+    artifact_id: 'concept_packet',
+    artifact_schema: 'wp-site-generator/ConceptPacket/v1',
+    required: true,
+  }],
+}, {
+  success: true,
+  status: 'completed',
+  artifact_result: {
+    schema: 'wp-codebox/artifact-result-envelope/v1',
+    status: 'created',
+    result: {
+      typed_artifacts: [{
+        name: 'concept_packet',
+        artifact_schema: 'wp-site-generator/ConceptPacket/v1',
+        payload: { title: 'Field Ledger Supply' },
+      }],
+    },
+  },
+});
+assert.equal(typedArtifactArrayOutcome.status, 'succeeded');
+assert.equal(typedArtifactArrayOutcome.outputs.typed_artifacts.concept_packet.payload.title, 'Field Ledger Supply');
+assert.equal(typedArtifactArrayOutcome.diagnostics.some((diagnostic) => diagnostic.class === 'codebox.required_typed_artifacts_missing'), false);
+
 const agentBundleRequestWithExplicitMount = codeboxTaskRequestFromAgentTaskRequest({
   ...request,
   executor: {
