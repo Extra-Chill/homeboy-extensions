@@ -1287,7 +1287,12 @@ function stableTaskInput(input) {
 
 function visibleGoalWithRuntimeInput(input) {
   const baseGoal = input.parent_request?.goal || input.parent_request?.task?.prompt || input.parent_request?.task?.goal || '';
-  const runtimeInput = runtimeTask(input)?.input?.input;
+  const configuredRuntimeTask = plainObject(input.runtime_task)
+    ? input.runtime_task
+    : (plainObject(input.parent_request?.runtime_task)
+      ? input.parent_request.runtime_task
+      : input.parent_request?.runtimeTask);
+  const runtimeInput = plainObject(configuredRuntimeTask) ? configuredRuntimeTask.input?.input : null;
   if (!plainObject(runtimeInput) || Object.keys(runtimeInput).length === 0) {
     return baseGoal;
   }
@@ -1514,7 +1519,7 @@ function agentBundleConfig(input, bundleConfig = {}) {
   const runtimeComponentPaths = input.runtime_component_paths || {};
   return Object.fromEntries(Object.entries({
     ...bundleConfig,
-    prompt: bundleConfig.prompt || input.parent_request?.task?.prompt || input.parent_request?.goal || '',
+    prompt: bundleConfig.prompt || visibleGoalWithRuntimeInput(input),
     provider: bundleConfig.provider || input.provider || '',
     model: bundleConfig.model || input.model || '',
     provider_plugin_paths: bundleConfig.provider_plugin_paths || input.provider_plugin_paths || [],
