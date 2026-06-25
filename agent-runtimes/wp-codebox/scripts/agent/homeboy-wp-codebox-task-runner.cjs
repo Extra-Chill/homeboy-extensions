@@ -1561,6 +1561,7 @@ function normalizeAgentTaskRun(input, result) {
       outputs: mergeTypedArtifactOutputs(
         plainObject(agentResult.outputs) ? agentResult.outputs : {},
         replyTypedArtifactsFromAgentResult(input, agentResult, config),
+        ...typedArtifactCandidatesFromResult(result),
       ),
     };
   }
@@ -1608,6 +1609,25 @@ function normalizeAgentTaskRun(input, result) {
     } : result.session,
     diagnostics,
   };
+}
+
+function typedArtifactCandidatesFromResult(result) {
+  return [
+    result?.typed_artifacts,
+    result?.typedArtifacts,
+    result?.outputs?.typed_artifacts,
+    result?.outputs?.typedArtifacts,
+    result?.artifact_result?.typed_artifacts,
+    result?.artifact_result?.typedArtifacts,
+    result?.artifact_result?.result?.typed_artifacts,
+    result?.artifact_result?.result?.typedArtifacts,
+    result?.artifact_result?.result?.outputs?.typed_artifacts,
+    result?.artifact_result?.result?.outputs?.typedArtifacts,
+    result?.agent_task_result?.outputs?.result?.typed_artifacts,
+    result?.agent_task_result?.outputs?.result?.typedArtifacts,
+    result?.agent_task_result?.outputs?.result?.outputs?.typed_artifacts,
+    result?.agent_task_result?.outputs?.result?.outputs?.typedArtifacts,
+  ];
 }
 
 function parseJsonObject(value) {
