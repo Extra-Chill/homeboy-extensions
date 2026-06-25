@@ -1227,10 +1227,11 @@ function extraPlugins(input) {
 function stableTaskInput(input) {
   const allowedTools = input.parent_request?.allowed_tools || input.parent_request?.task?.allowed_tools || [];
   const providerCredentialFields = providerCredentialRequestFields(input, input.parent_request, input.recipe);
+  const goal = visibleGoalWithRuntimeInput(input);
   return Object.fromEntries(Object.entries({
     schema: 'wp-codebox/task-input/v1',
     version: 1,
-    goal: input.parent_request?.goal || input.parent_request?.task?.prompt || input.parent_request?.task?.goal || '',
+    goal,
     target: input.parent_request?.target || input.parent_request?.task?.target || {},
     allowed_tools: allowedTools,
     ability_requirements: abilityRequirements(input),
@@ -1282,6 +1283,15 @@ function stableTaskInput(input) {
     runtime_task: runtimeTask(input),
     parent_request: input.parent_request,
   }).filter(([, value]) => value !== '' && value !== undefined && !(Array.isArray(value) && value.length === 0)));
+}
+
+function visibleGoalWithRuntimeInput(input) {
+  const baseGoal = input.parent_request?.goal || input.parent_request?.task?.prompt || input.parent_request?.task?.goal || '';
+  const runtimeInput = runtimeTask(input)?.input?.input;
+  if (!plainObject(runtimeInput) || Object.keys(runtimeInput).length === 0) {
+    return baseGoal;
+  }
+  return `${baseGoal}\n\nRuntime task input JSON:\n\`\`\`json\n${JSON.stringify(runtimeInput, null, 2)}\n\`\`\``;
 }
 
 function plainObject(value) {
