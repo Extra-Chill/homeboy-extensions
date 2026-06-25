@@ -11,6 +11,10 @@ const path = require('node:path');
 const FIXTURE_MATRIX_SCHEMA = 'homeboy/static-site-fixture-matrix/v1';
 const FIXTURE_MATRIX_RESULT_SCHEMA = 'homeboy/static-site-fixture-matrix-result/v1';
 const WEBSITE_ARTIFACT_SCHEMA = 'blocks-engine/php-transformer/site-artifact/v1';
+const INFORMATIONAL_CONTRACT_EVIDENCE_KINDS = new Set([
+	'document_metadata_routed',
+	'website_artifact_materialization_contract_note',
+]);
 
 const DEFAULT_ENTRYPOINT = 'website/index.html';
 const DEFAULT_FINDING_GROUPS = {
@@ -191,7 +195,10 @@ function normalizeStaticSiteFixtureMatrixResult(input = {}) {
 	const resultByFixture = new Map(results.map((result) => [result.fixture_id, result]));
 	const fixtureResults = matrix.fixtures.map((fixture) => resultByFixture.get(fixture.id) || normalizeFixtureResult({ fixture_id: fixture.id, status: 'not_run' }));
 	const findings = fixtureResults.flatMap((result) => findingsForFixtureResult(result, { matrix }));
-	const grouped = groupFindings(findings);
+	const actionableFindings = findings.filter((finding) => finding.actionability === 'actionable_quality');
+	const informationalContractEvidence = findings.filter((finding) => finding.actionability === 'informational_contract_evidence');
+	const grouped = groupFindings(actionableFindings);
+	const informationalGrouped = groupFindings(informationalContractEvidence, 'informational_contract_evidence');
 
 	return {
 		schema: FIXTURE_MATRIX_RESULT_SCHEMA,
@@ -202,11 +209,17 @@ function normalizeStaticSiteFixtureMatrixResult(input = {}) {
 			succeeded: fixtureResults.filter((result) => result.status === 'passed').length,
 			failed: fixtureResults.filter((result) => result.status === 'failed').length,
 			not_run: fixtureResults.filter((result) => result.status === 'not_run').length,
-			finding_count: findings.length,
+			finding_count: actionableFindings.length,
+			actionable_finding_count: actionableFindings.length,
+			informational_contract_evidence_count: informationalContractEvidence.length,
+			raw_finding_count: findings.length,
 			groups: Object.fromEntries(Object.entries(grouped).map(([key, items]) => [key, items.length])),
+			informational_contract_evidence_groups: Object.fromEntries(Object.entries(informationalGrouped).map(([key, items]) => [key, items.length])),
 		},
 		fixtures: fixtureResults,
 		findings,
+		actionable_findings: actionableFindings,
+		informational_contract_evidence: informationalContractEvidence,
 		fanout_groups: Object.entries(grouped).map(([group_key, items], index) => ({
 			key: group_key,
 			index,
@@ -308,6 +321,7 @@ function normalizeDiagnosticFinding(diagnostic, result, index) {
 		kind: raw.kind || raw.code || 'static_site_fixture_diagnostic',
 		category: raw.category || group.group_key,
 		group_key: group.group_key,
+		actionability: group.actionability,
 		severity: raw.severity || (result.status === 'failed' ? 'error' : 'warning'),
 		fixture_id: result.fixture_id || '',
 		path: raw.path || raw.source_path || result.fixture_path || '',
@@ -322,21 +336,37 @@ function normalizeDiagnosticFinding(diagnostic, result, index) {
 }
 
 function classifyStaticSiteFinding(input = {}) {
+	if (isInformationalContractEvidence(input)) {
+		return {
+			group_key: 'informational_contract_evidence',
+			actionability: 'informational_contract_evidence',
+			candidate_repo: 'static-site-importer',
+			repair_mode: 'contract-evidence',
+		};
+	}
+
 	const haystack = [input.kind, input.code, input.category, input.message, input.reason, input.detail]
 		.filter(Boolean)
 		.join(' ');
 
 	for (const [group_key, group] of Object.entries(DEFAULT_FINDING_GROUPS)) {
 		if (group.patterns.some((pattern) => pattern.test(haystack))) {
-			return { group_key, candidate_repo: group.candidate_repo, repair_mode: group.repair_mode };
+			return { group_key, actionability: 'actionable_quality', candidate_repo: group.candidate_repo, repair_mode: group.repair_mode };
 		}
 	}
 
 	return {
 		group_key: DEFAULT_FINDING_GROUPS[input.group_key] ? input.group_key : 'static_site_import_quality',
+		actionability: 'actionable_quality',
 		candidate_repo: input.candidate_repo || 'static-site-importer',
 		repair_mode: input.repair_mode || 'import-validation',
 	};
+}
+
+function isInformationalContractEvidence(input = {}) {
+	return [input.kind, input.code, input.category, input.group_key]
+		.filter(Boolean)
+		.some((value) => INFORMATIONAL_CONTRACT_EVIDENCE_KINDS.has(String(value)));
 }
 
 function normalizeFixture(input) {
@@ -394,7 +424,8 @@ function normalizeCollectedFixtureResult({ fixture, payloads, fixtureArtifactsDi
 		merged.message && isFailurePayload(merged) ? merged.message : '',
 		codeboxError && payloads.length === 0 ? codeboxError.message || String(codeboxError) : '',
 	]);
-	const success = inferFixtureSuccess(merged, diagnostics, error, payloads.length);
+	const actionableDiagnostics = diagnostics.filter((diagnostic) => !isInformationalContractEvidence(diagnostic));
+	const success = inferFixtureSuccess(merged, actionableDiagnostics, error, payloads.length);
 	const status = fixtureStatus(payloads.length, error, success);
 
 	return normalizeFixtureResult({
@@ -631,9 +662,9 @@ function artifactPathForFixture(fixture, artifactsDirectory) {
 	return path.join(artifactsDirectory, fixture.id, 'artifact.json');
 }
 
-function groupFindings(findings) {
+function groupFindings(findings, defaultGroup = 'static_site_import_quality') {
 	return findings.reduce((groups, finding) => {
-		const key = finding.group_key || 'static_site_import_quality';
+		const key = finding.group_key || defaultGroup;
 		groups[key] = groups[key] || [];
 		groups[key].push(finding);
 		return groups;

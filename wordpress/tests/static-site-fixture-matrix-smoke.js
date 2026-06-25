@@ -123,6 +123,9 @@ async function main() {
 		assert.equal(result.schema, 'homeboy/static-site-fixture-matrix-result/v1');
 		assert.equal(result.summary.failed, 2);
 		assert.equal(result.summary.finding_count, 3);
+		assert.equal(result.summary.actionable_finding_count, 3);
+		assert.equal(result.summary.informational_contract_evidence_count, 0);
+		assert.equal(result.summary.raw_finding_count, 3);
 		assert.equal(result.summary.groups.runtime_target_gap, 1);
 		assert.equal(result.summary.groups.invalid_block_content, 1);
 		assert.equal(result.summary.groups.dropped_images, 1);
@@ -137,6 +140,45 @@ async function main() {
 		assert.equal(written.artifact_refs.length, 4);
 		assert.equal(readJson(path.join(outputDirectory, 'summary.json')).finding_count, 3);
 		assert.equal(readJson(path.join(outputDirectory, '41-generative-art-studio', 'artifact.json')).entry_path, 'website/index.html');
+
+		const contractEvidenceResult = normalizeStaticSiteFixtureMatrixResult({
+			matrix,
+			results: [
+				{
+					fixture_id: 'saveweb2zip-com-liquidbonsai-com',
+					status: 'passed',
+					diagnostics: [
+						{ code: 'website_artifact_materialization_contract_note', message: 'Website artifact materialized for importer contract.' },
+						{ code: 'document_metadata_routed', message: 'Document metadata routed to parser.' },
+					],
+				},
+				{
+					fixture_id: '41-generative-art-studio',
+					status: 'failed',
+					diagnostics: [
+						{ code: 'website_artifact_materialization_contract_note', message: 'Website artifact materialized for importer contract.' },
+						{ message: 'Dropped image asset missing.svg' },
+					],
+				},
+			],
+		});
+		assert.equal(contractEvidenceResult.summary.finding_count, 1);
+		assert.equal(contractEvidenceResult.summary.actionable_finding_count, 1);
+		assert.equal(contractEvidenceResult.summary.informational_contract_evidence_count, 3);
+		assert.equal(contractEvidenceResult.summary.raw_finding_count, 4);
+		assert.equal(contractEvidenceResult.summary.groups.dropped_images, 1);
+		assert.equal(contractEvidenceResult.summary.informational_contract_evidence_groups.informational_contract_evidence, 3);
+		assert.equal(contractEvidenceResult.findings.length, 4);
+		assert.equal(contractEvidenceResult.actionable_findings.length, 1);
+		assert.equal(contractEvidenceResult.informational_contract_evidence.length, 3);
+		assert.deepEqual(contractEvidenceResult.fanout_groups.map((group) => group.key), ['dropped_images']);
+		const contractEvidenceDirectory = path.join(root, 'contract-evidence-artifacts');
+		fs.mkdirSync(contractEvidenceDirectory, { recursive: true });
+		writeStaticSiteFixtureMatrixResultArtifacts({ outputDirectory: contractEvidenceDirectory, matrix, result: contractEvidenceResult });
+		assert.equal(readJson(path.join(contractEvidenceDirectory, 'summary.json')).finding_count, 1);
+		assert.equal(readJson(path.join(contractEvidenceDirectory, 'summary.json')).informational_contract_evidence_count, 3);
+		assert.equal(readJson(path.join(contractEvidenceDirectory, 'finding-packets.json')).length, 4);
+		assert.ok(readJson(path.join(contractEvidenceDirectory, 'finding-packets.json')).some((finding) => finding.kind === 'document_metadata_routed'));
 
 		write(
 			path.join(outputDirectory, '41-generative-art-studio', 'validation-result.json'),
@@ -199,6 +241,32 @@ async function main() {
 		assert.equal(studioResult.import_report.report.quality.fallback_count, 1);
 		assert.equal(studioResult.missing_assets[0].path, 'missing.svg');
 		assert.ok(studioResult.artifact_refs.some((ref) => ref.path.endsWith('validation-result.json')));
+
+		const informationalOnlyDirectory = path.join(root, 'informational-only-artifacts');
+		const informationalOnlyMatrix = createStaticSiteFixtureMatrix({
+			id: 'informational-only-run',
+			fixtures: matrix.fixtures,
+		});
+		writeStaticSiteFixtureMatrixArtifacts({ outputDirectory: informationalOnlyDirectory, matrix: informationalOnlyMatrix });
+		write(
+			path.join(informationalOnlyDirectory, 'saveweb2zip-com-liquidbonsai-com', 'validation-result.json'),
+			JSON.stringify({
+				fixture_id: 'saveweb2zip-com-liquidbonsai-com',
+				success: true,
+				diagnostics: [
+					{ code: 'website_artifact_materialization_contract_note', message: 'Website artifact materialized for importer contract.' },
+					{ code: 'document_metadata_routed', message: 'Document metadata routed to parser.' },
+				],
+			})
+		);
+		const informationalOnly = collectStaticSiteFixtureMatrixRunResults({
+			matrix: informationalOnlyMatrix,
+			outputDirectory: informationalOnlyDirectory,
+		});
+		assert.equal(informationalOnly.fixtures.find((fixture) => fixture.fixture_id === 'saveweb2zip-com-liquidbonsai-com').status, 'passed');
+		assert.equal(informationalOnly.summary.finding_count, 1);
+		assert.equal(informationalOnly.summary.informational_contract_evidence_count, 2);
+		assert.equal(informationalOnly.summary.raw_finding_count, 3);
 
 		const partialDirectory = path.join(root, 'partial-artifacts');
 		const partialMatrix = createStaticSiteFixtureMatrix({
