@@ -809,6 +809,11 @@ function providerPluginPathEntries(value) {
 }
 
 function abilityRuntimeTaskFromAgentTaskRequest(request, config, inputs) {
+  const runtimeExecutionTask = runtimeExecutionTaskFromAgentTaskRequest(request, config, inputs);
+  if (runtimeExecutionTask) {
+    return runtimeExecutionTask;
+  }
+
   const genericAbilityTask = genericAbilityRuntimeTask(request, config, inputs);
   if (genericAbilityTask) {
     return genericAbilityTask;
@@ -824,6 +829,37 @@ function abilityRuntimeTaskFromAgentTaskRequest(request, config, inputs) {
   }
   const input = runtimeTaskInputFromAgentTaskRequest(request, config, inputs);
   return { ability, input };
+}
+
+function runtimeExecutionTaskFromAgentTaskRequest(request, config, inputs) {
+  const runtimeExecution = runtimeExecutionDescriptorFromAgentTaskRequest(config, inputs);
+  if (!runtimeExecution || runtimeExecution.kind !== 'bundle') {
+    return null;
+  }
+
+  const ability = firstValue(runtimeExecution.ability, inputs.ability, config.ability, WP_CODEBOX_RUN_RUNTIME_PACKAGE_ABILITY);
+  const normalizedAbility = normalizeRuntimeTaskAbilityForCodebox(ability);
+  const abilityNormalization = runtimeTaskAbilityNormalization({ requestedAbility: ability, normalizedAbility });
+  const input = firstObject(runtimeExecution.input) || {};
+
+  return {
+    ability: normalizedAbility,
+    ...(abilityNormalization ? { ability_normalization: abilityNormalization } : {}),
+    input: normalizedAbility === WP_CODEBOX_RUN_RUNTIME_PACKAGE_ABILITY
+      ? runtimePackageTaskInputForCodebox(agentBundleRuntimeTaskInputWithArtifactOutputs(input, request, config, inputs))
+      : input,
+  };
+}
+
+function runtimeExecutionDescriptorFromAgentTaskRequest(config = {}, inputs = {}) {
+  return firstObject(
+    inputs.runtime_execution,
+    inputs.runtimeExecution,
+    inputs.execution,
+    config.runtime_execution,
+    config.runtimeExecution,
+    config.execution,
+  );
 }
 
 function genericAbilityRuntimeTask(request, config, inputs) {
@@ -2090,14 +2126,17 @@ function sanitizeRecipeName(value) {
 }
 
 function agentBundleConfigFromAgentTaskRequest(request, config, inputs) {
+  const runtimeExecutionBundle = agentBundleConfigFromRuntimeExecution(config, inputs);
   const explicitBundleSources = [
     inputs.agent_bundle,
     inputs.agentBundle,
     config.agent_bundle,
     config.agentBundle,
+    runtimeExecutionBundle,
   ].filter((value) => value && typeof value === 'object');
   const requestedBundle = config.execution_kind === 'agent_bundle'
     || inputs.execution_kind === 'agent_bundle'
+    || runtimeExecutionBundle !== null
     || explicitBundleSources.length > 0
     || AGENT_BUNDLE_TRIGGER_FIELDS.some((field) => inputs[field] !== undefined || config[field] !== undefined);
 
@@ -2126,6 +2165,23 @@ function agentBundleConfigFromAgentTaskRequest(request, config, inputs) {
     bundleConfig.provider_plugin_paths = config.provider_plugin_paths;
   }
   return Object.fromEntries(Object.entries(bundleConfig).filter(([, value]) => value !== undefined && value !== ''));
+}
+
+function agentBundleConfigFromRuntimeExecution(config = {}, inputs = {}) {
+  const runtimeExecution = runtimeExecutionDescriptorFromAgentTaskRequest(config, inputs);
+  if (!runtimeExecution || runtimeExecution.kind !== 'bundle') {
+    return null;
+  }
+
+  const executionInput = firstObject(runtimeExecution.input) || {};
+  const packageDescriptor = firstObject(executionInput.package, executionInput.runtime_package, executionInput.runtimePackage) || {};
+  const workflow = firstObject(executionInput.workflow) || {};
+  return Object.fromEntries(Object.entries({
+    bundle_path: firstValue(packageDescriptor.source, packageDescriptor.path, packageDescriptor.id),
+    agent_slug: firstValue(packageDescriptor.slug, packageDescriptor.name, packageDescriptor.id),
+    flow_slug: firstValue(workflow.id, workflow.slug, workflow.name),
+    runtime_bundle_ability: runtimeExecution.ability,
+  }).filter(([, value]) => value !== undefined && value !== ''));
 }
 
 function normalizeStatus(result, exitStatus = 0) {

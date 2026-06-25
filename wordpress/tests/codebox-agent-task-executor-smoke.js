@@ -1526,6 +1526,45 @@ assert.deepEqual(agentBundleRequest.mounts, [{
   metadata: { kind: 'agent-bundle' },
 }]);
 
+const runtimeExecutionBundleRequest = codeboxTaskRequestFromAgentTaskRequest({
+  ...request,
+  task_id: 'runtime-execution-bundle-task-123',
+  executor: {
+    backend: 'codebox',
+    model: 'gpt-5.5',
+    config: { provider: 'codex' },
+  },
+  inputs: {
+    runtime_execution: {
+      kind: 'bundle',
+      ability: 'runtime-package/run',
+      input: {
+        package: {
+          source: 'bundles/store-idea-agent',
+          slug: 'store-idea-agent',
+        },
+        workflow: {
+          id: 'store-idea-artifact-flow',
+        },
+        input: {
+          wait_for_completion: true,
+          site_kind: 'store',
+        },
+      },
+    },
+  },
+});
+assert.equal(runtimeExecutionBundleRequest.runtime_task.ability, 'wp-codebox/run-runtime-package');
+assert.equal(runtimeExecutionBundleRequest.runtime_task.input.runtime_package, 'store-idea-agent');
+assert.equal(runtimeExecutionBundleRequest.runtime_task.input.agent, 'store-idea-agent');
+assert.equal(runtimeExecutionBundleRequest.runtime_task.input.workflow.id, 'store-idea-artifact-flow');
+assert.equal(runtimeExecutionBundleRequest.runtime_task.input.input.wait_for_completion, true);
+assert.equal(runtimeExecutionBundleRequest.runtime_task.input.input.site_kind, 'store');
+assert.equal(runtimeExecutionBundleRequest.agent_bundle.bundle_path, 'bundles/store-idea-agent');
+assert.equal(runtimeExecutionBundleRequest.agent_bundle.agent_slug, 'store-idea-agent');
+assert.equal(runtimeExecutionBundleRequest.agent_bundle.flow_slug, 'store-idea-artifact-flow');
+assert.equal(runtimeExecutionBundleRequest.agent_bundle.runtime_bundle_ability, 'runtime-package/run');
+
 const agentBundleRequestWithExplicitMount = codeboxTaskRequestFromAgentTaskRequest({
   ...request,
   executor: {
