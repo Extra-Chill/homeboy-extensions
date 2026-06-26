@@ -63,6 +63,12 @@ if [ "$settings_json" != "{}" ]; then
     WP_CODEBOX_SOURCE_ROOT=$(printf '%s' "$settings_json" | jq -r '.wp_codebox_source_root // empty' 2>/dev/null || true)
     WP_CODEBOX_SOURCE_SUBPATH=$(printf '%s' "$settings_json" | jq -r '.wp_codebox_source_subpath // empty' 2>/dev/null || true)
 fi
+if [ -z "$WP_CODEBOX_SOURCE_ROOT" ] && [ -n "${HOMEBOY_SETTINGS_WP_CODEBOX_SOURCE_ROOT:-}" ]; then
+    WP_CODEBOX_SOURCE_ROOT="$HOMEBOY_SETTINGS_WP_CODEBOX_SOURCE_ROOT"
+fi
+if [ -z "$WP_CODEBOX_SOURCE_SUBPATH" ] && [ -n "${HOMEBOY_SETTINGS_WP_CODEBOX_SOURCE_SUBPATH:-}" ]; then
+    WP_CODEBOX_SOURCE_SUBPATH="$HOMEBOY_SETTINGS_WP_CODEBOX_SOURCE_SUBPATH"
+fi
 if [ -n "$WP_CODEBOX_SOURCE_ROOT" ]; then
     if [[ "$WP_CODEBOX_SOURCE_ROOT" != /* ]] || [ ! -d "$WP_CODEBOX_SOURCE_ROOT" ]; then
         echo "Error: wp_codebox_source_root must be an absolute existing directory." >&2
