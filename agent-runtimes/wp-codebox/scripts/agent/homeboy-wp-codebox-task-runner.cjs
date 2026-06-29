@@ -40,6 +40,40 @@ const {
 } = require('../../lib/wp-codebox-adapter-descriptor');
 
 
+// Diagnostics mode. When enabled, the wp-codebox CLI subprocess stderr is
+// streamed (fd-inherited) straight to this process's stderr in real time
+// instead of being buffered into structured payloads, so a hard crash or
+// timeout inside the sandbox still surfaces its raw output in the job log.
+// Raw stdout/stderr files are written for every run regardless of this flag.
+function runtimeAgentDebugEnabled(env = process.env) {
+  return ['1', 'true', 'yes', 'on'].includes(String(env.HOMEBOY_RUNTIME_AGENT_DEBUG || '').trim().toLowerCase());
+}
+
+function safeRuntimeFileSegment(value) {
+  return String(value || 'wp-codebox-task').replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'wp-codebox-task';
+}
+
+// Persist the wp-codebox CLI's raw stdout/stderr to the runtime-agent run
+// directory so they are always retrievable as CI artifacts, independent of
+// whether a structured outcome was produced. In debug mode stderr is inherited
+// (live in the log) so result.stderr is null and only stdout is written here.
+function writeRuntimeRawOutputFiles(result, request) {
+  const runDir = process.env.HOMEBOY_RUNTIME_AGENT_RUN_DIR || '';
+  if (!runDir) {
+    return;
+  }
+  try {
+    fs.mkdirSync(runDir, { recursive: true });
+    const taskId = safeRuntimeFileSegment(request?.orchestrator?.agent_task_id || request?.task_id);
+    fs.writeFileSync(path.join(runDir, `${taskId}-wp-codebox-runtime-stdout.txt`), String(result.stdout || ''));
+    if (result.stderr != null) {
+      fs.writeFileSync(path.join(runDir, `${taskId}-wp-codebox-runtime-stderr.txt`), String(result.stderr || ''));
+    }
+  } catch (error) {
+    process.stderr.write(`Failed to persist wp-codebox raw runtime output: ${error && error.message ? error.message : String(error)}\n`);
+  }
+}
+
 function argValue(name) {
   const index = process.argv.indexOf(name);
   return index >= 0 ? process.argv[index + 1] : '';
@@ -1352,52 +1386,6 @@ function mergeTypedArtifactOutputs(outputs, ...candidates) {
   };
 }
 
-function isTranscriptArtifactDeclaration(declaration) {
-  const name = artifactDeclarationName(declaration);
-  const type = declaration?.type || declaration?.kind || declaration?.artifact_type || declaration?.artifactType || '';
-  const schema = declaration?.artifact_schema || declaration?.artifactSchema || declaration?.schema || '';
-  return /transcript|conversation|messages/i.test(`${name} ${type} ${schema}`);
-}
-
-function replyTextFromAgentResult(agentResult) {
-  const candidates = [
-    agentResult?.result?.reply,
-    agentResult?.reply,
-    agentResult?.metadata?.result?.reply,
-    agentResult?.outputs?.reply,
-    agentResult?.outputs?.text,
-    agentResult?.outputs?.content,
-  ];
-  return candidates.find((candidate) => typeof candidate === 'string' && candidate.trim() !== '') || '';
-}
-
-function replyTypedArtifactsFromAgentResult(input, agentResult, config = {}) {
-  const reply = replyTextFromAgentResult(agentResult);
-  if (!reply) {
-    return {};
-  }
-  return Object.fromEntries(requiredArtifactDeclarations(input, config)
-    .filter((declaration) => !isTranscriptArtifactDeclaration(declaration))
-    .map((declaration) => {
-      const name = artifactDeclarationName(declaration);
-      if (!name) {
-        return null;
-      }
-      return [name, normalizeTypedArtifactEntry(name, {
-        name,
-        type: declaration.type || declaration.kind || declaration.artifact_type || declaration.artifactType || name,
-        artifact_schema: declaration.artifact_schema || declaration.artifactSchema || declaration.schema,
-        payload: {
-          content: reply,
-          format: 'markdown',
-        },
-        provenance: { source: 'agent_reply' },
-      })];
-    })
-    .filter(Boolean)
-    .filter(([, artifact]) => artifact));
-}
-
 function sandboxToolPolicy(input, allowedTools) {
   const explicit = input.parent_request?.sandbox_tool_policy
     || input.parent_request?.sandboxToolPolicy
@@ -1567,10 +1555,7 @@ function normalizeAgentTaskRun(input, result) {
   if (plainObject(agentResult)) {
     agentResult = {
       ...agentResult,
-      outputs: mergeTypedArtifactOutputs(
-        plainObject(agentResult.outputs) ? agentResult.outputs : {},
-        replyTypedArtifactsFromAgentResult(input, agentResult, config),
-      ),
+      outputs: plainObject(agentResult.outputs) ? agentResult.outputs : {},
     };
   }
   const bundleValidation = isAgentBundle(input) ? validateAgentRuntimeWorkload(agentResult, config) : validateRuntimeTaskWorkload(agentResult, config);
@@ -1593,22 +1578,13 @@ function normalizeAgentTaskRun(input, result) {
           outputs: plainObject(agentResult.outputs) ? agentResult.outputs : result.outputs,
         },
       }
-    : {
-        schema: 'wp-codebox/artifact-result-envelope/v1',
-        status: success ? 'created' : 'failed',
-        success,
-        result: {
-          status: success ? 'succeeded' : 'failed',
-          success,
-          outputs: plainObject(agentResult.outputs) ? agentResult.outputs : (plainObject(result.outputs) ? result.outputs : {}),
-        },
-      };
+    : undefined;
 
   return {
     ...result,
     success,
     status: success ? 'completed' : result.status,
-    artifact_result: artifactResult,
+    ...(artifactResult ? { artifact_result: artifactResult } : {}),
     outputs: plainObject(agentResult.outputs) ? agentResult.outputs : result.outputs,
     summary: success ? 'WP Codebox agent task succeeded.' : (artifactValidation?.message || bundleValidation?.message || runtimeFailure?.message || result.summary || 'WP Codebox agent task failed.'),
     session: result.session ? {
@@ -2187,6 +2163,7 @@ function runWpCodeboxParentTask(request, envOverrides = {}) {
     console.error(JSON.stringify({ command: resolved.command, args: resolved.args, input }, null, 2));
   }
 
+  const debug = runtimeAgentDebugEnabled();
   let result;
   try {
     result = spawnSync(resolved.command, resolved.args, {
@@ -2197,9 +2174,19 @@ function runWpCodeboxParentTask(request, envOverrides = {}) {
       },
       maxBuffer: 1024 * 1024 * 20,
       timeout: timeoutMs,
+      // In debug mode inherit the CLI's stderr so it streams live to the job
+      // log (crash/timeout-proof); stdout stays piped to capture the JSON
+      // outcome. Stdin stays an empty pipe as before (CLI reads --input-file).
+      ...(debug ? { stdio: ['pipe', 'pipe', 'inherit'] } : {}),
     });
   } finally {
     stopHomeboyRuntimeToolBridge(bridgeServer);
+  }
+  writeRuntimeRawOutputFiles(result, request);
+  if (debug && result.stdout) {
+    // stdout is the JSON return channel for this process, so the captured
+    // CLI stdout is not otherwise visible; mirror it to stderr for the log.
+    process.stderr.write(`[wp-codebox-cli stdout]\n${String(result.stdout)}\n`);
   }
   const shouldPreserveEvidence = Boolean(result.error) || result.status !== 0;
   const failureEvidence = shouldPreserveEvidence ? preserveWpCodeboxFailureEvidence({

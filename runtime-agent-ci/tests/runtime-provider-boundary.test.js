@@ -16,7 +16,7 @@ assert.equal(
     runtime_profile: 'example-runtime-ci',
     runtime_profiles: { 'example-runtime-ci': { id: 'example-runtime-ci', runtime_task_ability: 'example/run-task' } },
   }).executor.backend,
-  'codebox'
+  'wp-codebox'
 );
 
 assert.equal(runtimeSetupAdapter({ manifest: { ci_materialization: {} } }), null);

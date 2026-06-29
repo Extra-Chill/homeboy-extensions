@@ -36,6 +36,19 @@
       "export": "scenarioResultsFromOutcome"
     }
   },
+  "component_path_defaults": {
+    "discovery": {
+      "agents_api": [
+        { "env": ["WP_CODEBOX_AGENTS_API_PATH", "HOMEBOY_WP_CODEBOX_AGENTS_API_PATH"] },
+        { "settings": ["wp_codebox_agents_api_path", "agents_api_path"] },
+        { "active_plugin": "agents-api" },
+        { "sibling": "agents-api" }
+      ]
+    },
+    "contract_slug_map": {
+      "agents-api": "agents_api"
+    }
+  },
   "workflow_input_projection": {
     "adapter": {
       "module": "agent-runtimes/wp-codebox/lib/runtime-workflow-input-projection.js",
@@ -187,7 +200,7 @@
       "schema": "homeboy/agent-task-executor-provider/v1",
       "id": "wordpress.codebox-agent-task-executor",
       "label": "WP Codebox agent task executor",
-      "backend": "codebox",
+      "backend": "wp-codebox",
       "runtime_id": "wp-codebox",
       "command": "node {{runtime_path}}/scripts/agent/homeboy-codebox-agent-task-executor.cjs",
       "invocation": {
@@ -195,6 +208,12 @@
         "argv": [
           "node",
           "{{runtime_path}}/scripts/agent/homeboy-codebox-agent-task-executor.cjs"
+        ],
+        "env_allowlist": [
+          "HOMEBOY_WP_CODEBOX_BIN",
+          "WP_CODEBOX_BIN",
+          "HOMEBOY_WP_CODEBOX_CORE_MODULE",
+          "WP_CODEBOX_CORE_MODULE"
         ],
         "display": "node {{runtime_path}}/scripts/agent/homeboy-codebox-agent-task-executor.cjs"
       },
@@ -357,7 +376,7 @@
       "provider_metadata": {
         "schema": "homeboy/agent-task-provider-metadata/v1",
         "selection": {
-          "backend": "codebox",
+          "backend": "wp-codebox",
           "runtime_id": "wp-codebox",
           "provider_id_paths": [
             "executor.config.provider",
@@ -369,13 +388,13 @@
             "executor.config.model",
             "model"
           ],
-          "guidance": "Select the generic executor backend with executor.backend=codebox, then select the WordPress AI provider id with executor.config.provider and the provider model with executor.config.model or executor.model. Homeboy forwards provider ids and models to the WP Codebox runtime contract."
+          "guidance": "Select the WP Codebox executor backend with executor.backend=wp-codebox, then select the WordPress AI provider id with executor.config.provider and the provider model with executor.config.model or executor.model. Homeboy forwards provider ids and models to the WP Codebox runtime contract."
         },
         "providers": [
           {
             "id": "openai",
             "label": "OpenAI API",
-            "backend": "codebox",
+            "backend": "wp-codebox",
             "runtime_id": "wp-codebox",
             "default_model": "",
             "model_required": false,
@@ -385,7 +404,7 @@
           {
             "id": "codex",
             "label": "Codex",
-            "backend": "codebox",
+            "backend": "wp-codebox",
             "runtime_id": "wp-codebox",
             "default_model": "",
             "model_required": false,
@@ -395,7 +414,7 @@
           {
             "id": "claude-code",
             "label": "Claude Code",
-            "backend": "codebox",
+            "backend": "wp-codebox",
             "runtime_id": "wp-codebox",
             "default_model": "",
             "model_required": false,

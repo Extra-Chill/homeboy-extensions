@@ -57,6 +57,13 @@ RESOLVE_CONTEXT_HELPER="${HOMEBOY_RUNTIME_RESOLVE_CONTEXT:?HOMEBOY_RUNTIME_RESOL
 source "$RESOLVE_CONTEXT_HELPER"
 homeboy_resolve_context --component-alias PLUGIN_PATH
 
+# Generic local-workspace-dependency override helper. The mechanism (build a
+# local sibling package, pack it, install the built tarball so peer deps dedupe)
+# is generic Node.js behavior and lives in the nodejs extension, which is
+# installed alongside this one. Resolve via an explicit runtime override first,
+# then the sibling extension path.
+LOCAL_WORKSPACE_DEPS_HELPER="${HOMEBOY_RUNTIME_LOCAL_WORKSPACE_DEPS:-${EXTENSION_PATH}/../nodejs/scripts/lib/local-workspace-deps.sh}"
+
 # Output functions
 print_status() {
     echo -e "${BLUE}[BUILD]${NC} $1"
@@ -335,11 +342,33 @@ remove_stale_dir() {
 }
 
 # Install production dependencies
+#
+# Always installs from a clean slate. A dev checkout (or a copy of one carried
+# into a temp build dir) can hold a vendor/ tree whose packages were installed
+# from source/git — this happens for `minimum-stability: dev` components, where
+# composer installs some dependencies (e.g. symfony/deprecation-contracts) from
+# git rather than dist. When that tree is carried into the build with its
+# per-package .git directories stripped (the build copy intentionally drops
+# .git), composer's GitDownloader aborts trying to reconcile the now-.git-less
+# source package:
+#
+#   In GitDownloader.php line 155:
+#     The .git directory is missing from .../vendor/symfony/deprecation-contracts
+#
+# and no artifact is produced → the release fails. --prefer-dist alone does not
+# fix this: the problem is the pre-existing source vendor/, not the install
+# flags. Removing vendor/ before installing forces a fresh, dist-based install
+# that is independent of the dev checkout's install state. Components without
+# composer deps are unaffected (the whole block is skipped when no composer.json
+# exists, and a missing vendor/ is a harmless no-op to remove).
 install_production_deps() {
     print_status "Installing production dependencies..."
 
     if [ -f "composer.json" ]; then
-        composer install --no-dev --optimize-autoloader --no-interaction --quiet 2>&1
+        # Drop any carried-in vendor/ so the install can never trip over a
+        # source/git package whose .git was stripped during the build copy.
+        rm -rf vendor
+        composer install --no-dev --optimize-autoloader --prefer-dist --no-interaction --quiet 2>&1
         print_success "Production dependencies installed"
     else
         print_warning "No composer.json found, skipping Composer dependencies"
@@ -407,6 +436,43 @@ install_frontend_dependencies() {
     fi
 }
 
+# Apply declared local-workspace-dependency overrides for the current directory.
+#
+# No-op unless `local_workspace_dependencies` is declared in HOMEBOY_SETTINGS_JSON.
+# When declared, the generic nodejs helper builds each local dependency from
+# source, packs it, and installs the built tarball into this consumer so peer
+# deps (React) dedupe to the consumer's single copy — the fix for the
+# "Invalid hook call" blank-app failure caused by `file:` symlink dupes.
+apply_local_workspace_overrides() {
+    case "${HOMEBOY_SETTINGS_JSON:-}" in
+        ""|"{}") return 0 ;;
+    esac
+
+    # Cheap pre-check: only engage the helper when overrides are actually
+    # declared. The helper does full validation; this just avoids requiring it
+    # for the common case where nothing is declared.
+    if ! printf '%s' "$HOMEBOY_SETTINGS_JSON" | grep -q 'local_workspace_dependencies'; then
+        return 0
+    fi
+
+    if [ ! -f "$LOCAL_WORKSPACE_DEPS_HELPER" ]; then
+        print_error "local_workspace_dependencies declared but helper not found: $LOCAL_WORKSPACE_DEPS_HELPER"
+        return 1
+    fi
+
+    # Match the consumer install's peer-dep handling for the tarball install.
+    local npm_flags=()
+    while IFS= read -r flag; do
+        npm_flags+=("$flag")
+    done < <(npm_install_flags)
+
+    print_status "Applying local workspace dependency overrides..."
+    # shellcheck source=/dev/null
+    HOMEBOY_LOCAL_WORKSPACE_DEP_NPM_FLAGS="${npm_flags[*]}" \
+        bash -c 'source "$1"; homeboy_apply_local_workspace_dependencies "$2"' \
+        _ "$LOCAL_WORKSPACE_DEPS_HELPER" "$(pwd)"
+}
+
 # Build frontend assets (Gutenberg blocks via @wordpress/scripts, Vite, or generic npm build)
 #
 # Frontend builds are non-fatal for PHP-primary plugins. If node/npm is
@@ -453,6 +519,18 @@ build_frontend_assets() {
 
     # Ensure dependencies exist and expected local build binary is present.
     install_frontend_dependencies "$build_tool" ""
+
+    # Apply any declared local-workspace-dependency overrides after the
+    # consumer's own deps are installed (so peer deps exist to dedupe against)
+    # and before the consumer build runs (so the built artifact is resolvable).
+    #
+    # A declared override is explicit intent that the dependency matters, so a
+    # failure here is fatal rather than silently shipping a bundle missing the
+    # dependency — even for otherwise PHP-primary plugins.
+    if ! apply_local_workspace_overrides; then
+        print_error "Local workspace dependency override failed"
+        exit 1
+    fi
 
     # Run the build command
     print_status "Building frontend assets..."

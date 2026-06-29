@@ -46,7 +46,7 @@ assert.deepEqual(runtime.buildCommands, [{ command: 'npm', args: ['run', 'build'
 assert.equal(runtime.paths.runtime_bin, 'wp-codebox');
 assert.equal(runtime.paths.runtime_component, '');
 assert.equal(runtime.executor.id, 'wordpress.codebox-agent-task-executor');
-assert.equal(runtime.executor.backend, 'codebox');
+assert.equal(runtime.executor.backend, 'wp-codebox');
 assert.equal(runtime.executor.path, path.join(rootDir, 'agent-runtimes/wp-codebox/scripts/agent/homeboy-codebox-agent-task-executor.cjs'));
 assert.equal(runtime.executor.capabilities.includes('agent_bundle_execution'), true);
 assert.deepEqual(runtime.executor.runtime_execution_contracts.bundle, {
@@ -55,7 +55,11 @@ assert.deepEqual(runtime.executor.runtime_execution_contracts.bundle, {
 });
 
 assert.equal(normalizeRuntimeId('codebox'), 'codebox');
-assert.throws(() => resolveRuntimeProvider('codebox', { repoRoot: rootDir, workspace }), /Unsupported agent_runtime: codebox/);
+assert.throws(
+	() => resolveRuntimeProvider('codebox', { repoRoot: rootDir, workspace }),
+	/Unsupported agent_runtime: codebox/,
+	'legacy codebox runtime id is not accepted'
+);
 
 const envRuntime = resolveRuntimeProvider('wp-codebox', {
 	repoRoot: rootDir,

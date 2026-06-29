@@ -2,6 +2,46 @@
 
 All notable changes to the **wordpress** extension will be documented in this file.
 
+## [3.21.4] - 2026-06-28
+
+### Fixed
+- clean vendor/ before composer install in WP build
+
+## [3.21.3] - 2026-06-28
+
+### Changed
+- Gate destructive WordPress fuzz runs on Codebox artifacts
+
+## [3.21.2] - 2026-06-28
+
+### Fixed
+- canonicalize WP Codebox runtime dispatch
+
+## [3.21.1] - 2026-06-28
+
+### Fixed
+- require explicit Codebox runtime overlays
+
+## [3.21.0] - 2026-06-28
+
+### Added
+- orchestrate chaos fuzz generation
+- add aggressive isolated WordPress fuzz planning
+
+### Fixed
+- emit executable Codebox fuzz actions
+- align aggressive fuzz readiness
+
+## [3.20.1] - 2026-06-28
+
+### Fixed
+- honor AbortSignal/timeoutMs in wp-codebox-recipe-helper to kill+reap wedged recipe-run
+
+## [3.20.0] - 2026-06-28
+
+### Added
+- declared local-workspace dependency overrides with peer dedup
+
 ## [3.19.30] - 2026-06-28
 
 ### Changed

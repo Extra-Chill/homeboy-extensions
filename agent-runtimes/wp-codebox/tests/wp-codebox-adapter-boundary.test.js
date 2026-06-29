@@ -8,6 +8,7 @@ process.env.HOMEBOY_WP_CODEBOX_CORE_MODULE ||= path.join(__dirname, '..', '..', 
 
 const {
 	runtimeDescriptorSupportsCommand,
+	wpCodeboxBin,
 	wpCodeboxBinaryDiagnostic,
 	wpCodeboxProviderPluginPathsFromEnv,
 	wpCodeboxResolveCommand,
@@ -24,6 +25,15 @@ const descriptorSource = fs.readFileSync(path.join(runtimeRoot, 'lib', 'wp-codeb
 assert.match(descriptorSource, /runtime', 'descriptor', '--json/);
 assert.doesNotMatch(descriptorSource, /run-agent-task', '--help/);
 
+const manifest = JSON.parse(fs.readFileSync(path.join(runtimeRoot, 'wp-codebox.json'), 'utf8'));
+assert.deepEqual(manifest.component_path_defaults.contract_slug_map['agents-api'], 'agents_api');
+assert.ok(manifest.component_path_defaults.discovery.agents_api.some((entry) => Array.isArray(entry.env) && entry.env.includes('HOMEBOY_WP_CODEBOX_AGENTS_API_PATH')));
+
+const executorSource = fs.readFileSync(path.join(runtimeRoot, 'lib', 'codebox-agent-task-executor.js'), 'utf8');
+assert.match(executorSource, /function defaultRuntimeRequirements\(\{ agentsApiPath = '' \} = \{\}\)/);
+assert.match(executorSource, /slug: 'agents-api'/);
+assert.match(executorSource, /pluginFile: 'agents-api\/agents-api\.php'/);
+
 assert.deepEqual(wpCodeboxProviderPluginPathsFromEnv({
   WP_CODEBOX_PROVIDER_PLUGIN_PATHS: JSON.stringify(['/tmp/provider-a', '/tmp/provider-b']),
 }), ['/tmp/provider-a', '/tmp/provider-b']);
@@ -35,6 +45,10 @@ assert.deepEqual(wpCodeboxProviderPluginPathsFromEnv({
 assert.equal(wpCodeboxBinaryDiagnostic('').class, 'wp-codebox.config.missing_binary');
 assert.equal(wpCodeboxBinaryDiagnostic('wp-codebox'), null);
 assert.deepEqual(wpCodeboxResolveCommand('/tmp/wp-codebox.cjs', ['run-agent-task']).args, ['/tmp/wp-codebox.cjs', 'run-agent-task']);
+assert.equal(wpCodeboxBin({
+	env: { HOMEBOY_WP_CODEBOX_BIN: '/tmp/env-wp-codebox' },
+	settings: { wp_codebox_bin: '/tmp/settings-wp-codebox' },
+}), '/tmp/env-wp-codebox');
 
 assert.equal(runtimeDescriptorSupportsCommand({ commands: { 'run-agent-task': true } }, 'run-agent-task'), true);
 assert.equal(runtimeDescriptorSupportsCommand({ runtime: { tasks: ['run-agent-task'] } }, 'run-agent-task'), true);

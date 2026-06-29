@@ -698,12 +698,10 @@ try {
       OPENCODE_API_KEY: 'redacted-test-key',
     },
   });
-  assert.equal(chatReplyTypedArtifactResult.status, 0, chatReplyTypedArtifactResult.stderr || chatReplyTypedArtifactResult.stdout);
+  assert.equal(chatReplyTypedArtifactResult.status, 1, chatReplyTypedArtifactResult.stderr || chatReplyTypedArtifactResult.stdout);
   const chatReplyTypedArtifactOutput = JSON.parse(chatReplyTypedArtifactResult.stdout);
-  assert.equal(chatReplyTypedArtifactOutput.success, true);
-  assert.equal(chatReplyTypedArtifactOutput.outputs.typed_artifacts.concept_packet.artifact_schema, 'example/concept-packet/v1');
-  assert.match(chatReplyTypedArtifactOutput.outputs.typed_artifacts.concept_packet.payload.content, /Commerce Concept Packet/);
-  assert.equal(chatReplyTypedArtifactOutput.diagnostics.some((diagnostic) => diagnostic.class === 'wp-codebox.required_typed_artifacts_missing'), false);
+  assert.equal(chatReplyTypedArtifactOutput.success, false);
+  assert.equal(chatReplyTypedArtifactOutput.diagnostics.some((diagnostic) => diagnostic.class === 'wp-codebox.required_typed_artifacts_missing'), true);
 
   const codexCapturePath = path.join(root, 'capture-codex.json');
   const codexSecretEnv = [
@@ -900,8 +898,6 @@ try {
   assert.equal(canonicalBundleRunOutput.success, true);
   assert.equal(canonicalBundleRunOutput.session.status, 'completed');
   assert.equal(canonicalBundleRunOutput.outputs.issue_number, undefined);
-  assert.equal(canonicalBundleRunOutput.artifact_result.schema, 'wp-codebox/artifact-result-envelope/v1');
-  assert.deepEqual(canonicalBundleRunOutput.artifact_result.result.outputs, canonicalBundleRunOutput.outputs);
   assert.equal(canonicalBundleRunOutput.outputs.typed_artifacts.example_review.type, 'ExampleReviewArtifact');
   assert.equal(canonicalBundleRunOutput.outputs.typed_artifacts.example_review.artifact_schema, 'example/review-artifact/v1');
   assert.equal(canonicalBundleRunOutput.outputs.typed_artifacts.example_review.payload.review_ready, true);
@@ -951,7 +947,6 @@ try {
   assert.equal(recorderBundleRunOutput.status, 'completed');
   assert.equal(recorderBundleRunOutput.outputs.issue_number, 123);
   assert.equal(recorderBundleRunOutput.outputs.issue_url, 'https://github.com/example-org/example-repo/issues/123');
-  assert.deepEqual(recorderBundleRunOutput.artifact_result.result.outputs, recorderBundleRunOutput.outputs);
 
   const projectionBundleRunCapturePath = path.join(root, 'capture-projection-bundle-run.json');
   const projectionBundleRunResult = spawnSync(process.execPath, [

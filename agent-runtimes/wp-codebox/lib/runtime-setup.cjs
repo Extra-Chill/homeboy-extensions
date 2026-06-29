@@ -1,8 +1,18 @@
 'use strict';
 
+const fs = require('node:fs');
 const path = require('node:path');
 
 function setupRuntime({ phase, workspace, env = process.env, run, installCheckedOutPhpDependencies }) {
+  // After the runtime's build commands run, the wp-codebox CLI exists in the
+  // checkout (packages/cli/dist/index.js, made executable by the build) but is
+  // not on PATH and HOMEBOY_WP_CODEBOX_BIN is unset, so the downstream
+  // "Build runner config" step reports the bin as missing. Point the env var at
+  // the built CLI so subsequent steps resolve runtime.paths.runtime_bin. Runs
+  // for the wp-codebox runtime regardless of the WordPress-dependency gate.
+  if (phase === 'after_commands') {
+    exportRuntimeBin(workspace, env);
+  }
   if (!requiresWordPressDependencies(env)) {
     return;
   }
@@ -13,6 +23,45 @@ function setupRuntime({ phase, workspace, env = process.env, run, installChecked
   }
   if (phase === 'after_commands') {
     installCheckedOutPhpDependencies(workspace);
+  }
+}
+
+function exportRuntimeBin(workspace, env = process.env) {
+  exportRuntimePath(
+    workspace,
+    env,
+    ['HOMEBOY_WP_CODEBOX_BIN', 'WP_CODEBOX_BIN'],
+    '.ci/wp-codebox/packages/cli/dist/index.js',
+    'HOMEBOY_WP_CODEBOX_BIN'
+  );
+  // The runtime contract source (wp-codebox-runtime-contract-source.js) requires
+  // @automattic/wp-codebox-core/contracts, which is the runtime-core workspace
+  // package — not resolvable from the homeboy-extensions checkout. Point at the
+  // built contracts module so "Build runner config" can load the canonical
+  // runtime contract manifest.
+  exportRuntimePath(
+    workspace,
+    env,
+    ['HOMEBOY_WP_CODEBOX_CORE_MODULE', 'WP_CODEBOX_CORE_MODULE'],
+    '.ci/wp-codebox/packages/runtime-core/dist/contracts.js',
+    'HOMEBOY_WP_CODEBOX_CORE_MODULE'
+  );
+}
+
+function exportRuntimePath(workspace, env, existingEnvNames, relativePath, exportName) {
+  // Already provided by the caller/env — don't override an explicit value.
+  if (existingEnvNames.some((name) => env[name])) {
+    return;
+  }
+  const resolvedPath = path.join(workspace, relativePath);
+  if (!fs.existsSync(resolvedPath)) {
+    // Build did not produce the artifact; let the downstream check surface a
+    // clear, accurate error rather than a wrong path.
+    return;
+  }
+  const githubEnv = env.GITHUB_ENV;
+  if (githubEnv) {
+    fs.appendFileSync(githubEnv, `${exportName}=${resolvedPath}\n`);
   }
 }
 

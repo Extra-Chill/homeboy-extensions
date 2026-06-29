@@ -20,6 +20,8 @@ const DEFAULT_STDIO_SUMMARY_BYTES = 8192;
 const DEFAULT_RUNTIME_ENV_ALLOWLIST = [
   'CI',
   'HOME',
+  'HOMEBOY_RUNTIME_AGENT_DEBUG',
+  'HOMEBOY_RUNTIME_AGENT_RUN_DIR',
   'LANG',
   'LC_ALL',
   'LOGNAME',
@@ -30,6 +32,16 @@ const DEFAULT_RUNTIME_ENV_ALLOWLIST = [
   'TMPDIR',
   'USER',
 ];
+
+// Diagnostics mode. When enabled, the runtime executor subprocess stderr is
+// fd-inherited so the full spawn chain (executor -> task-runner -> wp-codebox
+// CLI) streams raw stderr straight to this process's stderr — which, since this
+// runner shares the process that the CI step launches, lands directly in the
+// job log in real time, even on a hard crash or timeout that produces no
+// structured outcome.
+function runtimeAgentDebugEnabled(env = process.env) {
+  return ['1', 'true', 'yes', 'on'].includes(String(env.HOMEBOY_RUNTIME_AGENT_DEBUG || '').trim().toLowerCase());
+}
 
 function buildGenericAgentLoopRequest(options = {}) {
   const plan = requiredObject(options.plan, 'plan');
@@ -328,12 +340,18 @@ function executeRuntimeProvider(options = {}) {
     throw new Error(`Runtime ${runtime.id || '(unknown)'} does not declare an executor command.`);
   }
   const spawn = options.spawnSync || spawnSync;
+  const debug = runtimeAgentDebugEnabled(options.env) || runtimeAgentDebugEnabled(process.env);
   const result = spawn(invocation.command, invocation.argv || [], {
     encoding: 'utf8',
     cwd: invocation.cwd || process.cwd(),
     input: invocationStdin(invocation, options.request),
     env: runtimeInvocationEnv({ ...options, invocation }),
     maxBuffer: 1024 * 1024 * 20,
+    // In debug mode inherit the executor stderr so the entire spawn chain's
+    // raw stderr streams live to the job log, independent of any structured
+    // outcome (which is never produced on a hard crash). stdout stays piped to
+    // capture the JSON outcome.
+    ...(debug ? { stdio: ['pipe', 'pipe', 'inherit'] } : {}),
   });
   const stderrArtifact = handleRuntimeInvocationStderr(result.stderr, { ...options, invocation, result });
   const stdout = String(result.stdout || '');
@@ -352,7 +370,63 @@ function executeRuntimeProvider(options = {}) {
     };
   }
   const outcome = JSON.parse(stdout);
-  return captureInvocationResult(outcome, invocation, result, { stderrArtifact });
+  const failureArtifact = surfaceFailedRuntimeOutcome(outcome, { ...options, invocation, result, stderrArtifact });
+  return captureInvocationResult(outcome, invocation, result, { stderrArtifact: failureArtifact || stderrArtifact });
+}
+
+function isFailedRuntimeOutcome(outcome) {
+  if (!outcome || typeof outcome !== 'object' || Array.isArray(outcome)) {
+    return false;
+  }
+  if (outcome.success === false) {
+    return true;
+  }
+  return ['failed', 'error'].includes(String(outcome.status || '').toLowerCase());
+}
+
+function failedRuntimeOutcomeDetail(outcome) {
+  const lines = [];
+  if (outcome.summary) {
+    lines.push(`summary: ${outcome.summary}`);
+  }
+  for (const diagnostic of normalizeArray(outcome.diagnostics)) {
+    const diagnosticClass = diagnostic.class || diagnostic.kind || diagnostic.code || '';
+    lines.push(`diagnostic${diagnosticClass ? ` [${diagnosticClass}]` : ''}: ${diagnostic.message || ''}`);
+    const detail = diagnostic.data && typeof diagnostic.data === 'object'
+      ? (diagnostic.data.stderr || diagnostic.data.error || '')
+      : '';
+    if (detail) {
+      lines.push(String(detail));
+    }
+  }
+  return lines.join('\n').trim();
+}
+
+// Surface the real failure reason from a failed runtime outcome to the job's
+// stderr (so it lands in CI logs) and persist it as the runtime stderr artifact.
+// The runtime executor routes the underlying agent/CLI stderr into the outcome's
+// diagnostics rather than its own stderr, so without this the only thing a hard
+// failure leaves behind is a later generic assertion message — the actual crash
+// reason is lost because results.json is never written once the loop throws.
+function surfaceFailedRuntimeOutcome(outcome, options = {}) {
+  if (!isFailedRuntimeOutcome(outcome)) {
+    return options.stderrArtifact || null;
+  }
+  const detail = failedRuntimeOutcomeDetail(outcome);
+  if (!detail) {
+    return options.stderrArtifact || null;
+  }
+  if (options.stderr !== false) {
+    process.stderr.write(`${boundedText(detail, options.stderrMaxBytes || options.stderr_max_bytes || DEFAULT_STDIO_SUMMARY_BYTES)}\n`);
+  }
+  if (options.stderrArtifact) {
+    return options.stderrArtifact;
+  }
+  const artifact = persistRuntimeInvocationStderr(detail, options);
+  if (artifact && options.stderr !== false) {
+    process.stderr.write(`Runtime failure detail artifact: ${artifact.path}\n`);
+  }
+  return artifact;
 }
 
 function runtimeInvocationEnv(options = {}) {
@@ -367,7 +441,10 @@ function runtimeInvocationEnv(options = {}) {
 
   const names = new Set([
     ...DEFAULT_RUNTIME_ENV_ALLOWLIST,
-    ...normalizeArray(config.env_allowlist || config.envAllowlist || invocation.env_allowlist || invocation.envAllowlist),
+    ...normalizeArray(config.env_allowlist),
+    ...normalizeArray(config.envAllowlist),
+    ...normalizeArray(invocation.env_allowlist),
+    ...normalizeArray(invocation.envAllowlist),
     ...normalizeArray(config.runtime_env_allowlist || config.runtimeEnvAllowlist),
     ...normalizeArray(config.secret_env),
     ...normalizeArray(executor.secret_env),
@@ -440,6 +517,7 @@ function runtimeExecutorInvocation(runtime = {}) {
       stdin: executor.invocation.stdin || 'request_json',
       stdout: executor.invocation.stdout || 'outcome_json',
       stderr: executor.invocation.stderr || 'inherit_on_failure',
+      env_allowlist: normalizeArray(executor.invocation.env_allowlist || executor.invocation.envAllowlist),
       artifacts: executor.invocation.artifacts || {},
       results: executor.invocation.results || {},
     };

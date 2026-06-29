@@ -247,6 +247,12 @@ function normalizeRuntimeId(runtimeId = DEFAULT_RUNTIME_ID, options = {}) {
 }
 
 function runtimeIdFromOptions(options = {}, env = process.env) {
+	// Mirror the env precedence used by setup-runtime.cjs
+	// (RUNTIME || RUNTIME_PROVIDER || BACKEND). Consumers commonly set only
+	// RUNTIME_PROVIDER; without honoring it here, materialize-dependencies
+	// resolves DEFAULT_RUNTIME_ID instead of the real runtime and never checks
+	// out the runtime provider repo, so its setup_commands later fail on a
+	// missing cwd.
 	return firstString(
 		options.runtimeId,
 		options.runtime_id,
@@ -391,6 +397,7 @@ function resolveExecutorInvocation(provider, runtimePath, options = {}) {
 		argv: argv.length > 0 ? argv.slice(1) : [],
 		cwd,
 		env: normalizeInvocationEnv(invocation.env || {}),
+		env_allowlist: normalizeStringArray(invocation.env_allowlist || invocation.envAllowlist),
 		stdin: invocation.stdin || 'request_json',
 		stdout: invocation.stdout || 'outcome_json',
 		stderr: invocation.stderr || 'inherit_on_failure',
@@ -418,6 +425,10 @@ function normalizeInvocationEnv(env) {
 		return {};
 	}
 	return Object.fromEntries(Object.entries(env).filter(([, value]) => typeof value === 'string'));
+}
+
+function normalizeStringArray(value) {
+	return Array.isArray(value) ? value.filter((entry) => typeof entry === 'string' && entry.trim() !== '') : [];
 }
 
 function replaceRuntimePath(value, runtimePath) {
