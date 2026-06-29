@@ -20,6 +20,7 @@ process.env.HOMEBOY_WP_CODEBOX_CORE_MODULE ||= path.join(
  */
 const {
 	WP_CODEBOX_FUZZ_PREFLIGHT_SCHEMA,
+	normalizeWpCodeboxFuzzSuiteResult,
 	normalizeWpCodeboxDestructiveReadiness,
 	preflightWpCodeboxFuzzCapabilityContract,
 	wpCodeboxFuzzSuiteTaskRequest,
@@ -42,6 +43,12 @@ const runtimeContractManifest = {
 		wordpressRuntime: {
 			runWorkload: 'wp-codebox/run-wordpress-workload',
 			runFuzzSuite: 'wp-codebox/run-fuzz-suite',
+		},
+	},
+	commands: {
+		wordpressRuntime: {
+			runWorkload: 'run-wordpress-workload',
+			runFuzzSuite: 'run-fuzz-suite',
 		},
 	},
 };
@@ -101,11 +108,11 @@ assert.equal(blockedPreflight.ok, false);
 assert.equal(blockedPreflight.destructive_readiness.required, true);
 assert.deepEqual(
 	blockedPreflight.destructive_readiness.missing_primitives.map((primitive) => primitive.key),
-	['disposable_runtime', 'external_http_guardrail', 'artifact_export']
+	['disposable_runtime', 'disposable_sandbox_boundary', 'destructive_permission', 'mutation_boundary', 'external_side_effect_guardrail', 'artifact_export', 'teardown_discard']
 );
 assert.equal(blockedPreflight.missing_contracts.some((contract) => contract.type === 'destructive_readiness'), true);
 assert.equal(blockedPreflight.diagnostics.some((diagnostic) => diagnostic.code === 'wp_codebox_fuzz_missing_destructive_readiness'), true);
-assert.match(blockedPreflight.diagnostics.find((diagnostic) => diagnostic.code === 'wp_codebox_fuzz_missing_destructive_readiness').message, /external HTTP guardrail/);
+assert.match(blockedPreflight.diagnostics.find((diagnostic) => diagnostic.code === 'wp_codebox_fuzz_missing_destructive_readiness').message, /disposable sandbox boundary identity/);
 
 const missingReadinessCliCalls = [];
 const missingReadinessPreflight = preflightWpCodeboxFuzzCapabilityContract({
@@ -113,17 +120,16 @@ const missingReadinessPreflight = preflightWpCodeboxFuzzCapabilityContract({
 	runtimeContractManifest,
 	runPublicCli: ({ args }) => {
 		missingReadinessCliCalls.push(args);
-		assert.deepEqual(args, ['fuzz', 'readiness', '--format=json']);
-		return { status: 1, stdout: '', stderr: 'readiness unavailable' };
+		throw new Error('production dispatch must not probe fuzz readiness');
 	},
 });
 
 assert.equal(missingReadinessPreflight.ok, false);
-assert.deepEqual(missingReadinessCliCalls, [['fuzz', 'readiness', '--format=json']]);
+assert.deepEqual(missingReadinessCliCalls, []);
 assert.equal(missingReadinessPreflight.capabilities.commands['run-fuzz-suite'], false);
 assert.equal(missingReadinessPreflight.capabilities.commands['run-wordpress-workload'], false);
-assert.equal(missingReadinessPreflight.missing_contracts.some((contract) => contract.type === 'public_cli_readiness_command'), true);
-assert.equal(missingReadinessPreflight.diagnostics.some((diagnostic) => diagnostic.code === 'wp_codebox_fuzz_missing_public_cli_readiness_command'), true);
+assert.equal(missingReadinessPreflight.missing_contracts.some((contract) => contract.type === 'explicit_public_descriptor'), true);
+assert.equal(missingReadinessPreflight.diagnostics.some((diagnostic) => diagnostic.code === 'wp_codebox_fuzz_missing_explicit_public_descriptor'), true);
 
 const missingManifestPreflight = preflightWpCodeboxFuzzCapabilityContract({
 	request: destructiveRequest,
@@ -138,11 +144,19 @@ const completeReadiness = {
 	...incompleteReadiness,
 	disposable: true,
 	isolation: { runtime_backed: true, disposable: true },
-	guardrails: { external_http_guardrail: true },
+	guardrails: { external_side_effect_guardrail: true },
 	artifacts: { export: true },
+	destructiveModeRequirements: {
+		supported: true,
+		destructiveMutationIntent: 'destructive',
+		requiredSandboxBoundary: { disposable: true, destructivePermission: true, teardown: 'discard' },
+		requiredArtifacts: ['mutation-isolation-artifact', 'delete-boundary-artifact'],
+		deleteBoundaryCapability: 'delete-boundary-artifact',
+		rawDeleteCapability: null,
+	},
 	capabilities: {
 		...incompleteReadiness.capabilities,
-		capabilities: ['disposable-runtime', 'runtime-backed-isolation', 'external-http-guardrail', 'artifact-export'],
+		capabilities: ['disposable-runtime', 'runtime-backed-isolation', 'external-side-effect-guardrail', 'artifact-export', 'wordpress-runtime:sandbox-isolation-proof'],
 	},
 };
 
@@ -155,12 +169,58 @@ const passedPreflight = preflightWpCodeboxFuzzCapabilityContract({
 assert.equal(passedPreflight.ok, true);
 assert.equal(passedPreflight.destructive_readiness.ok, true);
 assert.equal(passedPreflight.destructive_readiness.facts.disposable_runtime, true);
-assert.equal(passedPreflight.destructive_readiness.facts.external_http_guardrail, true);
+assert.equal(passedPreflight.destructive_readiness.facts.disposable_sandbox_boundary, true);
+assert.equal(passedPreflight.destructive_readiness.facts.destructive_permission, true);
+assert.equal(passedPreflight.destructive_readiness.facts.mutation_boundary, true);
+assert.equal(passedPreflight.destructive_readiness.facts.external_side_effect_guardrail, true);
 assert.equal(passedPreflight.destructive_readiness.facts.artifact_export, true);
+assert.equal(passedPreflight.destructive_readiness.facts.teardown_discard, true);
 assert.equal(passedPreflight.capabilities.capabilities.includes('disposable-runtime'), true);
 assert.equal(passedPreflight.capabilities.capabilities.includes('runtime-isolation'), true);
-assert.equal(passedPreflight.capabilities.capabilities.includes('external-http-guardrail'), true);
+assert.equal(passedPreflight.capabilities.capabilities.includes('disposable-sandbox-boundary'), true);
+assert.equal(passedPreflight.capabilities.capabilities.includes('destructive-permission'), true);
+assert.equal(passedPreflight.capabilities.capabilities.includes('mutation-isolation-artifact'), true);
+assert.equal(passedPreflight.capabilities.capabilities.includes('delete-boundary-artifact'), true);
+assert.equal(passedPreflight.capabilities.capabilities.includes('sandbox-isolation-proof'), true);
+assert.equal(passedPreflight.capabilities.capabilities.includes('external-side-effect-guardrail'), true);
 assert.equal(passedPreflight.capabilities.capabilities.includes('artifact-export'), true);
+assert.deepEqual(
+	destructiveRequest.executor.config.runtime_task.input.metadata.disposableSandboxBoundary,
+	{ disposable: true, destructivePermission: true, teardown: 'discard', backend: 'wordpress-playground', environment: 'wordpress', hostAccess: 'declared-mounts-only' }
+);
+
+const missingDisposableArtifacts = normalizeWpCodeboxFuzzSuiteResult({
+	schema: 'wp-codebox/fuzz-suite-result/v1',
+	request_id: 'destructive-artifact-missing',
+	status: 'succeeded',
+	wordpress_fuzz_result: {
+		schema: 'wordpress-fuzz-result/v1',
+		status: 'succeeded',
+		cases: [{ id: 'delete-post', status: 'passed' }],
+	},
+	artifacts: [{ name: 'case-log', path: 'files/case-log.jsonl' }],
+}, { request: destructiveRequest });
+
+assert.equal(missingDisposableArtifacts.status, 'failed');
+assert.equal(missingDisposableArtifacts.failures.some((failure) => failure.code === 'wp_codebox_fuzz_disposable_lifecycle_artifacts_missing'), true);
+
+const passedDisposableArtifacts = normalizeWpCodeboxFuzzSuiteResult({
+	schema: 'wp-codebox/fuzz-suite-result/v1',
+	request_id: 'destructive-artifact-passed',
+	status: 'succeeded',
+	wordpress_fuzz_result: {
+		schema: 'wordpress-fuzz-result/v1',
+		status: 'succeeded',
+		cases: [{ id: 'delete-post', status: 'passed' }],
+	},
+	artifacts: [
+		{ name: 'sandbox-isolation-proof', kind: 'sandbox-isolation-proof', schema: 'wp-codebox/sandbox-isolation-proof/v1', path: 'files/sandbox-isolation/delete-post-proof.json' },
+		{ name: 'delete-boundary-artifact', kind: 'delete-boundary-artifact', schema: 'wp-codebox/delete-boundary-artifact/v1', path: 'files/delete-boundaries/delete-post.json' },
+	],
+}, { request: destructiveRequest });
+
+assert.equal(passedDisposableArtifacts.status, 'succeeded');
+assert.equal(passedDisposableArtifacts.failures.some((failure) => failure.code === 'wp_codebox_fuzz_disposable_lifecycle_artifacts_missing'), false);
 
 assert.deepEqual(normalizeWpCodeboxDestructiveReadiness(completeReadiness, {
 	request: destructiveRequest,
@@ -191,6 +251,7 @@ assert.deepEqual(normalizeWpCodeboxDestructiveReadiness(completeReadiness, {
 	assert.equal(result.homeboy_fuzz_campaign.metadata.diagnostics.some((diagnostic) => diagnostic.code === 'wp_codebox_fuzz_missing_destructive_readiness'), true);
 	assert.equal(result.homeboy_fuzz_result_envelope.gates.failures.some((diagnostic) => diagnostic.code === 'wp_codebox_fuzz_missing_destructive_readiness'), true);
 
+	let precomputedDispatchCalls = 0;
 	const blockedPrecomputed = await runWordPressFuzzRunnerResult({
 		env: {
 			workloadPath: '/unused/precomputed-destructive-workload.json',
@@ -206,33 +267,21 @@ assert.deepEqual(normalizeWpCodeboxDestructiveReadiness(completeReadiness, {
 				status: 'succeeded',
 			},
 		},
-	});
-
-	assert.equal(blockedPrecomputed.status, 'unsupported');
-	assert.equal(blockedPrecomputed.succeeded, false);
-	assert.equal(blockedPrecomputed.wp_codebox_result.metadata.precomputed_result_blocked, true);
-	assert.equal(blockedPrecomputed.wp_codebox_result.failures.some((diagnostic) => diagnostic.code === 'wp_codebox_precomputed_fuzz_result_not_fixture_only'), true);
-
-	const fixturePrecomputed = await runWordPressFuzzRunnerResult({
-		env: {
-			workloadPath: '/unused/fixture-only-destructive-workload.json',
-			workloadId: 'fixture-only-destructive-workload',
-			runId: 'fixture-only-destructive-run',
-		},
-		workload: {
-			id: 'fixture-only-destructive-workload',
-			fixture_only: true,
-			plan: destructivePlan,
-			wp_codebox_suite_result: {
+		runFuzzSuite: async () => {
+			precomputedDispatchCalls += 1;
+			return {
 				schema: 'wp-codebox/fuzz-suite-result/v1',
-				request_id: 'fixture-only-destructive-run',
-				status: 'succeeded',
-			},
+				request_id: 'precomputed-destructive-run',
+				status: 'skipped',
+				diagnostics: [{ severity: 'error', code: 'runner-called', message: 'production dispatch called Codebox' }],
+			};
 		},
 	});
 
-	assert.equal(fixturePrecomputed.status, 'succeeded');
-	assert.equal(fixturePrecomputed.succeeded, true);
+	assert.equal(blockedPrecomputed.status, 'skipped');
+	assert.equal(blockedPrecomputed.succeeded, false);
+	assert.equal(precomputedDispatchCalls, 1);
+	assert.equal(blockedPrecomputed.wp_codebox_result.failures.some((diagnostic) => diagnostic.code === 'runner-called'), true);
 })().catch((error) => {
 	process.nextTick(() => {
 		throw error;

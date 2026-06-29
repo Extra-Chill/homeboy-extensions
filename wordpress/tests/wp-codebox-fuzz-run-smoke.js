@@ -105,6 +105,27 @@ const manifest = {
 			runFuzzSuite: 'wp-codebox/run-fuzz-suite',
 		},
 	},
+	commands: {
+		wordpressRuntime: {
+			runWorkload: 'run-wordpress-workload',
+			runFuzzSuite: 'run-fuzz-suite',
+		},
+	},
+	capabilities: {
+		wordpressRuntime: {
+			commands: ['run-fuzz-suite', 'run-wordpress-workload'],
+			capabilities: ['rest', 'disposable-runtime', 'runtime-isolation', 'artifact-export'],
+			runner_modes: { 'runtime-backed': true },
+		},
+	},
+	readiness: {
+		wordpressRuntime: {
+			schema: 'wp-codebox/fuzz-runner-readiness/v1',
+			status: 'ready',
+			mode: 'runtime-backed',
+			command_available: true,
+		},
+	},
 };
 
 assert.equal(wpCodeboxFuzzSuiteAbility({ runtimeContractManifest: manifest }), DEFAULT_FUZZ_SUITE_ABILITY);
@@ -114,6 +135,8 @@ assert.equal(wpCodeboxWordPressWorkloadRunSchema({ runtimeContractManifest: mani
 assert.deepEqual(REQUIRED_WP_CODEBOX_FUZZ_CONTRACT_PATHS, [
 	'abilities.wordpressRuntime.runFuzzSuite',
 	'abilities.wordpressRuntime.runWorkload',
+	'commands.wordpressRuntime.runFuzzSuite',
+	'commands.wordpressRuntime.runWorkload',
 	'schemas.wordpressRuntime.fuzzSuite',
 	'schemas.wordpressRuntime.fuzzSuiteResult',
 	'schemas.wordpressRuntime.workloadRun',
@@ -198,7 +221,9 @@ assert.equal(taskRequest.artifact_declarations.find((artifact) => artifact.name 
 assert.equal(taskRequest.artifact_declarations.find((artifact) => artifact.name === 'wordpress-hotspots').schema, WP_CODEBOX_WORDPRESS_HOTSPOTS_SCHEMA);
 assert.equal(taskRequest.artifact_declarations.find((artifact) => artifact.name === 'wp-codebox-fuzz-suite-result').role, 'codebox_result');
 assert.equal(taskRequest.artifact_declarations.find((artifact) => artifact.name === 'case-log').role, 'case_log');
-assert.equal(taskRequest.artifact_declarations.find((artifact) => artifact.name === 'rollback-lifecycle').required, false);
+assert.equal(taskRequest.artifact_declarations.find((artifact) => artifact.name === 'sandbox-isolation-proof').required, false);
+assert.equal(taskRequest.artifact_declarations.find((artifact) => artifact.name === 'mutation-isolation-artifact').required, false);
+assert.equal(taskRequest.artifact_declarations.find((artifact) => artifact.name === 'delete-boundary-artifact').required, false);
 assert.equal(taskRequest.artifact_declarations.find((artifact) => artifact.name === 'external-http-guardrail').semantic_key, 'fuzz.external_http.guardrail');
 assert.equal(taskRequest.artifact_declarations.find((artifact) => artifact.name === 'runtime-access').semantic_key, 'fuzz.runtime.access');
 assert.deepEqual(
@@ -216,10 +241,14 @@ const destructiveTaskRequest = wpCodeboxFuzzSuiteTaskRequest({
 		cases: [{ id: 'delete-post-case', destructive: true }],
 	},
 });
-assert.equal(destructiveTaskRequest.artifact_declarations.find((artifact) => artifact.name === 'rollback-lifecycle').required, true);
-assert(destructiveTaskRequest.expected_artifacts.includes('rollback-lifecycle'));
+assert.equal(destructiveTaskRequest.artifact_declarations.find((artifact) => artifact.name === 'sandbox-isolation-proof').required, true);
+assert.equal(destructiveTaskRequest.artifact_declarations.find((artifact) => artifact.name === 'mutation-isolation-artifact').required, true);
+assert.equal(destructiveTaskRequest.artifact_declarations.find((artifact) => artifact.name === 'delete-boundary-artifact').required, true);
+assert(destructiveTaskRequest.expected_artifacts.includes('sandbox-isolation-proof'));
+assert(destructiveTaskRequest.expected_artifacts.includes('mutation-isolation-artifact'));
+assert(destructiveTaskRequest.expected_artifacts.includes('delete-boundary-artifact'));
 
-const executionRequest = wpCodeboxFuzzExecutionRequest({ taskId: 'direct-suite-task', input, wpCodeboxBin: '/custom/wp-codebox' });
+const executionRequest = wpCodeboxFuzzExecutionRequest({ taskId: 'direct-suite-task', input, wpCodeboxBin: '/custom/wp-codebox', runtimeContractManifest: manifest });
 assert.equal(executionRequest.schema, WP_CODEBOX_FUZZ_EXECUTION_SCHEMA);
 assert.equal(executionRequest.task_id, 'direct-suite-task');
 assert.equal(executionRequest.command, 'run-fuzz-suite');
@@ -236,6 +265,7 @@ fs.mkdirSync(runtimeWorkloadRoot, { recursive: true });
 const runtimeRequirementRequest = wpCodeboxFuzzExecutionRequest({
 	taskId: 'runtime-requirement-suite-task',
 	input,
+	runtimeContractManifest: manifest,
 	runtimeRequirements: {
 		extra_plugins: [{ slug: 'sample-plugin', source: runtimePluginPath, sourceRoot: runtimePluginRoot, sourceSubpath: 'plugins/sample-plugin' }],
 		component_contracts: [{ slug: 'sample-plugin', path: runtimePluginPath, sourceRoot: runtimePluginRoot, sourceSubpath: 'plugins/sample-plugin' }],
@@ -254,6 +284,7 @@ assert.throws(
 	() => wpCodeboxPublicCliInput(wpCodeboxFuzzExecutionRequest({
 		taskId: 'missing-plugin-suite-task',
 		input,
+		runtimeContractManifest: manifest,
 		runtimeRequirements: { extra_plugins: [{ slug: 'missing-plugin', source: path.join(runtimeRequirementRoot, 'missing-plugin') }] },
 	})),
 	/WP Codebox runtime requirement extra_plugins\[0\] source does not exist/
@@ -321,28 +352,29 @@ const readinessContract = {
 	unsupportedRequiredCapabilities: [],
 };
 const readinessCapabilities = detectWpCodeboxPublicFuzzCapabilities({
-	runPublicCli: ({ args }) => args.join(' ') === 'fuzz readiness --format=json'
-		? { status: 0, stdout: JSON.stringify(readinessContract) }
-		: { status: 1, stderr: 'unexpected command' },
+	runtimeContractManifest: manifest,
+	runPublicCli: () => {
+		throw new Error('production dispatch must not probe fuzz readiness');
+	},
 });
 assert.equal(readinessCapabilities.readiness.schema, 'wp-codebox/fuzz-runner-readiness/v1');
 assert.equal(readinessCapabilities.commands['run-fuzz-suite'], true);
 assert.equal(readinessCapabilities.commands['run-wordpress-workload'], true);
-assert.deepEqual(readinessCapabilities.capabilities, ['crud', 'database', 'query-observation', 'rest', 'sequence']);
+assert.deepEqual(readinessCapabilities.capabilities, ['artifact-export', 'disposable-runtime', 'rest', 'runtime-isolation']);
 const preflightReadinessPassed = preflightWpCodeboxFuzzCapabilityContract({
 	request: taskRequest,
 	runtimeContractManifest: manifest,
-	runPublicCli: ({ args }) => args.join(' ') === 'fuzz readiness --format=json'
-		? { status: 0, stdout: JSON.stringify(readinessContract) }
-		: { status: 1, stderr: 'unexpected command' },
+	runPublicCli: () => {
+		throw new Error('production dispatch must not probe fuzz readiness');
+	},
 });
 assert.equal(preflightReadinessPassed.ok, true);
 const preflightReadinessOnlyPassed = preflightWpCodeboxFuzzCapabilityContract({
 	request: taskRequest,
 	loadRuntimeContractSource: () => null,
-	runPublicCli: ({ args }) => args.join(' ') === 'fuzz readiness --format=json'
-		? { status: 0, stdout: JSON.stringify(readinessContract) }
-		: { status: 1, stderr: 'unexpected command' },
+	runPublicCli: () => {
+		throw new Error('production dispatch must not probe fuzz readiness');
+	},
 });
 assert.equal(preflightReadinessOnlyPassed.ok, false);
 assert.equal(
@@ -366,14 +398,18 @@ assert.equal(preflightUnsupportedReadiness.diagnostics.some((diagnostic) => diag
 
 const preflightMissingReadinessCommand = preflightWpCodeboxFuzzCapabilityContract({
 	request: taskRequest,
-	runtimeContractManifest: manifest,
-	runPublicCli: ({ args }) => args.join(' ') === 'fuzz readiness --format=json'
-		? { status: 1, stderr: 'unknown command: fuzz readiness' }
-		: { status: 0, stdout: 'legacy help' },
+	runtimeContractManifest: {
+		...manifest,
+		capabilities: undefined,
+		readiness: undefined,
+	},
+	runPublicCli: () => {
+		throw new Error('production dispatch must not probe fuzz readiness');
+	},
 });
 assert.equal(preflightMissingReadinessCommand.ok, false);
-assert.equal(preflightMissingReadinessCommand.missing_contracts.some((contract) => contract.type === 'public_cli_readiness_command'), true);
-assert.equal(preflightMissingReadinessCommand.diagnostics.some((diagnostic) => diagnostic.code === 'wp_codebox_fuzz_missing_public_cli_readiness_command'), true);
+assert.equal(preflightMissingReadinessCommand.missing_contracts.some((contract) => contract.type === 'explicit_public_descriptor'), true);
+assert.equal(preflightMissingReadinessCommand.diagnostics.some((diagnostic) => diagnostic.code === 'wp_codebox_fuzz_missing_explicit_public_descriptor'), true);
 
 const rollbackRestPlanRequest = wpCodeboxFuzzSuiteTaskRequest({
 	taskId: 'rollback-rest-plan-task',
@@ -551,31 +587,25 @@ assert.equal(structuredResultSummary.artifacts.some((artifact) => artifact.name 
 assert.equal(structuredResultSummary.artifacts.some((artifact) => artifact.name === 'coverage-summary'), true);
 assert.equal(structuredResultSummary.artifacts.some((artifact) => artifact.name === 'result-envelope' && artifact.role === 'result_envelope'), true);
 
-const deleteBoundaryRollbackSummary = normalizeWpCodeboxFuzzSuiteResult({
+const deleteBoundaryArtifactSummary = normalizeWpCodeboxFuzzSuiteResult({
 	schema: WP_CODEBOX_FUZZ_SUITE_RESULT_SCHEMA,
-	request_id: 'delete-boundary-rollbacks',
+	request_id: 'delete-boundary-artifacts',
 	status: 'passed',
 	cases: [{ id: 'delete-case', status: 'passed' }],
-	delete_boundary_rollback_artifacts: [{
-		name: 'delete-boundary-rollback',
-		path: 'rollback/delete-boundary.json',
+	delete_boundary_artifacts: [{
+		name: 'delete-boundary-artifact',
+		path: 'artifacts/delete-boundary.json',
 		content_type: 'application/json',
-		schema: 'wp-codebox/delete-boundary-rollback-artifact/v1',
+		schema: 'wp-codebox/delete-boundary-artifact/v1',
 		case_id: 'delete-case',
 		operation_id: 'rest:posts:delete',
 		status: 'passed',
 	}],
 });
-const rollbackArtifact = deleteBoundaryRollbackSummary.artifacts.find((artifact) => artifact.role === 'rollback_boundary');
-assert.equal(rollbackArtifact.semantic_key, 'fuzz.rollback.delete_boundary');
-assert.equal(rollbackArtifact.path, 'rollback/delete-boundary.json');
-assert.equal(rollbackArtifact.metadata.schema, 'wp-codebox/delete-boundary-rollback-artifact/v1');
-const rollbackObservation = deleteBoundaryRollbackSummary.observation_set.observations.find((observation) => observation.family === 'rollback');
-assert.equal(rollbackObservation.subject, 'delete_boundary');
-assert.equal(rollbackObservation.case_id, 'delete-case');
-assert.equal(rollbackObservation.metric, 'rollback_artifact');
-assert.equal(rollbackObservation.value, 1);
-
+const deleteBoundaryArtifact = deleteBoundaryArtifactSummary.artifacts.find((artifact) => artifact.role === 'delete_boundary_artifact');
+assert.equal(deleteBoundaryArtifact.semantic_key, 'fuzz.delete.boundary');
+assert.equal(deleteBoundaryArtifact.path, 'artifacts/delete-boundary.json');
+assert.equal(deleteBoundaryArtifact.metadata.schema, 'wp-codebox/delete-boundary-artifact/v1');
 const genericPrimitiveManifest = {
 	schema: 'homeboy/fuzz-workload/v1',
 	id: 'generic-primitive-smoke',
@@ -1324,12 +1354,14 @@ process.stdout.write(JSON.stringify({
 	return runWpCodeboxFuzzSuite({
 		taskId: 'public-cli-unsupported-run',
 		input,
-		runtimeContractManifest: manifest,
-		runPublicCli: () => ({ status: 1, stderr: 'unknown command' }),
+		runtimeContractManifest: { ...manifest, capabilities: undefined, readiness: undefined },
+		runPublicCli: () => {
+			throw new Error('production dispatch must not probe or execute without explicit descriptors');
+		},
 	});
 }).then((summary) => {
 	assert.equal(summary.succeeded, false);
-	assert.equal(summary.failures[0].code, 'wp_codebox_fuzz_missing_public_cli_readiness_command');
+	assert.equal(summary.failures[0].code, 'wp_codebox_fuzz_missing_explicit_public_descriptor');
 	assert.equal(summary.failures.some((failure) => failure.code === 'wp_codebox_fuzz_required_artifacts_missing'), false);
 
 	console.log('wp-codebox fuzz-run smoke passed');

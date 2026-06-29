@@ -17,6 +17,10 @@ const {
 assert.equal(normalizeWordPressFuzzRuntimeCapability('db-transaction'), 'transaction');
 assert.equal(normalizeWordPressFuzzRuntimeCapability('database_reset'), 'reset');
 assert.equal(normalizeWordPressFuzzRuntimeCapability('rollback-safe-rest'), 'rest-rollback');
+assert.equal(normalizeWordPressFuzzRuntimeCapability('disposable_boundary'), 'disposable-sandbox-boundary');
+assert.equal(normalizeWordPressFuzzRuntimeCapability('destructive_permission'), 'destructive-permission');
+assert.equal(normalizeWordPressFuzzRuntimeCapability('mutation_boundary'), 'mutation-isolation-artifact');
+assert.equal(normalizeWordPressFuzzRuntimeCapability('external_side_effect_guardrail'), 'external-side-effect-guardrail');
 assert.equal(normalizeWordPressFuzzRuntimeCapability('unknown'), '');
 assert.equal(normalizeWordPressFuzzMutationMode('destructive_deny'), 'destructive-deny');
 assert.equal(normalizeWordPressFuzzMutationMode('read-only'), 'read_only');
@@ -39,25 +43,26 @@ assert.equal(contract.execution.crud, true);
 assert.equal(contract.execution.rest, true);
 assert.deepEqual(contract.metadata, { runtime: 'fixture' });
 
-assert.deepEqual(requiredCapabilitiesForWordPressFuzzCase('mutating_crud'), ['crud']);
-assert.deepEqual(requiredCapabilitiesForWordPressFuzzCase('mutating_rest'), ['rest']);
+const disposableMutationCapabilities = ['crud', 'disposable-runtime', 'disposable-sandbox-boundary', 'destructive-permission', 'mutation-isolation-artifact', 'sandbox-isolation-proof'];
+assert.deepEqual(requiredCapabilitiesForWordPressFuzzCase('mutating_crud'), disposableMutationCapabilities);
+assert.deepEqual(requiredCapabilitiesForWordPressFuzzCase('mutating_rest'), ['rest', 'disposable-runtime', 'disposable-sandbox-boundary', 'destructive-permission', 'mutation-isolation-artifact', 'sandbox-isolation-proof']);
 
 const skipped = gateWordPressFuzzCaseForRuntimeCapabilities({
 	id: 'case-1',
 	skip_reasons: ['explicit-opt-in-required'],
 	metadata: { planned: true },
-}, { capabilities: [] }, { required_capabilities: ['crud'] });
+}, { capabilities: ['crud'] }, { required_capabilities: disposableMutationCapabilities });
 assert.equal(skipped.executable, false);
 assert.equal(skipped.execution_tier, 'plan_only');
-assert.deepEqual(skipped.required_capabilities, ['crud']);
-assert.deepEqual(skipped.metadata.missing_capabilities, ['crud']);
+assert.deepEqual(skipped.required_capabilities, disposableMutationCapabilities.sort());
+assert.deepEqual(skipped.metadata.missing_capabilities, ['destructive-permission', 'disposable-runtime', 'disposable-sandbox-boundary', 'mutation-isolation-artifact', 'sandbox-isolation-proof']);
 assert.deepEqual(skipped.skip_reasons, ['explicit-opt-in-required', 'missing-runtime-fuzz-capabilities']);
 
 const executable = gateWordPressFuzzCaseForRuntimeCapabilities({
 	id: 'case-2',
 	skip_reasons: [],
 	metadata: {},
-}, { capabilities: ['crud'] }, { required_capabilities: ['crud'] });
+}, { capabilities: disposableMutationCapabilities }, { required_capabilities: disposableMutationCapabilities });
 assert.equal(executable.executable, true);
 assert.equal(executable.execution_tier, 'read_only_executable');
 assert.equal(executable.metadata.executable, true);
@@ -68,8 +73,8 @@ const restMutationExecutable = gateWordPressFuzzCaseForRuntimeCapabilities({
 	id: 'case-rest',
 	skip_reasons: [],
 	metadata: { safety: { mutates: true } },
-}, { capabilities: ['rest'] }, {
-	required_capabilities: ['rest'],
+}, { capabilities: ['rest', 'disposable-runtime', 'disposable-sandbox-boundary', 'destructive-permission', 'mutation-isolation-artifact', 'sandbox-isolation-proof'] }, {
+	required_capabilities: ['rest', 'disposable-runtime', 'disposable-sandbox-boundary', 'destructive-permission', 'mutation-isolation-artifact', 'sandbox-isolation-proof'],
 	mutation_mode: 'isolated',
 	mutates: true,
 });
@@ -81,14 +86,26 @@ const explicitAnyCapabilityMissing = gateWordPressFuzzCaseForRuntimeCapabilities
 	id: 'case-explicit-any-missing',
 	skip_reasons: [],
 	metadata: { safety: { mutates: true } },
-}, { capabilities: ['rest'] }, {
-	required_capabilities: ['rest'],
+}, { capabilities: ['rest', 'disposable-runtime', 'disposable-sandbox-boundary', 'destructive-permission', 'mutation-isolation-artifact', 'sandbox-isolation-proof'] }, {
+	required_capabilities: ['rest', 'disposable-runtime', 'disposable-sandbox-boundary', 'destructive-permission', 'mutation-isolation-artifact', 'sandbox-isolation-proof'],
 	required_any_capabilities: [['restore', 'reset']],
 	mutation_mode: 'isolated',
 	mutates: true,
 });
 assert.equal(explicitAnyCapabilityMissing.executable, false);
 assert.deepEqual(explicitAnyCapabilityMissing.metadata.missing_any_capabilities, [['reset', 'restore']]);
+
+const restMutationMissingDisposableBoundary = gateWordPressFuzzCaseForRuntimeCapabilities({
+	id: 'case-rest-missing',
+	skip_reasons: [],
+	metadata: { safety: { mutates: true } },
+}, { capabilities: ['rest', 'disposable-runtime'] }, {
+	required_capabilities: ['rest', 'disposable-runtime', 'disposable-sandbox-boundary', 'destructive-permission', 'mutation-isolation-artifact', 'sandbox-isolation-proof'],
+	mutation_mode: 'isolated',
+	mutates: true,
+});
+assert.equal(restMutationMissingDisposableBoundary.executable, false);
+assert.deepEqual(restMutationMissingDisposableBoundary.metadata.missing_capabilities, ['destructive-permission', 'disposable-sandbox-boundary', 'mutation-isolation-artifact', 'sandbox-isolation-proof']);
 
 const policyDenied = gateWordPressFuzzCaseForMutationPolicy({
 	id: 'case-3',
