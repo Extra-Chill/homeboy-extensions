@@ -37,7 +37,6 @@ const {
 } = require('./wp-codebox-resolver');
 const {
 	createCodeboxClient,
-	normalizeCliResult,
 } = require('./codebox-client');
 const {
 	WP_CODEBOX_FUZZ_PUBLIC_ABILITIES,
@@ -226,6 +225,8 @@ const FUZZ_ARTIFACT_SEMANTIC_KEYS = {
 const REQUIRED_WP_CODEBOX_FUZZ_CONTRACT_PATHS = [
 	'abilities.wordpressRuntime.runFuzzSuite',
 	'abilities.wordpressRuntime.runWorkload',
+	'commands.wordpressRuntime.runFuzzSuite',
+	'commands.wordpressRuntime.runWorkload',
 	'schemas.wordpressRuntime.fuzzSuite',
 	'schemas.wordpressRuntime.fuzzSuiteResult',
 	'schemas.wordpressRuntime.workloadRun',
@@ -245,6 +246,7 @@ function wpCodeboxWordPressRuntimeContracts(options = {}) {
 	return {
 		manifest,
 		abilities: objectOrUndefined(manifest?.abilities?.wordpressRuntime) || {},
+		commands: objectOrUndefined(manifest?.commands?.wordpressRuntime) || {},
 		schemas: objectOrUndefined(manifest?.schemas?.wordpressRuntime) || {},
 	};
 }
@@ -295,6 +297,14 @@ function wpCodeboxFuzzSuiteResultSchema(options = {}) {
 
 function wpCodeboxWordPressWorkloadRunSchema(options = {}) {
 	return wpCodeboxWordPressRuntimeContracts(options).schemas.workloadRun || DEFAULT_WORDPRESS_WORKLOAD_RUN_SCHEMA;
+}
+
+function wpCodeboxFuzzSuiteCommand(options = {}) {
+	return wpCodeboxWordPressRuntimeContracts(options).commands.runFuzzSuite;
+}
+
+function wpCodeboxWordPressWorkloadRunCommand(options = {}) {
+	return wpCodeboxWordPressRuntimeContracts(options).commands.runWorkload;
 }
 
 function wpCodeboxFuzzSuiteInput(options = {}) {
@@ -441,7 +451,7 @@ function normalizeWpCodeboxFuzzSuiteCases(source = {}, context = {}) {
 	}
 	const planCases = homeboyFuzzWorkloadPlanCases(source);
 	if (planCases.length > 0) {
-		return planCases.map((entry, index) => homeboyFuzzWorkloadPlanCaseToWpCodeboxCase(entry, source, index, context));
+		return planCases.map((entry, index) => homeboyFuzzWorkloadPlanCaseToWpCodeboxCase(entry, source, index));
 	}
 	if (directCases.length === 0) {
 		const defaultCase = homeboyFuzzWorkloadDefaultCase(source);
@@ -502,7 +512,7 @@ function homeboyFuzzWorkloadPlanCases(manifest = {}) {
 	));
 }
 
-function homeboyFuzzWorkloadPlanCaseToWpCodeboxCase(entry = {}, manifest = {}, index = 0, context = {}) {
+function homeboyFuzzWorkloadPlanCaseToWpCodeboxCase(entry = {}, manifest = {}, index = 0) {
 	const caseId = entry.case_id || entry.caseId || entry.id || `${manifest.id || 'fuzz-workload'}:${index}`;
 	const artifacts = normalizeHomeboyFuzzCaseArtifacts(entry, manifest);
 	const target = homeboyFuzzPlanCaseTarget(entry);
@@ -985,12 +995,13 @@ function wpCodeboxFuzzExecutionRequest(options = {}) {
 	const input = wpCodeboxFuzzSuiteInput(options.input || options.abilityInput || options.ability_input || options);
 	const taskId = requiredString(options.taskId || options.task_id || input.id, 'taskId');
 	const ability = options.ability || wpCodeboxFuzzSuiteAbility(options);
+	const command = wpCodeboxCommandFromFuzzAbility(ability, options);
 	const runtimeRequirements = options.runtimeRequirements || options.runtime_requirements;
 	return stripUndefined({
 		schema: WP_CODEBOX_FUZZ_EXECUTION_SCHEMA,
 		task_id: taskId,
 		ability,
-		command: wpCodeboxCommandFromFuzzAbility(ability, options),
+		command,
 		input,
 		runtime_requirements: objectOrUndefined(runtimeRequirements),
 		artifact_declarations: options.artifactDeclarations || options.artifact_declarations || DEFAULT_FUZZ_SUITE_ARTIFACT_DECLARATIONS,
@@ -1315,9 +1326,9 @@ function detectWpCodeboxPublicFuzzCapabilities(options = {}) {
 		return normalizeWpCodeboxPublicFuzzCapabilities(options.capabilities.public_cli || options.capabilities.publicCli);
 	}
 
-	const readiness = runWpCodeboxPublicFuzzReadiness(options);
-	if (readiness.status === 0) {
-		return normalizeWpCodeboxPublicFuzzCapabilitiesFromReadiness(parseWpCodeboxPublicCliJson(readiness.stdout, { command: 'fuzz readiness' }));
+	const manifestDescriptor = wpCodeboxPublicFuzzCapabilitiesFromRuntimeContract(options);
+	if (manifestDescriptor) {
+		return manifestDescriptor;
 	}
 
 	return normalizeWpCodeboxPublicFuzzCapabilities({
@@ -1328,12 +1339,29 @@ function detectWpCodeboxPublicFuzzCapabilities(options = {}) {
 			command_available: false,
 			diagnostics: [{
 				severity: 'error',
-				code: 'wp_codebox_fuzz_readiness_command_unavailable',
-				message: 'WP Codebox public CLI must expose `fuzz readiness --format=json` before Homeboy dispatches WordPress fuzz workloads.',
-				stderr: readiness.stderr || undefined,
-				stdout: readiness.stdout || undefined,
+				code: 'wp_codebox_fuzz_explicit_public_descriptor_missing',
+				message: 'WP Codebox public fuzz dispatch requires explicit runtime contract fields; Homeboy does not probe production runtimes for fuzz capabilities.',
 			}],
 		},
+	});
+}
+
+function wpCodeboxPublicFuzzCapabilitiesFromRuntimeContract(options = {}) {
+	const manifest = wpCodeboxRuntimeContractManifest(options);
+	const commands = objectOrUndefined(manifest?.commands?.wordpressRuntime);
+	const wordpressCapabilities = objectOrUndefined(manifest?.capabilities?.wordpressRuntime || manifest?.wordpressRuntime?.capabilities);
+	const readiness = objectOrUndefined(manifest?.readiness?.wordpressRuntime || manifest?.wordpressRuntime?.readiness);
+	if (!commands || !wordpressCapabilities || !readiness) {
+		return null;
+	}
+	return normalizeWpCodeboxPublicFuzzCapabilities({
+		commands: stripUndefined({
+			[commands?.runFuzzSuite]: Boolean(commands?.runFuzzSuite),
+			[commands?.runWorkload]: Boolean(commands?.runWorkload),
+		}),
+		capabilities: wordpressCapabilities?.capabilities || wordpressCapabilities?.runtime_capabilities || wordpressCapabilities?.runtimeCapabilities || wordpressCapabilities?.supports,
+		runner_modes: wordpressCapabilities?.runner_modes || wordpressCapabilities?.runnerModes,
+		readiness,
 	});
 }
 
@@ -1350,6 +1378,7 @@ function preflightWpCodeboxFuzzCapabilityContract(options = {}) {
 	const requiredPlanContracts = requiredWpCodeboxContractsForFuzzPlan(plan);
 	const destructiveReadiness = normalizeWpCodeboxDestructiveReadiness(capabilities.readiness, { request, suiteInput, plan });
 	const requiredAbilities = { ...WP_CODEBOX_FUZZ_PUBLIC_ABILITIES };
+	const requiredCommandMap = wpCodeboxWordPressRuntimeContracts({ runtimeContractManifest: manifest }).commands;
 	const requiredCommands = requiredPublicCommandsForRequest(request, requiredPlanContracts);
 	const missingContracts = [];
 	const readinessStatus = capabilities.readiness?.status;
@@ -1358,9 +1387,8 @@ function preflightWpCodeboxFuzzCapabilityContract(options = {}) {
 		&& capabilities.readiness?.mode === 'runtime-backed';
 	if (capabilities.readiness?.command_available === false) {
 		missingContracts.push({
-			type: 'public_cli_readiness_command',
-			command: 'fuzz readiness',
-			message: 'WP Codebox public CLI must expose `fuzz readiness --format=json` before Homeboy dispatches WordPress fuzz workloads.',
+			type: 'explicit_public_descriptor',
+			message: 'WP Codebox public fuzz dispatch requires explicit runtime contract fields; Homeboy does not probe production runtimes for fuzz capabilities.',
 			readiness: capabilities.readiness,
 		});
 	}
@@ -1399,11 +1427,11 @@ function preflightWpCodeboxFuzzCapabilityContract(options = {}) {
 	}
 
 	for (const command of requiredCommands) {
-		if (capabilities.commands?.[command] !== true) {
+		if (!Object.values(requiredCommandMap).includes(command) || capabilities.commands?.[command] !== true) {
 			missingContracts.push({
 				type: 'public_cli_command',
 				command,
-				message: `WP Codebox public CLI must expose \`${command}\` before Homeboy dispatches WordPress fuzz workloads.`,
+				message: `WP Codebox runtime contract must explicitly declare public command \`${command}\` before Homeboy dispatches WordPress fuzz workloads.`,
 			});
 		}
 	}
@@ -1463,15 +1491,15 @@ function preflightWpCodeboxFuzzCapabilityContract(options = {}) {
 function requiredPublicCommandsForRequest(request = {}, requiredPlanContracts = {}) {
 	const ability = wpCodeboxFuzzRequestAbility(request);
 	if (ability === DEFAULT_WORDPRESS_WORKLOAD_RUN_ABILITY) {
-		return ['run-wordpress-workload'];
+		return [request.command].filter(Boolean);
 	}
 	if (ability === DEFAULT_FUZZ_SUITE_ABILITY) {
 		const input = wpCodeboxFuzzRequestInput(request);
 		const runnerMode = publicFuzzCliRunnerModeForRequest(request, { requiredPlanContracts });
 		return unique([
-			'run-fuzz-suite',
+			request.command,
 			...normalizeArray(requiredPlanContracts.commands).filter((command) => runnerMode === 'runtime-backed' ? command !== 'run-wordpress-workload' : true),
-			...(runnerMode === 'runtime-backed' || !suiteInputRequiresWorkloadCommand(input) ? [] : ['run-wordpress-workload']),
+			...(runnerMode === 'runtime-backed' || !suiteInputRequiresWorkloadCommand(input) ? [] : [wpCodeboxWordPressWorkloadRunCommand({ runtimeContractManifest: request.metadata?.runtime_contract_manifest })]),
 		]);
 	}
 	return requiredPlanContracts.commands?.length > 0 ? unique(requiredPlanContracts.commands) : [...WP_CODEBOX_PUBLIC_CLI_COMMANDS];
@@ -1735,23 +1763,9 @@ function wordpressRuntimeCapabilitiesFromFuzzReadiness(readiness = {}) {
 	]);
 }
 
-function runWpCodeboxPublicFuzzReadiness(options = {}) {
-	return runWpCodeboxPublicCliCommand(['fuzz', 'readiness', '--format=json'], options);
-}
-
 function publicFuzzCliCommandForRequest(request = {}, capabilities = {}) {
 	if (request.command && capabilities.commands?.[request.command]) {
 		return request.command;
-	}
-	const ability = wpCodeboxFuzzRequestAbility(request);
-	if (ability === DEFAULT_WORDPRESS_WORKLOAD_RUN_ABILITY && capabilities.commands?.['run-wordpress-workload']) {
-		return 'run-wordpress-workload';
-	}
-	if (capabilities.commands?.['run-fuzz-suite']) {
-		return 'run-fuzz-suite';
-	}
-	if (capabilities.commands?.['run-wordpress-workload']) {
-		return 'run-wordpress-workload';
 	}
 	return undefined;
 }
@@ -1788,22 +1802,14 @@ async function runWpCodeboxPublicCli(command, input, options = {}) {
 	return createCodeboxClient(options).runPublicJsonCommand(command, input, options);
 }
 
-function runWpCodeboxPublicCliCommand(args, options = {}) {
-	if (typeof options.runPublicCli === 'function') {
-		return normalizeCliResult(options.runPublicCli({ command: wpCodeboxPublicCliBin(options), args, stdin: options.stdin }, options));
-	}
-	if (typeof options.runCli === 'function') {
-		return normalizeCliResult(options.runCli({ command: wpCodeboxPublicCliBin(options), args, stdin: options.stdin }, options));
-	}
-
-	return createCodeboxClient(options).runPublicCliCommand(args, options);
-}
-
 function wpCodeboxCommandFromFuzzAbility(ability, options = {}) {
-	if (ability === wpCodeboxWordPressWorkloadRunAbility(options) || ability === DEFAULT_WORDPRESS_WORKLOAD_RUN_ABILITY) {
-		return 'run-wordpress-workload';
+	if (ability === wpCodeboxWordPressWorkloadRunAbility(options)) {
+		return wpCodeboxWordPressWorkloadRunCommand(options);
 	}
-	return 'run-fuzz-suite';
+	if (ability === wpCodeboxFuzzSuiteAbility(options)) {
+		return wpCodeboxFuzzSuiteCommand(options);
+	}
+	return undefined;
 }
 
 function wpCodeboxPublicCliBin(options = {}) {
@@ -3065,12 +3071,14 @@ module.exports = {
 	wpCodeboxFuzzExecutionRequest,
 	wpCodeboxPublicCliInput,
 	wpCodeboxFuzzSuiteAbility,
+	wpCodeboxFuzzSuiteCommand,
 	wpCodeboxFuzzSuiteResultSchema,
 	wpCodeboxFuzzSuiteSchema,
 	wpCodeboxFuzzRuntimeTaskRequest,
 	wpCodeboxRuntimeContractManifest,
 	wpCodeboxWordPressRuntimeContracts,
 	wpCodeboxWordPressWorkloadRunAbility,
+	wpCodeboxWordPressWorkloadRunCommand,
 	wpCodeboxWordPressWorkloadRunInput,
 	wpCodeboxWordPressWorkloadRunSchema,
 	wpCodeboxFuzzSuiteInput,
