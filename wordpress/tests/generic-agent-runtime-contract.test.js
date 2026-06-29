@@ -32,10 +32,10 @@ assert.equal(registry['local-shell'].id, 'local-shell');
 assert.equal(registry['fake-runtime'], undefined);
 assert.equal(registry['package'], undefined);
 assert.equal(registry['homeboy-agent-task-core-contract'], undefined);
-assert.equal(normalizeRuntimeId('codebox'), 'wp-codebox');
+assert.equal(normalizeRuntimeId('codebox'), 'codebox');
 assert.equal(DEFAULT_RUNTIME_ID, 'local-shell');
 assert.equal(resolveRuntimeProvider(undefined, { repoRoot, registry }).id, 'local-shell');
-assert.equal(resolveRuntimeProvider('codebox', { repoRoot, registry }).id, 'wp-codebox');
+assert.throws(() => resolveRuntimeProvider('codebox', { repoRoot, registry }), /Unsupported agent_runtime: codebox/);
 assert.equal(resolveRuntimeProvider('local-shell', { repoRoot, registry }).executor.backend, 'local-shell');
 
 const wpCodeboxRuntime = resolveRuntimeProvider('wp-codebox', { repoRoot, registry });

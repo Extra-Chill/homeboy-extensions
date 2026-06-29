@@ -11,10 +11,8 @@ const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const workspace = path.join(rootDir, 'fixture-workspace');
 const {
 	DEFAULT_RUNTIME_ID,
-	manifestRuntimeAliases,
 	normalizeRuntimeId,
 	resolveRuntimeProvider,
-	runtimeIdAliasDeprecation,
 	runtimeRegistry,
 } = require('../runtime-agent-ci/lib/runtime-provider-resolver.cjs');
 
@@ -56,30 +54,8 @@ assert.deepEqual(runtime.executor.runtime_execution_contracts.bundle, {
 	required_capabilities: ['agent_bundle_execution'],
 });
 
-const codeboxAliasRuntime = resolveRuntimeProvider('codebox', { repoRoot: rootDir, workspace });
-assert.equal(normalizeRuntimeId('codebox'), 'wp-codebox');
-assert.equal(codeboxAliasRuntime.id, 'wp-codebox');
-assert.equal(codeboxAliasRuntime.requested_id, 'codebox');
-assert.deepEqual(runtimeIdAliasDeprecation('codebox'), manifestRuntimeAliases(registry['wp-codebox'])[0]);
-assert.deepEqual(codeboxAliasRuntime.deprecated_runtime_alias, {
-	schema: 'homeboy/deprecated-runtime-alias/v1',
-	alias: 'codebox',
-	replacement: 'wp-codebox',
-	quarantine: 'legacy-runtime-id-alias',
-	status: 'deprecated',
-});
-
-const aliasRegistry = {
-	'custom-runtime': {
-		schema: 'homeboy/agent-runtime-manifest/v1',
-		id: 'custom-runtime',
-		deprecated_runtime_aliases: [{ alias: 'legacy-custom', replacement: 'custom-runtime' }],
-		agent_task_executors: [executorFixture('custom.active', 'custom-runtime', 'active', [])],
-	},
-};
-const customAliasRuntime = resolveRuntimeProvider('legacy-custom', { repoRoot: rootDir, registry: aliasRegistry });
-assert.equal(customAliasRuntime.id, 'custom-runtime');
-assert.equal(customAliasRuntime.deprecated_runtime_alias.alias, 'legacy-custom');
+assert.equal(normalizeRuntimeId('codebox'), 'codebox');
+assert.throws(() => resolveRuntimeProvider('codebox', { repoRoot: rootDir, workspace }), /Unsupported agent_runtime: codebox/);
 
 const envRuntime = resolveRuntimeProvider('wp-codebox', {
 	repoRoot: rootDir,

@@ -37,7 +37,6 @@ const {
   wpCodeboxBinaryDiagnostic,
   wpCodeboxProviderPluginPathsFromEnv,
   wpCodeboxResolveCommand,
-  wpCodeboxSupportsRunAgentTaskCommand,
 } = require('../../lib/wp-codebox-adapter-descriptor');
 
 
@@ -1043,16 +1042,16 @@ function runnerInput(request, artifacts) {
     ability_tools: request.ability_tools || request.abilityTools || [],
     runtime_state_mounts: request.runtime_state_mounts || request.runtimeStateMounts || [],
     runtime_config_mounts: request.runtime_config_mounts || request.runtimeConfigMounts || [],
-    callback_data: request.callback_data || request.callbackData,
-    max_turns: Number.parseInt(argValue('--max-turns') || request.max_turns || request.maxTurns || 0, 10) || undefined,
-    task_timeout_seconds: Number.parseInt(argValue('--task-timeout-seconds') || request.task_timeout_seconds || request.taskTimeoutSeconds || 0, 10) || undefined,
+    callback_data: request.callback_data,
+    max_turns: Number.parseInt(argValue('--max-turns') || request.max_turns || 0, 10) || undefined,
+    task_timeout_seconds: Number.parseInt(argValue('--task-timeout-seconds') || request.task_timeout_seconds || 0, 10) || undefined,
     sandbox_session_id: request.sandbox_session_id || '',
     orchestrator: request.orchestrator || {},
     recipe: request.recipe || {},
-    runtime_task: request.runtime_task || request.runtimeTask,
-    structured_artifacts: request.structured_artifacts || request.structuredArtifacts || [],
-    artifact_declarations: request.artifact_declarations || request.artifactDeclarations || [],
-    agent_bundles: request.agent_bundles || request.agentBundles || [],
+    runtime_task: request.runtime_task,
+    structured_artifacts: request.structured_artifacts || [],
+    artifact_declarations: request.artifact_declarations || [],
+    agent_bundles: request.agent_bundles || [],
     artifacts_path: artifacts,
     wp_codebox_bin: argValue('--wp-codebox-bin') || request.wp_codebox_bin || '',
     runtime_component_paths: runtimeComponentPaths,
@@ -1249,7 +1248,7 @@ function stableTaskInput(input) {
     allowed_tools: allowedTools,
     ability_requirements: abilityRequirements(input),
     expected_artifacts: input.parent_request?.expected_artifacts || input.parent_request?.task?.expected_artifacts || [],
-    artifact_declarations: input.artifact_declarations || input.parent_request?.artifact_declarations || input.parent_request?.artifactDeclarations || input.parent_request?.task?.artifact_declarations || [],
+    artifact_declarations: input.artifact_declarations || input.parent_request?.artifact_declarations || input.parent_request?.task?.artifact_declarations || [],
     structured_artifacts: input.structured_artifacts || [],
     agent_bundles: input.agent_bundles || [],
     sandbox_tool_policy: sandboxToolPolicy(input, allowedTools),
@@ -1280,7 +1279,7 @@ function stableTaskInput(input) {
     ability_tools: input.ability_tools || [],
     runtime_state_mounts: input.runtime_state_mounts || [],
     runtime_config_mounts: input.runtime_config_mounts || [],
-    callback_data: input.callback_data || input.parent_request?.callback_data || input.parent_request?.callbackData,
+    callback_data: input.callback_data || input.parent_request?.callback_data,
     max_turns: input.max_turns,
     task_timeout_seconds: input.task_timeout_seconds,
     sandbox_session_id: input.sandbox_session_id,
@@ -1310,10 +1309,8 @@ function requiredArtifactDeclarations(input, config = {}) {
   const declarations = [
     input.artifact_declarations,
     input.parent_request?.artifact_declarations,
-    input.parent_request?.artifactDeclarations,
     input.parent_request?.task?.artifact_declarations,
     config.artifact_declarations,
-    config.artifactDeclarations,
   ].find((candidate) => Array.isArray(candidate) && candidate.length > 0) || [];
   return declarations.filter((declaration) => plainObject(declaration) && declaration.required === true && artifactDeclarationName(declaration));
 }
@@ -2157,16 +2154,14 @@ function runWpCodeboxParentTask(request, envOverrides = {}) {
       ...(bridgeServer ? { HOMEBOY_AGENT_TOOL_BRIDGE_URL: bridgeServer.url } : {}),
     },
   }, artifacts);
-  const useStableRunAgentTask = wpCodeboxSupportsRunAgentTaskCommand({ bin: wpCodeboxBin });
   const invocation = codeboxRunAgentTaskInvocation({
     taskInput: preparedInput.input,
     artifactsPath: artifacts,
     previewHold: argValue('--preview-hold'),
     previewPublicUrl: argValue('--preview-public-url'),
-    useLegacyAgentTaskRunCompatibility: !useStableRunAgentTask,
   });
   const inputPath = writeJsonFile(
-    useStableRunAgentTask ? 'homeboy-wp-codebox-run-agent-task-' : 'homeboy-wp-codebox-agent-task-input-',
+    'homeboy-wp-codebox-run-agent-task-',
     invocation.input
   );
   const args = invocation.args.map((arg) => arg === '--input-file={{input_file}}' ? `--input-file=${inputPath}` : arg);
@@ -2236,8 +2231,7 @@ function runWpCodeboxParentTask(request, envOverrides = {}) {
         secretNames: input.secret_env || [],
       }) : null);
       const callbackPayload = withCallbackDataEnvelope(normalizedPayload, readCallbackData(callbackInput.callback_data));
-      const compatibilityPayload = attachRunAgentTaskCompatibilityMetadata(callbackPayload, invocation);
-      const enrichedPayload = payloadEvidence ? attachFailureEvidence(compatibilityPayload, payloadEvidence) : compatibilityPayload;
+      const enrichedPayload = payloadEvidence ? attachFailureEvidence(callbackPayload, payloadEvidence) : callbackPayload;
       process.stdout.write(`${JSON.stringify(enrichedPayload, null, 2)}\n`);
       return callbackPayload.success === false ? 1 : 0;
     } catch {
@@ -2271,22 +2265,6 @@ function runWpCodeboxParentTask(request, envOverrides = {}) {
     return 1;
   }
   return result.status ?? 1;
-}
-
-function attachRunAgentTaskCompatibilityMetadata(payload, invocation) {
-  if (!payload || typeof payload !== 'object' || invocation.implementation !== 'legacy-agent-task-run-compat') {
-    return payload;
-  }
-  return {
-    ...payload,
-    metadata: {
-      ...(payload.metadata && typeof payload.metadata === 'object' && !Array.isArray(payload.metadata) ? payload.metadata : {}),
-      run_agent_task_compatibility: {
-        legacy_result_normalization: true,
-        implementation: invocation.implementation,
-      },
-    },
-  };
 }
 
 (async () => {

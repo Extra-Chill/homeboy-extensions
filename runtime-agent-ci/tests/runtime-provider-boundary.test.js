@@ -13,8 +13,8 @@ assert.equal(
   runtimeAgentCiRunnerSpec({
     runtime: 'wp-codebox',
     ability: 'example/run-task',
-    runtimeProfile: 'example-runtime-ci',
-    runtimeProfiles: { 'example-runtime-ci': { id: 'example-runtime-ci', runtime_task_ability: 'example/run-task' } },
+    runtime_profile: 'example-runtime-ci',
+    runtime_profiles: { 'example-runtime-ci': { id: 'example-runtime-ci', runtime_task_ability: 'example/run-task' } },
   }).executor.backend,
   'codebox'
 );
