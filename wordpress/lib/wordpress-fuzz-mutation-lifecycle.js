@@ -3,16 +3,11 @@
 const WORDPRESS_FUZZ_MUTATION_LIFECYCLE_SCHEMA = 'homeboy/wordpress-fuzz-mutation-lifecycle/v1';
 
 const LIFECYCLE_REQUIRED_CAPABILITIES = Object.freeze({
-	crud: Object.freeze(['crud', 'snapshot', 'restore', 'reset']),
-	rest: Object.freeze(['rest', 'checkpoint', 'rest-rollback']),
-	rest_crud: Object.freeze(['crud', 'rest', 'checkpoint', 'rest-rollback']),
-	admin: Object.freeze(['admin', 'snapshot', 'restore', 'reset']),
-	database: Object.freeze(['database', 'snapshot', 'transaction', 'reset']),
-});
-
-const LIFECYCLE_REQUIRED_ANY_CAPABILITIES = Object.freeze({
-	rest: Object.freeze([Object.freeze(['restore', 'reset'])]),
-	rest_crud: Object.freeze([Object.freeze(['restore', 'reset'])]),
+	crud: Object.freeze(['crud']),
+	rest: Object.freeze(['rest']),
+	rest_crud: Object.freeze(['crud', 'rest']),
+	admin: Object.freeze(['admin']),
+	database: Object.freeze(['database']),
 });
 
 function buildWordPressFuzzMutationLifecycleContract(input = {}) {
@@ -27,7 +22,7 @@ function buildWordPressFuzzMutationLifecycleContract(input = {}) {
 		method,
 		rollback_boundary: input.rollback_boundary || input.rollbackBoundary || 'after_each_case',
 		required_capabilities: input.required_capabilities || input.requiredCapabilities || LIFECYCLE_REQUIRED_CAPABILITIES[kind],
-		required_any_capabilities: input.required_any_capabilities || input.requiredAnyCapabilities || LIFECYCLE_REQUIRED_ANY_CAPABILITIES[kind],
+		required_any_capabilities: input.required_any_capabilities || input.requiredAnyCapabilities,
 		required_evidence: input.required_evidence || input.requiredEvidence || defaultLifecycleEvidence(kind, { deleteBoundary }),
 		required_any_evidence: input.required_any_evidence || input.requiredAnyEvidence || defaultLifecycleAnyEvidence(kind),
 		delete_boundary_required: deleteBoundary,
@@ -74,7 +69,7 @@ function wordpressFuzzMutationLifecycleDiagnosticsForCase(testCase = {}, artifac
 	return [{
 		severity: 'error',
 		code: 'wordpress_fuzz_mutation_lifecycle_evidence_missing',
-		message: 'Executed WordPress mutation case is missing required sandbox rollback lifecycle evidence.',
+		message: 'Executed WordPress mutation case is missing required sandbox mutation lifecycle evidence.',
 		case_id: testCase.id || testCase.case_id || testCase.caseId,
 		missing_evidence: missing,
 		contract,
@@ -136,25 +131,13 @@ function evidenceMatchesRequirement(candidate, requirement = {}, testCase = {}) 
 
 function defaultLifecycleEvidence(kind, { deleteBoundary = false } = {}) {
 	const evidence = [];
-	if (['crud', 'admin'].includes(kind)) {
-		evidence.push(lifecycleEvidence('snapshot'), lifecycleEvidence('restore'), lifecycleEvidence('reset'));
-	}
-	if (['rest', 'rest_crud'].includes(kind)) {
-		evidence.push(lifecycleEvidence('checkpoint'));
-	}
-	if (kind === 'database') {
-		evidence.push(lifecycleEvidence('snapshot'), lifecycleEvidence('transaction'), lifecycleEvidence('reset'));
-	}
 	if (deleteBoundary) {
-		evidence.push(lifecycleEvidence('delete-boundary', 'fuzz.rollback.delete_boundary'));
+		evidence.push(lifecycleEvidence('delete-boundary', 'fuzz.mutation.delete_boundary'));
 	}
 	return evidence;
 }
 
-function defaultLifecycleAnyEvidence(kind) {
-	if (['rest', 'rest_crud'].includes(kind)) {
-		return [[lifecycleEvidence('restore'), lifecycleEvidence('reset')]];
-	}
+function defaultLifecycleAnyEvidence() {
 	return [];
 }
 

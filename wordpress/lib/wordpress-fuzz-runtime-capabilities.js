@@ -106,11 +106,11 @@ const WORDPRESS_FUZZ_RUNTIME_CAPABILITY_ALIASES = new Map([
 const WORDPRESS_FUZZ_RUNTIME_CAPABILITY_SET = new Set(WORDPRESS_FUZZ_RUNTIME_CAPABILITIES);
 
 const WORDPRESS_FUZZ_RUNTIME_CAPABILITY_REQUIREMENTS = Object.freeze({
-	mutating_crud: Object.freeze(['crud', 'snapshot', 'restore', 'reset']),
-	mutating_rest: Object.freeze(['rest', 'checkpoint', 'rest-rollback']),
-	rest_crud_mutation: Object.freeze(['crud', 'rest', 'checkpoint', 'rest-rollback']),
-	admin_mutation: Object.freeze(['admin', 'snapshot', 'restore', 'reset']),
-	db_mutation: Object.freeze(['database', 'snapshot', 'transaction', 'reset']),
+	mutating_crud: Object.freeze(['crud']),
+	mutating_rest: Object.freeze(['rest']),
+	rest_crud_mutation: Object.freeze(['crud', 'rest']),
+	admin_mutation: Object.freeze(['admin']),
+	db_mutation: Object.freeze(['database']),
 });
 
 function normalizeWordPressFuzzRuntimeCapability(value) {
