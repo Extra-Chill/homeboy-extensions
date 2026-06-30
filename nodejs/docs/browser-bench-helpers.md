@@ -45,6 +45,12 @@ bench runner uses that base to add `url` fields to relative artifact paths and
 absolute paths under `HOMEBOY_BENCH_ARTIFACTS_DIR`. Existing `http`/`https`
 artifact paths are preserved as their public URL.
 
+For persisted Homeboy runs, reviewer and operator workflows should discover the
+published artifact manifest through the `homeboy/run-location-index/v1` record
+instead of asking humans to inspect runner-local artifact directories. The local
+artifact directory environment variables are runner inputs; the run location
+index is the durable discovery surface.
+
 Workloads can attach opaque viewer metadata to any artifact. The runner keeps
 that metadata as JSON without interpreting product-specific fields:
 

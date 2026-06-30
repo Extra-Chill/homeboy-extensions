@@ -51,17 +51,19 @@ layouts to discover private core files.
 
 WordPress helpers that consume WP Codebox browser or recipe artifacts should use
 the exported `homeboy-extension-wordpress/wp-codebox-artifacts` module instead
-of parsing bundle directory layouts directly. The helper resolves artifact
-references from returned runtime metadata (`artifacts`, `files`,
-`artifactFiles`, nested `artifact.files`, summary file maps, or fallback paths)
-to absolute files under the artifact bundle directory. It accepts canonical
-directory aliases including `artifacts.directory`, `artifacts.path`,
-`artifactsDirectory`, `artifacts_directory`, `artifactDirectory`, and
-`artifact_directory`.
+of parsing bundle directory layouts directly. For persisted Homeboy runs, first
+discover artifacts through the `homeboy/run-location-index/v1` record and its
+`artifact_manifest_ref`; do not require operators to inspect runner-local paths.
+Inside a runner-owned artifact bundle, the helper resolves artifact references
+from returned runtime metadata (`artifacts`, `files`, `artifactFiles`, nested
+`artifact.files`, summary file maps, or fallback paths) to files under the
+bundle directory. It accepts canonical directory aliases including
+`artifacts.directory`, `artifacts.path`, `artifactsDirectory`,
+`artifacts_directory`, `artifactDirectory`, and `artifact_directory`.
 
 This keeps extension helpers product-neutral: workloads and probes can name the
-artifact they need, while runtime-specific bundle layouts remain behind one
-lookup boundary.
+artifact they need, while Homeboy's run location index owns durable discovery
+and runtime-specific bundle layouts remain behind one lookup boundary.
 
 The generic `homeboy-extension-wordpress` root export does not flatten
 WP Codebox helpers into the public WordPress API. Compatibility consumers that
@@ -1123,9 +1125,9 @@ Evidence expectations:
 - Benchmark evidence must come from a connected Homeboy Lab/runner run. Set
   `/bench/local_execution` to `denied` first so missing runner/offload setup
   fails closed instead of falling back to local execution.
-- Reviewer-facing summaries should link the Homeboy run/artifact bundle and
-  include the rerun commands above. Do not cite machine-local paths as PR
-  evidence.
+- Reviewer-facing summaries should link the Homeboy run location index or the
+  artifact manifest it references, then include the rerun commands above. Do not
+  cite machine-local runner paths as PR evidence.
 
 Components that use npm for their canonical smoke gate can opt into an npm
 fallback when WP Codebox plugin activation succeeds but PHPUnit discovery finds
