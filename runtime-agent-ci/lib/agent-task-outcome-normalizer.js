@@ -1,7 +1,15 @@
 'use strict';
 
 const { AGENT_TASK_OUTCOME_SCHEMA } = require('../../agent-task-contracts/agent-task-provider-contract');
-const { normalizeAgentTaskOutcomeStatus } = require('./runtime-status.cjs');
+const {
+  RUN_LIFECYCLE_STATUS_SCHEMA,
+  RUN_LIFECYCLE_STATUSES,
+  normalizeAgentTaskOutcomeStatus,
+  normalizeRunLifecycleStatus,
+  runLifecycleStatusIsRetryable,
+  runLifecycleStatusIsSuccess,
+  runLifecycleStatusIsTerminal,
+} = require('./runtime-status.cjs');
 
 const TERMINAL_FAILURE_STATUSES = ['failed', 'provider_error', 'timeout', 'unable_to_remediate'];
 const SUCCESS_STATUSES = ['succeeded', 'no_op', 'follow_up_issue'];
@@ -63,7 +71,12 @@ function normalizeAgentTaskStatus(result = {}, options = {}) {
   if (TERMINAL_FAILURE_STATUSES.includes(explicitStatus)) {
     return explicitStatus;
   }
-  return normalizeAgentTaskOutcomeStatus({ ...result, status: explicitStatus || resultStatus }, { exitStatus });
+  if (TERMINAL_FAILURE_STATUSES.includes(resultStatus)) {
+    return resultStatus;
+  }
+  const status = explicitStatus || resultStatus;
+  const statusResult = status === undefined ? result : { ...result, status };
+  return normalizeAgentTaskOutcomeStatus(statusResult, { exitStatus });
 }
 
 function normalizeProviderStatus(result = {}, exitStatus = 0) {
@@ -227,11 +240,17 @@ function plainObject(value) {
 }
 
 module.exports = {
+  RUN_LIFECYCLE_STATUS_SCHEMA,
+  RUN_LIFECYCLE_STATUSES,
   agentTaskFailureCategory,
   agentTaskFailureRetryable,
   normalizeAgentTaskOutcome,
   normalizeAgentTaskStatus,
   normalizeProviderTaskOutcome,
   normalizeProviderStatus,
+  normalizeRunLifecycleStatus,
   providerFailureClassification,
+  runLifecycleStatusIsRetryable,
+  runLifecycleStatusIsSuccess,
+  runLifecycleStatusIsTerminal,
 };

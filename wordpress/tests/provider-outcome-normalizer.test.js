@@ -3,11 +3,17 @@
 const assert = require('node:assert/strict');
 
 const {
+  RUN_LIFECYCLE_STATUS_SCHEMA,
+  RUN_LIFECYCLE_STATUSES,
   normalizeAgentTaskOutcome,
   normalizeAgentTaskStatus,
   normalizeProviderTaskOutcome,
   normalizeProviderStatus,
+  normalizeRunLifecycleStatus,
   providerFailureClassification,
+  runLifecycleStatusIsRetryable,
+  runLifecycleStatusIsSuccess,
+  runLifecycleStatusIsTerminal,
 } = require('../../agent-runtimes/wp-codebox/lib/provider-outcome-normalizer');
 
 const request = { task_id: 'provider-task-123' };
@@ -110,6 +116,14 @@ assert.equal(providerFailureClassification('task', 'failed'), 'execution_failed'
 assert.equal(providerFailureClassification('incomplete', 'failed'), 'execution_failed');
 assert.equal(providerFailureClassification('max_turns', 'timeout'), 'timeout');
 assert.equal(providerFailureClassification('custom-runtime-detail', 'failed'), 'unknown');
+assert.equal(RUN_LIFECYCLE_STATUS_SCHEMA, 'homeboy/run-lifecycle-status/v1');
+assert.deepEqual(RUN_LIFECYCLE_STATUSES, ['unknown', 'queued', 'running', 'succeeded', 'partial_failure', 'failed', 'cancelled', 'timed_out', 'stale']);
+assert.equal(normalizeRunLifecycleStatus({ status: 'completed' }), 'succeeded');
+assert.equal(normalizeRunLifecycleStatus({ status: 'incomplete' }), 'running');
+assert.equal(normalizeRunLifecycleStatus({ status: 'timeout' }), 'timed_out');
+assert.equal(runLifecycleStatusIsTerminal('stale'), true);
+assert.equal(runLifecycleStatusIsSuccess('succeeded'), true);
+assert.equal(runLifecycleStatusIsRetryable('failed'), true);
 assert.throws(() => normalizeProviderTaskOutcome({}, {}), /request.task_id/);
 
 console.log('✓ provider outcome normalizer boundary test PASSED');

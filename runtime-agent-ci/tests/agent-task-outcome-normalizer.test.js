@@ -3,13 +3,19 @@
 const assert = require('node:assert/strict');
 
 const {
+  RUN_LIFECYCLE_STATUS_SCHEMA,
+  RUN_LIFECYCLE_STATUSES,
   agentTaskFailureCategory,
   agentTaskFailureRetryable,
   normalizeAgentTaskOutcome,
   normalizeAgentTaskStatus,
   normalizeProviderTaskOutcome,
   normalizeProviderStatus,
+  normalizeRunLifecycleStatus,
   providerFailureClassification,
+  runLifecycleStatusIsRetryable,
+  runLifecycleStatusIsSuccess,
+  runLifecycleStatusIsTerminal,
 } = require('../lib/agent-task-outcome-normalizer');
 
 const request = { task_id: 'provider-task-123' };
@@ -148,6 +154,17 @@ assert.equal(providerFailureClassification('max_turns', 'timeout'), 'timeout');
 assert.equal(providerFailureClassification('custom-runtime-detail', 'failed'), 'unknown');
 assert.equal(agentTaskFailureCategory({ provider_error: true }, [{ class: 'provider.rate_limit', message: 'rate limit' }], 'provider', 'provider_error'), 'provider.rate_limit');
 assert.equal(agentTaskFailureRetryable('provider.rate_limit', 'provider', 'provider_error'), true);
+assert.equal(RUN_LIFECYCLE_STATUS_SCHEMA, 'homeboy/run-lifecycle-status/v1');
+assert.deepEqual(RUN_LIFECYCLE_STATUSES, ['unknown', 'queued', 'running', 'succeeded', 'partial_failure', 'failed', 'cancelled', 'timed_out', 'stale']);
+assert.equal(normalizeRunLifecycleStatus({ status: 'completed' }), 'succeeded');
+assert.equal(normalizeRunLifecycleStatus({ status: 'incomplete' }), 'running');
+assert.equal(normalizeRunLifecycleStatus({ status: 'timeout' }), 'timed_out');
+assert.equal(normalizeRunLifecycleStatus({ status: 'missing_record' }), 'stale');
+assert.equal(normalizeRunLifecycleStatus({ status: 'provider_error' }), 'failed');
+assert.equal(normalizeRunLifecycleStatus({ arbitrary: 'payload' }), 'unknown');
+assert.equal(runLifecycleStatusIsTerminal('partial_failure'), true);
+assert.equal(runLifecycleStatusIsSuccess('succeeded'), true);
+assert.equal(runLifecycleStatusIsRetryable('timed_out'), true);
 assert.throws(() => normalizeProviderTaskOutcome({}, {}), /request.task_id/);
 
 console.log('✓ agent task outcome normalizer boundary test PASSED');
