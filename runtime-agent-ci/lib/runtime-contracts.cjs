@@ -2,6 +2,9 @@
 
 const SECRET_ENV_PLAN_SCHEMA = 'homeboy/secret-env-plan/v1';
 const ARTIFACT_PATHS_SCHEMA = 'homeboy/runtime-agent-artifact-paths/v1';
+// Blocked from importing Homeboy core directly: artifact manifest constants are
+// currently exposed through Rust (`homeboy::core::artifacts`), not a Node or CLI
+// contract consumable by this package.
 const ARTIFACT_MANIFEST_SCHEMA = 'homeboy/artifact-manifest/v1';
 const ARTIFACT_MANIFEST_FILE = 'homeboy-artifact-manifest.json';
 const RUNNER_ARTIFACT_MANIFEST_REF_SCHEMA = 'homeboy/runner-artifact-manifest-ref/v1';

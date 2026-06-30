@@ -9,6 +9,7 @@ const {
   runHeadlessDeterministicLoop,
   writeHeadlessDeterministicLoopArtifacts,
 } = require('../lib/headless-deterministic-loop-runner');
+const { ARTIFACT_MANIFEST_FILE, ARTIFACT_MANIFEST_SCHEMA } = require('../lib/artifact-paths.cjs');
 
 const runtime = { id: 'fixture-runtime', executor: { backend: 'fixture', path: '/unused' } };
 const baseSpec = {
@@ -200,8 +201,8 @@ assert.equal(expiredDeadline.tasks[0].loop_policy.iteration_count, 0);
 const artifactDir = fs.mkdtempSync(path.join(os.tmpdir(), 'headless-loop-artifact-manifest-'));
 try {
   writeHeadlessDeterministicLoopArtifacts({ result: twoRevolution, artifact_paths: { run_dir: artifactDir } });
-  const manifest = JSON.parse(fs.readFileSync(path.join(artifactDir, 'homeboy-artifact-manifest.json'), 'utf8'));
-  assert.equal(manifest.schema, 'homeboy/artifact-manifest/v1');
+  const manifest = JSON.parse(fs.readFileSync(path.join(artifactDir, ARTIFACT_MANIFEST_FILE), 'utf8'));
+  assert.equal(manifest.schema, ARTIFACT_MANIFEST_SCHEMA);
   assert.equal(manifest.artifacts.some((artifact) => artifact.path === 'loop-result.json'), true);
   assert.equal(manifest.artifacts.some((artifact) => artifact.path === 'events.json'), true);
   assert.equal(manifest.artifacts.every((artifact) => !path.isAbsolute(artifact.path)), true);

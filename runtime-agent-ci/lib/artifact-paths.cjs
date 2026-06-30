@@ -100,11 +100,15 @@ function relativeArtifactPath(root, filePath) {
 }
 
 function safeRelativePath(value) {
-  const normalized = String(value || '').replaceAll(path.sep, '/');
-  if (!normalized || normalized.startsWith('../') || normalized === '..' || normalized.startsWith('/') || normalized.includes('/../') || normalized === '.') {
+  const normalized = String(value || '').replace(/\\/g, '/');
+  if (!normalized || normalized.startsWith('/') || /^[A-Za-z]:\//.test(normalized)) {
     return '';
   }
-  return normalized;
+  const parts = normalized.split('/');
+  if (parts.some((part) => part === '..')) {
+    return '';
+  }
+  return parts.filter((part) => part && part !== '.').join('/');
 }
 
 function runArtifactPath(runDir, key) {
