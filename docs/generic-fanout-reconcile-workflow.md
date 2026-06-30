@@ -62,7 +62,7 @@ For Homeboy agent-task fanout, keep record status host-owned: map provider outco
 
 ## Finding Packets
 
-`runtime-agent-ci` and `runtime-agent-ci/lib/generic-fanout-reconcile-workflow.js` export helpers for diagnostic/finding packet inputs. `wordpress/lib/generic-fanout-reconcile-workflow.js` re-exports the same helpers for existing entrypoints.
+`runtime-agent-ci` and `runtime-agent-ci/lib/generic-fanout-reconcile-workflow.js` export helpers for diagnostic/finding packet inputs. Existing WordPress callers may still resolve the deprecated compatibility re-export at `wordpress/lib/generic-fanout-reconcile-workflow.js`, but new callers should import the `runtime-agent-ci` module directly so the WordPress wrapper can be removed in a later cleanup.
 
 - `normalizeFindingPacketItems(packets, policy)` flattens packet-level `findings` or `diagnostics` arrays into generic items with stable packet/finding IDs.
 - `materializeFindingPacketFanoutConfig({ packets, policy, ...config })` applies policy-driven grouping and returns the generic config/groups/items needed by the planner.

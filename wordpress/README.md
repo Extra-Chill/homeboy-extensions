@@ -665,10 +665,11 @@ homeboy refactor <component> \
 
 Audit fanout has two boundaries. Generic extraction and reconcile mechanics live
 in `../runtime-agent-ci/lib/generic-fanout-reconcile-workflow.js` and
-`../runtime-agent-ci/lib/fanout-reconcile-runner.js`; WordPress keeps thin
-`lib/` re-export wrappers and the `scripts/agent/homeboy-generic-fanout-reconcile.cjs`
-JSON CLI for existing entrypoints. The generic
-runtime provider interface lives in `lib/audit-fanout-runtime-provider.js` and is
+`../runtime-agent-ci/lib/fanout-reconcile-runner.js`. WordPress still keeps thin
+deprecated `lib/` re-export wrappers and the `scripts/agent/homeboy-generic-fanout-reconcile.cjs`
+JSON CLI for existing entrypoints. New callers should import the `runtime-agent-ci`
+modules directly so the WordPress compatibility wrappers can be removed in a
+later cleanup. The generic runtime provider interface lives in `lib/audit-fanout-runtime-provider.js` and is
 exported from the WordPress package. Runtime providers own execution: they map
 generic grouped work into their provider task contract, run the task, and
 normalize records back for reconcile.
