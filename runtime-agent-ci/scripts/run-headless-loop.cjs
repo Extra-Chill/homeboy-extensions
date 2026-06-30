@@ -22,13 +22,7 @@ try {
   }
   const repoRoot = path.resolve(__dirname, '..', '..');
   const rawSpec = JSON.parse(fs.readFileSync(specPath, 'utf8'));
-  // Fill required secret env names from declared fallbacks before any preflight
-  // runs. The provider's canonical key (e.g. OPENAI_API_KEY) is sourced from the
-  // caller's generic credential secret, and the Homeboy app token falls back to
-  // the repository GITHUB_TOKEN when no app token is present. Forwarding still
-  // happens through the secret-env-names-only boundary; only this process's env
-  // is populated so the names resolve.
-  applySecretEnvFallbacks(rawSpec.secret_env_fallbacks);
+  applySecretEnvPlanSourceEnvNames(rawSpec.secret_env_plan);
   const spec = materializeHeadlessProductionLoopSpec(rawSpec, {
     revolutions: args.revolutions || args.max_revolutions || process.env.HOMEBOY_HEADLESS_LOOP_REVOLUTIONS,
     runtime_id: args.runtime_id || process.env.HOMEBOY_AGENT_RUNTIME,
@@ -93,18 +87,22 @@ function listArg(value) {
   return String(value || '').split(',').map((item) => item.trim()).filter(Boolean);
 }
 
-function applySecretEnvFallbacks(fallbacks) {
-  if (!fallbacks || typeof fallbacks !== 'object' || Array.isArray(fallbacks)) {
+function applySecretEnvPlanSourceEnvNames(plan) {
+  if (!plan || typeof plan !== 'object' || Array.isArray(plan)) {
     return;
   }
-  for (const [target, sources] of Object.entries(fallbacks)) {
+  for (const requirement of Array.isArray(plan.requirements) ? plan.requirements : []) {
+    if (!requirement || typeof requirement !== 'object' || Array.isArray(requirement)) {
+      continue;
+    }
+    const target = requirement.name;
     if (typeof target !== 'string' || target === '') {
       continue;
     }
     if (typeof process.env[target] === 'string' && process.env[target] !== '') {
       continue;
     }
-    const sourceList = Array.isArray(sources) ? sources : [sources];
+    const sourceList = Array.isArray(requirement.source_env_names) ? requirement.source_env_names : [];
     for (const source of sourceList) {
       const value = typeof source === 'string' ? process.env[source] : undefined;
       if (typeof value === 'string' && value !== '') {

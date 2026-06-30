@@ -1470,15 +1470,18 @@ assert.deepEqual(plannedSecretEnvTaskInput.secret_env, [
 ]);
 
 // Regression: the consumer must honor the FULL authoritative aggregation that
-// core's SecretEnvPlan::secret_env_names() folds (secret_env_plan.rs:214-235) —
-// provider-credential names and requirement-derived names were previously
-// dropped, so those declared secrets silently never reached the sandbox.
+// core's SecretEnvPlan::secret_env_names() folds — provider-credential names and
+// requirement-derived target/source names must reach the sandbox.
 const previousFullPlan = process.env.HOMEBOY_AGENT_TASK_SECRET_ENV_PLAN_JSON;
 process.env.HOMEBOY_AGENT_TASK_SECRET_ENV_PLAN_JSON = JSON.stringify({
   schema: 'homeboy/secret-env-plan/v1',
   secret_env_names: ['HOMEBOY_PLANNED_CODEBOX_SECRET'],
   requirements: [
-    { name: 'HOMEBOY_REQUIRED_CODEBOX_SECRET', required: true },
+    {
+      name: 'HOMEBOY_REQUIRED_CODEBOX_SECRET',
+      required: true,
+      source_env_names: ['HOMEBOY_REQUIRED_CODEBOX_SECRET', 'HOMEBOY_REQUIRED_CODEBOX_SECRET_SOURCE'],
+    },
     { name: 'HOMEBOY_OPTIONAL_CODEBOX_SECRET', required: false },
   ],
   provider_credentials: {
@@ -1513,6 +1516,7 @@ try {
 for (const declaredSecret of [
   'HOMEBOY_PLANNED_CODEBOX_SECRET',
   'HOMEBOY_REQUIRED_CODEBOX_SECRET',
+  'HOMEBOY_REQUIRED_CODEBOX_SECRET_SOURCE',
   'HOMEBOY_OPTIONAL_CODEBOX_SECRET',
   'AI_PROVIDER_OPENAI_CODEX_ACCESS_TOKEN',
   'AI_PROVIDER_OPENAI_CODEX_REFRESH_TOKEN',

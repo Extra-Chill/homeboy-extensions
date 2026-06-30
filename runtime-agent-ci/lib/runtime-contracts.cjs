@@ -15,17 +15,24 @@ const CANONICAL_RUN_ARTIFACT_FILES = Object.freeze({
   loop_policy: 'loop-policy.json',
 });
 
-// Local adapter seam for the secret materialization contract. Keep the emitted
-// shape stable until Homeboy core owns this schema and assembly.
-function buildSecretEnvPlan({ secretEnv = [], runtimeEnv = {}, providerSecretEnvMapping = {}, secretEnvFallbacks = {} } = {}) {
+// Local adapter seam for Homeboy core's SecretEnvPlan shape. Homeboy does not
+// expose this as a JS library yet, so keep this mirror intentionally small.
+function buildSecretEnvPlan({ secretEnv = [], runtimeEnv = {}, providerSecretEnvMapping = {}, secretEnvSourceMapping = {} } = {}) {
+  const secretEnvNames = uniqueStrings(secretEnv);
   return {
     schema: SECRET_ENV_PLAN_SCHEMA,
     public_env: Object.fromEntries(Object.entries(runtimeEnv).filter(([, value]) => typeof value === 'string')),
-    secret_env_names: uniqueStrings(secretEnv),
-    requirements: uniqueStrings(secretEnv).map((name) => ({ name, required: true })),
+    secret_env_names: secretEnvNames,
+    requirements: secretEnvNames.map((name) => {
+      const sourceEnvNames = normalizeSourceEnvNames(secretEnvSourceMapping[name]);
+      return {
+        name,
+        required: true,
+        ...(sourceEnvNames.length > 0 ? { source_env_names: sourceEnvNames } : {}),
+      };
+    }),
     env_name_mapping: Object.fromEntries(Object.entries({
       provider_secret_env: Object.values(providerSecretEnvMapping).filter((value) => typeof value === 'string' && value.length > 0),
-      secret_env_fallbacks: Object.values(secretEnvFallbacks).flat().filter((value) => typeof value === 'string' && value.length > 0),
     }).filter(([, names]) => names.length > 0)),
     inheritance: {
       require_declaration: true,
@@ -34,32 +41,43 @@ function buildSecretEnvPlan({ secretEnv = [], runtimeEnv = {}, providerSecretEnv
   };
 }
 
-// Build the declarative secret-env fallback map consumed by the run step. Each
-// entry maps a target secret env name to an ordered list of source env names;
-// the run step sets target = first non-empty source when target is unset.
-function buildSecretEnvFallbacks({
+// Build SecretEnvRequirement.source_env_names candidates. The target name stays
+// first so an explicitly provided canonical secret wins over mapped sources.
+function buildSecretEnvSourceMapping({
   githubTokenEnv,
   githubRepositoryTokenEnv,
   providerCanonicalSecretEnvNames = [],
   providerCredentialSourceEnvNames = [],
 } = {}) {
-  const fallbacks = {};
+  const sourceMapping = {};
   if (githubTokenEnv && githubRepositoryTokenEnv && githubTokenEnv !== githubRepositoryTokenEnv) {
-    fallbacks[githubTokenEnv] = [githubRepositoryTokenEnv];
+    sourceMapping[githubTokenEnv] = [githubTokenEnv, githubRepositoryTokenEnv];
   }
   if (providerCredentialSourceEnvNames.length > 0) {
     for (const canonical of providerCanonicalSecretEnvNames) {
       const sources = providerCredentialSourceEnvNames.filter((name) => name !== canonical);
       if (sources.length > 0) {
-        fallbacks[canonical] = uniqueStrings([...(fallbacks[canonical] || []), ...sources]);
+        sourceMapping[canonical] = normalizeSourceEnvNames([...(sourceMapping[canonical] || [canonical]), ...sources]);
       }
     }
   }
-  return fallbacks;
+  return sourceMapping;
 }
 
 function uniqueStrings(values) {
   return Array.from(new Set(values.filter((value) => typeof value === 'string' && value.length > 0))).sort();
+}
+
+function normalizeSourceEnvNames(values) {
+  const seen = new Set();
+  const names = [];
+  for (const value of Array.isArray(values) ? values : []) {
+    if (typeof value === 'string' && value.length > 0 && !seen.has(value)) {
+      seen.add(value);
+      names.push(value);
+    }
+  }
+  return names;
 }
 
 module.exports = {
@@ -69,6 +87,6 @@ module.exports = {
   CANONICAL_RUN_ARTIFACT_FILES,
   RUNNER_ARTIFACT_MANIFEST_REF_SCHEMA,
   SECRET_ENV_PLAN_SCHEMA,
-  buildSecretEnvFallbacks,
   buildSecretEnvPlan,
+  buildSecretEnvSourceMapping,
 };

@@ -21,8 +21,8 @@ const {
   renderRuntimeWorkflowInputs,
 } = require('./runtime-workflow-inputs.cjs');
 const {
-  buildSecretEnvFallbacks,
   buildSecretEnvPlan,
+  buildSecretEnvSourceMapping,
 } = require('./runtime-contracts.cjs');
 
 function main() {
@@ -69,7 +69,7 @@ function buildConfig(env) {
     providerBenchEnvNames.add(providerEnvName);
     providerCredentialSourceEnvNames.push(providerEnvName);
   }
-  const secretEnvFallbacks = buildSecretEnvFallbacks({
+  const secretEnvSourceMapping = buildSecretEnvSourceMapping({
     githubTokenEnv,
     githubRepositoryTokenEnv,
     providerCanonicalSecretEnvNames,
@@ -180,14 +180,8 @@ function buildConfig(env) {
       secretEnv,
       runtimeEnv,
       providerSecretEnvMapping,
-      secretEnvFallbacks,
+      secretEnvSourceMapping,
     }),
-    // Fill a target secret env from a fallback source before the sandbox
-    // preflight runs: the provider's canonical key (e.g. OPENAI_API_KEY) from
-    // the caller's generic credential secret (PROVIDER_SECRET_n), and the
-    // Homeboy app token from the repository GITHUB_TOKEN when no app token is
-    // available. The run step applies these against its own environment.
-    ...(Object.keys(secretEnvFallbacks).length > 0 ? { secret_env_fallbacks: secretEnvFallbacks } : {}),
     github_profile_id: env.GITHUB_PROFILE_ID || `${workloadId}-ci`,
     target_repo: targetRepo,
     context_repositories: normalizeContextRepositories(env.CONTEXT_REPOSITORIES || '[]'),
@@ -485,4 +479,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { buildConfig, buildSecretEnvFallbacks, buildSecretEnvPlan, loopPolicyFromEnv, projectRuntimeConfig, providerBenchEnvFromManifest, runtimePathRequired, withoutInternalKeys };
+module.exports = { buildConfig, buildSecretEnvPlan, buildSecretEnvSourceMapping, loopPolicyFromEnv, projectRuntimeConfig, providerBenchEnvFromManifest, runtimePathRequired, withoutInternalKeys };

@@ -60,6 +60,11 @@ try {
     allowed_env_names: ['HOMEBOY_AGENT_RUNTIME_SECRET_ENV'],
   });
   assert.deepEqual(config.secret_env_plan.secret_env_names, config.secret_env);
+  assert.deepEqual(config.secret_env_plan.requirements.find((requirement) => requirement.name === 'HOMEBOY_GITHUB_APP_TOKEN'), {
+    name: 'HOMEBOY_GITHUB_APP_TOKEN',
+    required: true,
+    source_env_names: ['HOMEBOY_GITHUB_APP_TOKEN', 'GITHUB_TOKEN'],
+  });
 } finally {
   fs.rmSync(tmpRoot, { recursive: true, force: true });
 }
@@ -69,16 +74,15 @@ assert.deepEqual(
     secretEnv: ['PRIVATE_TOKEN'],
     runtimeEnv: { PUBLIC_MODE: 'test', PRIVATE_MODE: false },
     providerSecretEnvMapping: { token: 'PROVIDER_SECRET_1' },
-    secretEnvFallbacks: { PRIVATE_TOKEN: ['PROVIDER_SECRET_1'] },
+    secretEnvSourceMapping: { PRIVATE_TOKEN: ['PRIVATE_TOKEN', 'PROVIDER_SECRET_1'] },
   }),
   {
     schema: SECRET_ENV_PLAN_SCHEMA,
     public_env: { PUBLIC_MODE: 'test' },
     secret_env_names: ['PRIVATE_TOKEN'],
-    requirements: [{ name: 'PRIVATE_TOKEN', required: true }],
+    requirements: [{ name: 'PRIVATE_TOKEN', required: true, source_env_names: ['PRIVATE_TOKEN', 'PROVIDER_SECRET_1'] }],
     env_name_mapping: {
       provider_secret_env: ['PROVIDER_SECRET_1'],
-      secret_env_fallbacks: ['PROVIDER_SECRET_1'],
     },
     inheritance: {
       require_declaration: true,

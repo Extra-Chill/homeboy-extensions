@@ -1785,12 +1785,14 @@ function secretEnvNamesFromPlan(plan) {
   }
   // Mirror core's authoritative SecretEnvPlan::secret_env_names() aggregation
   // (homeboy src/core/secret_env_plan.rs): fold direct names, requirement-derived
-  // names, provider-credential names, and mapped env names so every declared
-  // secret is forwarded into the sandbox. Re-deriving only secret_env_names +
-  // env_name_mapping silently dropped requirement and provider-credential names.
+  // target/source names, provider-credential names, and mapped env names so every
+  // declared secret is forwarded into the sandbox.
   return uniquePaths([
     ...normalizeArray(plan.secret_env_names),
-    ...normalizeArray(plan.requirements).map((requirement) => requirement && requirement.name),
+    ...normalizeArray(plan.requirements).flatMap((requirement) => [
+      requirement && requirement.name,
+      ...normalizeArray(requirement && requirement.source_env_names),
+    ]),
     ...Object.values(plan.provider_credentials || {}).flatMap((mapping) => normalizeArray(mapping && mapping.secret_env)),
     ...Object.values(plan.env_name_mapping || {}).flatMap(normalizeArray),
   ]);
