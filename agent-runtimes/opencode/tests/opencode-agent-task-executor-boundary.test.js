@@ -277,6 +277,33 @@ process.exit(0);
 	assert.equal(inheritedPipeResult.status, 'succeeded');
 	assert.match(inheritedPipeResult.diagnostics[0].message, /status 0/);
 
+	const quotaLogPath = path.join(root, 'opencode-quota.log');
+	const quotaCliPath = path.join(root, 'mock-opencode-quota.cjs');
+	fs.writeFileSync(quotaCliPath, `#!/usr/bin/env node
+const fs = require('node:fs');
+fs.appendFileSync(${JSON.stringify(quotaLogPath)}, 'timestamp=2026-06-30T17:03:48.665Z level=ERROR message="stream error" error.error="AI_APICallError: Usage limit reached for 5 hour. Your limit will reset later"\\n');
+setTimeout(() => {}, 10000);
+`);
+	const quotaResult = await Promise.race([
+		executeOpenCodeAgentTask({
+			...request,
+			task_id: 'opencode-quota-fail-fast',
+			executor: {
+				...request.executor,
+				config: {
+					...request.executor.config,
+					command_args: [quotaCliPath],
+					diagnostic_log_path: quotaLogPath,
+				},
+			},
+		}, { env: fixtureEnv }),
+		new Promise((_, reject) => setTimeout(() => reject(new Error('OpenCode executor did not fail fast on provider quota exhaustion')), 3000)),
+	]);
+	assert.equal(quotaResult.status, 'provider_error');
+	assert.equal(quotaResult.failure_code, 'agent_task.opencode_usage_limit');
+	assert.equal(quotaResult.failure_classification, 'provider_quota');
+	assert.match(quotaResult.diagnostics[0].message, /Usage limit reached/);
+
 	const implicitArtifactResult = await executeOpenCodeAgentTask({
 		...request,
 		task_id: 'opencode-implicit-artifact-dir',
