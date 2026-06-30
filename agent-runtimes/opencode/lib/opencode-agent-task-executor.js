@@ -226,10 +226,53 @@ function opencodeSpawnEnv(request = {}, options = {}) {
 	if (config.inherit_env === true || config.inheritEnv === true) {
 		throw new Error('OpenCode ambient env inheritance is not supported; declare env_allowlist, runtime_env, and secret_env explicitly.');
 	}
-	return cliAgentTaskSpawnEnv(request, options, {
+	const env = cliAgentTaskSpawnEnv(request, options, {
 		allowlist: OPENCODE_PROCESS_ENV_ALLOWLIST,
 		secretEnv: OPENCODE_SECRET_ENV,
 	});
+	const configContent = opencodeConfigContentForRequest(request, env.OPENCODE_CONFIG_CONTENT);
+	return configContent ? { ...env, OPENCODE_CONFIG_CONTENT: configContent } : env;
+}
+
+function opencodeConfigContentForRequest(request = {}, existingContent = '') {
+	const config = request.executor?.config || {};
+	const model = config.model || request.executor?.model || request.model;
+	const smallModel = config.small_model || config.smallModel;
+	if (!model && !smallModel) {
+		return '';
+	}
+
+	const content = parseOpenCodeConfigContent(existingContent);
+	content.$schema = content.$schema || 'https://opencode.ai/config.json';
+	content.agent = objectValue(content.agent);
+	content.agents = objectValue(content.agents);
+
+	if (model) {
+		content.model = model;
+		const primaryAgent = config.agent || 'build';
+		content.agent[primaryAgent] = { ...objectValue(content.agent[primaryAgent]), model };
+		content.agents[primaryAgent] = { ...objectValue(content.agents[primaryAgent]), model };
+	}
+
+	if (smallModel) {
+		content.small_model = smallModel;
+		content.agent.title = { ...objectValue(content.agent.title), model: smallModel };
+		content.agents.title = { ...objectValue(content.agents.title), model: smallModel };
+	}
+
+	return JSON.stringify(content);
+}
+
+function parseOpenCodeConfigContent(content) {
+	if (!content || typeof content !== 'string') {
+		return {};
+	}
+	try {
+		const parsed = JSON.parse(content);
+		return objectValue(parsed);
+	} catch {
+		return {};
+	}
 }
 
 function withDeclaredArtifactDiagnostics(request = {}, normalized = {}) {

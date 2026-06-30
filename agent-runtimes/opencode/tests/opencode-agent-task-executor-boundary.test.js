@@ -145,6 +145,13 @@ process.exit(0);
 	fs.writeFileSync(modelCliPath, `#!/usr/bin/env node
 const assert = require('node:assert/strict');
 assert.deepEqual(process.argv.slice(2, 5), ['run', '--model', 'opencode-go/kimi-k2.7-code']);
+const config = JSON.parse(process.env.OPENCODE_CONFIG_CONTENT || '{}');
+assert.equal(config.model, 'opencode-go/kimi-k2.7-code');
+assert.equal(config.agent.build.model, 'opencode-go/kimi-k2.7-code');
+assert.equal(config.agents.build.model, 'opencode-go/kimi-k2.7-code');
+assert.equal(config.small_model, 'zai-coding-plan/glm-5.2');
+assert.equal(config.agent.title.model, 'zai-coding-plan/glm-5.2');
+assert.equal(config.agents.title.model, 'zai-coding-plan/glm-5.2');
 process.exit(0);
 `);
 	const modelResult = await executeOpenCodeAgentTask({
@@ -156,6 +163,7 @@ process.exit(0);
 			config: {
 				...request.executor.config,
 				command_args: [modelCliPath],
+				small_model: 'zai-coding-plan/glm-5.2',
 			},
 		},
 	}, { env: fixtureEnv });
