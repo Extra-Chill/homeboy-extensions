@@ -141,6 +141,26 @@ process.exit(0);
 	assert.equal(`${runResult.stdout}\n${runResult.stderr}`.includes('refresh-token-must-not-leak'), false);
 	assert.equal(`${runResult.stdout}\n${runResult.stderr}`.includes('access-token-must-not-leak'), false);
 
+	const modelCliPath = path.join(root, 'mock-opencode-model.cjs');
+	fs.writeFileSync(modelCliPath, `#!/usr/bin/env node
+const assert = require('node:assert/strict');
+assert.deepEqual(process.argv.slice(2, 5), ['run', '--model', 'opencode-go/kimi-k2.7-code']);
+process.exit(0);
+`);
+	const modelResult = await executeOpenCodeAgentTask({
+		...request,
+		task_id: 'opencode-executor-model',
+		executor: {
+			...request.executor,
+			model: 'opencode-go/kimi-k2.7-code',
+			config: {
+				...request.executor.config,
+				command_args: [modelCliPath],
+			},
+		},
+	}, { env: fixtureEnv });
+	assert.equal(modelResult.status, 'succeeded');
+
 	const missingArtifactResult = await executeOpenCodeAgentTask({
 		...request,
 		task_id: 'opencode-missing-artifact',

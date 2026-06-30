@@ -497,10 +497,11 @@ async function executeOpenCodeAgentTask(request = {}, options = {}) {
 	}
 
 	const cwd = config.cwd || request.workspace_path || request.workspace?.path || process.cwd();
+	const model = config.model || request.executor.model || request.model;
 	const args = [
 		...commandSpec.args,
 		'run',
-		...(config.model ? ['--model', config.model] : []),
+		...(model ? ['--model', model] : []),
 		...(config.agent ? ['--agent', config.agent] : []),
 		...(config.variant ? ['--variant', config.variant] : []),
 		...(config.title ? ['--title', config.title] : []),
