@@ -192,7 +192,7 @@ assert.deepEqual(wpCodeboxWordPressWorkloadRunInput({
 const artifactPostprocessWorkloadInput = wpCodeboxWordPressWorkloadRunInput({
 	id: 'artifact-postprocess-workload-run',
 	steps: [{
-		command: 'artifact-postprocess',
+		command: ARTIFACT_POSTPROCESS_COMMAND,
 		args: {
 			helper: '${package.root}/tools/artifact-helper.mjs',
 			action: 'coverage-gap-report',
@@ -218,9 +218,13 @@ const artifactPostprocessWorkloadInputAgain = wpCodeboxWordPressWorkloadRunInput
 assert.equal(artifactPostprocessWorkloadInputAgain.steps[0].helperPath, '${package.root}/tools/artifact-helper.mjs');
 assert.equal(artifactPostprocessWorkloadInputAgain.steps[0].inputArtifactRoot, '${artifacts.root}');
 assert.equal(artifactPostprocessWorkloadInputAgain.steps[0].outputArtifactPath, 'coverage/gaps.json');
+const legacyArtifactPostprocessAliasInput = wpCodeboxWordPressWorkloadRunInput({
+	steps: [{ command: 'artifact-postprocess', args: { action: 'coverage-gap-report' } }],
+});
+assert.deepEqual(legacyArtifactPostprocessAliasInput.steps[0], { command: 'artifact-postprocess', args: { action: 'coverage-gap-report' } });
 const artifactPostprocessAbsoluteHelper = wpCodeboxWordPressWorkloadRunInput({
 	packageRoot: '/runner/package',
-	steps: [{ command: 'artifact-postprocess', args: { helper: '/runner/package/tools/artifact-helper.mjs', action: 'coverage-gap-report', input: { path: '${artifacts.root}' }, output: { path: 'coverage/gaps.json' } } }],
+	steps: [{ command: ARTIFACT_POSTPROCESS_COMMAND, args: { helper: '/runner/package/tools/artifact-helper.mjs', action: 'coverage-gap-report', input: { path: '${artifacts.root}' }, output: { path: 'coverage/gaps.json' } } }],
 });
 assert.equal(artifactPostprocessAbsoluteHelper.steps[0].helperPath, 'tools/artifact-helper.mjs');
 
@@ -1319,7 +1323,7 @@ runWpCodeboxFuzzSuite({
 			input: wpCodeboxWordPressWorkloadRunInput({
 				id: 'staged-helper-workload',
 				packageRoot: stagedHelperDir,
-				steps: [{ command: 'artifact-postprocess', args: { helper: stagedHelperPath, action: 'coverage-gap-report', input: { path: '${artifacts.root}' }, output: { path: 'coverage/gaps.json' } } }],
+				steps: [{ command: ARTIFACT_POSTPROCESS_COMMAND, args: { helper: stagedHelperPath, action: 'coverage-gap-report', input: { path: '${artifacts.root}' }, output: { path: 'coverage/gaps.json' } } }],
 				metadata: { source_path: stagedWorkloadPath },
 			}),
 		}],

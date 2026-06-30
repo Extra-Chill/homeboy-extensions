@@ -69,7 +69,6 @@ const DEFAULT_WORDPRESS_WORKLOAD_RUN_ABILITY = 'wp-codebox/run-wordpress-workloa
 const DEFAULT_WORDPRESS_WORKLOAD_RUN_SCHEMA = 'wp-codebox/wordpress-workload-run/v1';
 const WP_CODEBOX_PUBLIC_CLI_COMMANDS = WP_CODEBOX_FUZZ_PUBLIC_COMMANDS;
 const ARTIFACT_POSTPROCESS_COMMAND = 'homeboy.artifact-postprocess';
-const ARTIFACT_POSTPROCESS_COMMAND_ALIASES = new Set([ARTIFACT_POSTPROCESS_COMMAND, 'artifact-postprocess', 'homeboy.artifact_postprocess']);
 const DEFAULT_FUZZ_SUITE_EXPECTED_ARTIFACTS = [
 	'wp-codebox-fuzz-suite-result',
 	'wordpress-fuzz-coverage',
@@ -1193,7 +1192,7 @@ function phpCallableSourceWrapper(source) {
 }
 
 function isArtifactPostprocessCommand(value) {
-	return ARTIFACT_POSTPROCESS_COMMAND_ALIASES.has(String(value || '').trim());
+	return String(value || '').trim() === ARTIFACT_POSTPROCESS_COMMAND;
 }
 
 async function runWpCodeboxFuzzSuite(options = {}) {
