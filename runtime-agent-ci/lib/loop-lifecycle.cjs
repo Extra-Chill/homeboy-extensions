@@ -2,46 +2,55 @@
 
 const { evaluateGatePlan, evaluateGateResults } = require('./gate-plan-evaluator');
 
-const LOOP_RUN_SCHEMA = 'homeboy/loop-run/v1';
-const LOOP_ITERATION_SCHEMA = 'homeboy/loop-iteration/v1';
-const LOOP_EVIDENCE_SCHEMA = 'homeboy/loop-evidence/v1';
+const AGENT_TASK_LOOP_SCHEMA = 'homeboy/agent-task-loop/v1';
 
 function loopRun(input = {}) {
   const iterations = normalizeArray(input.iterations);
   const evidence = normalizeArray(input.evidence);
-  return {
-    schema: LOOP_RUN_SCHEMA,
+  return compactObject({
+    schema: AGENT_TASK_LOOP_SCHEMA,
     loop_id: input.loop_id || input.loopId || input.id || 'loop',
     status: input.status || 'completed',
+    attempts: normalizeArray(input.attempts).length > 0 ? normalizeArray(input.attempts) : iterations.map(loopAttemptFromIteration),
+    finalization: input.finalization || null,
     stop_reason: input.stop_reason || input.stopReason || '',
+    // Compatibility fields for runtime-agent-ci evidence envelopes. Homeboy core
+    // consumes the schema/loop_id/status/attempts/finalization/stop_reason shape.
     max_iterations: positiveInteger(input.max_iterations || input.maxIterations) || iterations.length,
     iteration_count: positiveInteger(input.iteration_count || input.iterationCount) || iterations.length,
     iterations,
     evidence,
     gate_summary: input.gate_summary || input.gateSummary || null,
     data: plainObject(input.data) ? input.data : {},
-  };
+  });
 }
 
 function loopIteration(input = {}) {
-  return {
-    schema: LOOP_ITERATION_SCHEMA,
+  const iteration = positiveInteger(input.iteration || input.attempt) || 1;
+  const result = input.result || input.outcome || null;
+  const resultStatus = result?.status || result?.state || '';
+  return compactObject({
+    attempt: iteration,
+    run_id: input.run_id || input.runId || input.task_id || input.taskId || `${input.loop_id || input.loopId || 'loop'}-${iteration}`,
+    run_state: input.run_state || input.runState || resultStatus || (input.accepted === true ? 'completed' : ''),
+    aggregate_path: input.aggregate_path || input.aggregatePath || null,
+    promotion: input.promotion || null,
+    feedback: input.feedback || null,
     loop_id: input.loop_id || input.loopId || '',
-    iteration: positiveInteger(input.iteration) || 1,
+    iteration,
     task: input.task || input.input || null,
-    result: input.result || input.outcome || null,
+    result,
     artifacts: normalizeArray(input.artifacts),
     evidence_refs: normalizeArray(input.evidence_refs || input.evidenceRefs || input.evidence),
     gate_result: input.gate_result || input.gateResult || null,
     accepted: input.accepted === true,
     data: plainObject(input.data) ? input.data : {},
-  };
+  });
 }
 
 function loopEvidence(input = {}) {
   const uri = input.uri || input.url || input.href || input.path || input.ref || '';
-  return {
-    schema: LOOP_EVIDENCE_SCHEMA,
+  return compactObject({
     kind: input.kind || input.type || 'evidence',
     uri,
     ref: uri,
@@ -50,7 +59,18 @@ function loopEvidence(input = {}) {
     data: plainObject(input.data) ? input.data : {},
     evidence: input.evidence,
     artifact: input.artifact,
-  };
+  });
+}
+
+function loopAttemptFromIteration(iteration = {}) {
+  return compactObject({
+    attempt: positiveInteger(iteration.attempt || iteration.iteration) || 1,
+    run_id: iteration.run_id || iteration.runId || `${iteration.loop_id || 'loop'}-${iteration.iteration || 1}`,
+    run_state: iteration.run_state || iteration.runState || iteration.result?.status || iteration.result?.state || (iteration.accepted === true ? 'completed' : ''),
+    aggregate_path: iteration.aggregate_path || iteration.aggregatePath || null,
+    promotion: iteration.promotion || null,
+    feedback: iteration.feedback || null,
+  });
 }
 
 function withLoopGateResult(id, result = {}, options = {}) {
@@ -146,15 +166,17 @@ function plainObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value);
 }
 
+function compactObject(value) {
+  return Object.fromEntries(Object.entries(value).filter(([, entry]) => entry !== undefined && entry !== null && entry !== ''));
+}
+
 function positiveInteger(value) {
   const parsed = Number.parseInt(value || '', 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }
 
 module.exports = {
-  LOOP_EVIDENCE_SCHEMA,
-  LOOP_ITERATION_SCHEMA,
-  LOOP_RUN_SCHEMA,
+  AGENT_TASK_LOOP_SCHEMA,
   assertLoopSuccess,
   loopEvidence,
   loopGateSummary,

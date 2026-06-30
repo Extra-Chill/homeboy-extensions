@@ -50,6 +50,8 @@ assert.equal(genericLoop.iterations[0].stop.stop, false);
 assert.equal(genericLoop.iterations[1].stop.reason, 'reconcile_criteria_satisfied');
 assert.equal(genericLoop.evidence_envelope.schema, 'homeboy/generic-deterministic-loop-evidence/v1');
 assert.equal(genericLoop.evidence_envelope.iteration_count, 2);
+assert.equal(genericLoop.evidence_envelope.loop_run.schema, 'homeboy/agent-task-loop/v1');
+assert.equal(genericLoop.evidence_envelope.loop_run.attempts.length, 2);
 assert.equal(genericLoop.evidence_envelope.loop_run.iterations[0].accepted, false);
 assert.equal(genericLoop.evidence_envelope.loop_run.iterations[1].accepted, true);
 assert.equal(genericLoop.evidence.length, 2);

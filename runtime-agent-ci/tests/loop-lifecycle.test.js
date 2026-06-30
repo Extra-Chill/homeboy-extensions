@@ -3,6 +3,7 @@
 const assert = require('node:assert/strict');
 
 const {
+  AGENT_TASK_LOOP_SCHEMA,
   assertLoopSuccess,
   loopEvidence,
   loopGateSummary,
@@ -54,9 +55,12 @@ const evidence = loopEvidence({ kind: 'preview', url: 'https://example.test/prev
 const iteration = loopIteration({ loop_id: 'fixture-loop', iteration: 2, result: { status: 'succeeded' }, evidence_refs: [evidence], gate_result: commandGate.gate_result, accepted: true });
 const run = loopRun({ loop_id: 'fixture-loop', status: 'completed', max_iterations: 3, iterations: [iteration], evidence: [evidence], gate_summary: loopGateSummary([commandGate.gate_result]) });
 
-assert.equal(evidence.schema, 'homeboy/loop-evidence/v1');
-assert.equal(iteration.schema, 'homeboy/loop-iteration/v1');
-assert.equal(run.schema, 'homeboy/loop-run/v1');
+assert.equal(evidence.schema, undefined);
+assert.equal(iteration.schema, undefined);
+assert.equal(run.schema, AGENT_TASK_LOOP_SCHEMA);
+assert.equal(run.schema, 'homeboy/agent-task-loop/v1');
+assert.equal(run.attempts[0].attempt, 2);
+assert.equal(run.attempts[0].run_state, 'succeeded');
 assert.equal(run.iteration_count, 1);
 assert.equal(run.gate_summary.success, true);
 
