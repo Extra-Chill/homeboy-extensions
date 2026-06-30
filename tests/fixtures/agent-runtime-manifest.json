@@ -4,6 +4,55 @@
   "name": "Fixture Agent Runtime",
   "version": "1.0.0",
   "description": "Static manifest fixture for Homeboy contract tests.",
+  "materialization": {
+    "source_roots": [
+      {
+        "id": "fixture-runtime",
+        "label": "Fixture runtime source",
+        "path": "~/.cache/homeboy/fixture-runtime/source",
+        "remote_url": "https://github.com/example/fixture-runtime.git",
+        "git_ref": "main",
+        "remediation": "Refresh the fixture runtime source before dispatching fixture-backed runner workloads."
+      }
+    ],
+    "dependencies": [
+      {
+        "id": "fixture-runtime.contracts",
+        "label": "Fixture runtime contracts",
+        "source_root": "fixture-runtime",
+        "requirement": "Runtime package contract files are present in the materialized source root."
+      }
+    ],
+    "executable_requirements": [
+      {
+        "id": "fixture-runtime.executable",
+        "label": "Fixture runtime executable",
+        "env": ["FIXTURE_RUNTIME_BIN"],
+        "candidates": ["fixture-runtime"],
+        "version_command": ["--version"],
+        "install_hint": "Install the fixture runtime CLI or set FIXTURE_RUNTIME_BIN."
+      }
+    ],
+    "readiness_checks": [
+      {
+        "id": "fixture-runtime.ready",
+        "label": "Fixture runtime readiness",
+        "executable": {
+          "env": ["FIXTURE_RUNTIME_BIN"],
+          "candidates": ["fixture-runtime"],
+          "version_command": ["--version"],
+          "install_hint": "Install the fixture runtime CLI or set FIXTURE_RUNTIME_BIN."
+        }
+      }
+    ],
+    "env_passthrough": ["FIXTURE_RUNTIME_BIN"],
+    "workspace": {
+      "cwd": "git_checkout",
+      "requires_git": true,
+      "write_scope": "artifacts",
+      "artifact_paths": [".homeboy/fixture-runtime"]
+    }
+  },
   "agent_task_executors": [
     {
       "schema": "homeboy/agent-task-executor-provider/v1",

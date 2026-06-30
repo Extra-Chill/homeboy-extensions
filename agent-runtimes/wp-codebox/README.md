@@ -55,6 +55,12 @@ and invokes the stable `run-agent-task` CLI.
 
 Runtime-package callers should invoke `wp-codebox/run-runtime-package`.
 
+Runtime source, executable, readiness, and diagnostic declarations live in the
+manifest root `materialization` field. Homeboy core owns that source contract and
+projects it into `homeboy/agent-runtime-materialization-plan/v1`; the older
+`ci_materialization` block is retained only for the reusable GitHub Actions
+adapter until those callsites move to the core materialization plan.
+
 Provider credentials stay outside adapter payloads. The adapter forwards
 `secret_env` names and a `provider_credential_boundary` descriptor, and rejects
 raw credential fields such as `secret_env_values` or `credentials` before a task

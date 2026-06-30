@@ -13,6 +13,12 @@ Generic runtime package requirements are documented in
 Use `tests/fixtures/agent-runtime-manifest.json` for static contract assertions;
 `agent-runtimes/` contains only shipped runtime packages.
 
+Runtime materialization source declarations belong in the manifest root
+`materialization` field, which Homeboy core converts into
+`homeboy/agent-runtime-materialization-plan/v1`. Extension-local workflow setup
+fields such as `ci_materialization` are transitional compatibility surfaces for
+existing GitHub Actions adapters, not the canonical runtime setup contract.
+
 Generic project-root, package-manager, and named-script execution helpers live in
 [`scripts/lib/project-scripts.sh`](scripts/lib/project-scripts.sh) and are
 documented in [`docs/project-script-runtime.md`](docs/project-script-runtime.md).
@@ -191,9 +197,11 @@ other substrate details remain WP Codebox-owned; Homeboy task schemas and
 caller-owned artifact declarations are prepared by Homeboy Extensions before WP
 Codebox runs the task.
 
-Codebox contract discovery is limited to public package exports or an explicit
-`HOMEBOY_WP_CODEBOX_CORE_MODULE` supplied by the runner. Homeboy Extensions does
-not probe WP Codebox cache/source package layouts for private files.
+Codebox contract discovery is limited to public package exports. The explicit
+`HOMEBOY_WP_CODEBOX_CORE_MODULE` loader path remains as a transitional runner
+compatibility escape hatch for environments that have not exposed the public
+package module on Node's resolution path. Homeboy Extensions does not probe WP
+Codebox cache/source package layouts for private files.
 
 Homeboy Extensions consumes a Codebox-owned `wp-codebox/parent-tool-bridge/v1`
 when the runtime profile exposes one. When it is missing, the adapter declares

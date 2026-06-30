@@ -31,6 +31,8 @@ The manifest root must declare:
 - `version`: runtime package contract version.
 - `description`: one-sentence runtime summary.
 - `agent_task_executors`: non-empty list of provider declarations.
+- `materialization`: optional runtime materialization source contract consumed by
+  Homeboy core.
 
 Each `agent_task_executors[]` entry must declare:
 
@@ -57,6 +59,68 @@ Each `agent_task_executors[]` entry must declare:
 
 Runtime-specific fields are allowed when they are additive. The public manifest
 fields give Homeboy core the information it needs to invoke the provider.
+
+## Runtime Materialization Source Contract
+
+Homeboy core owns the runtime materialization source contract. Runtime manifests
+declare materialization inputs under the root `materialization` field; core reads
+that field and emits `homeboy/agent-runtime-materialization-plan/v1` for runner
+setup and diagnostics. Extension packages should point at the core contract
+instead of copying provider-specific setup rules into workflow glue.
+
+The core-owned materialization fields are:
+
+- `source_roots`: named source checkouts or caches needed by the runtime.
+- `dependencies`: additional runtime dependency requirements tied to a source
+  root, environment variable, or operator action.
+- `executable_requirements`: binaries Homeboy can check before dispatch.
+- `readiness_checks`: runner-readable setup checks.
+- `env_passthrough`: environment names the materialization plan may pass through.
+- `workspace`: generic workspace shape for the runtime package.
+- `diagnostics`: tool/runtime diagnostic declarations consumed by
+  `homeboy extension show`.
+
+Example:
+
+```json
+{
+  "schema": "homeboy/agent-runtime-manifest/v1",
+  "id": "example-runtime",
+  "materialization": {
+    "source_roots": [
+      {
+        "id": "example-runtime",
+        "label": "Example runtime source",
+        "path": "~/.cache/homeboy/example-runtime/source",
+        "remote_url": "https://github.com/example/runtime.git",
+        "git_ref": "main"
+      }
+    ],
+    "executable_requirements": [
+      {
+        "id": "example-runtime.cli",
+        "label": "Example runtime CLI",
+        "env": ["EXAMPLE_RUNTIME_BIN"],
+        "candidates": ["example-runtime"],
+        "version_command": ["--version"]
+      }
+    ],
+    "env_passthrough": ["EXAMPLE_RUNTIME_BIN"],
+    "workspace": {
+      "cwd": "git_checkout",
+      "requires_git": true,
+      "write_scope": "artifacts",
+      "artifact_paths": [".homeboy/example-runtime"]
+    }
+  }
+}
+```
+
+`ci_materialization` remains a Homeboy Extensions workflow compatibility surface
+for the reusable GitHub Actions adapter. New runtime materialization docs and
+manifest examples should prefer the core `materialization` contract above. Keep
+`ci_materialization` only while callsites still depend on the local workflow
+loader.
 
 Generic runner specs must declare `executor.backend` explicitly. Runtime-specific
 planners may provide their own defaults, but the shared contract does not assume
@@ -284,6 +348,12 @@ Common fields:
 
 The provider must not infer workspace shape from any current runtime unless that
 shape is declared here.
+
+Runtime-level workspace requirements that apply before provider selection should
+also be declared in `materialization.workspace` so Homeboy core can include them
+in the materialization plan. Provider-level `workspace_materialization` remains
+the executor promise; root `materialization.workspace` is the core source for
+runtime setup and diagnostics.
 
 Caller-owned wrappers should pass domain-specific runtime requirements explicitly.
 For example, a caller can supply its ability provider, runtime components,

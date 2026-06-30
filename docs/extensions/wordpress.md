@@ -43,9 +43,10 @@ preflight fails with guidance instead of calling provider internals.
 
 WP Codebox contract discovery uses public modules such as
 `@automattic/wp-codebox-core`, `@automattic/wp-codebox-core/contracts`, and
-`wp-codebox-workspace/*`, or an explicit `HOMEBOY_WP_CODEBOX_CORE_MODULE` path
-provided by the runner. Homeboy does not scan WP Codebox source/cache package
-layouts to discover private core files.
+`wp-codebox-workspace/*`. The explicit `HOMEBOY_WP_CODEBOX_CORE_MODULE` path is a
+transitional runner compatibility loader for environments that have not exposed a
+public package module on Node's resolution path. Homeboy does not scan WP Codebox
+source/cache package layouts to discover private core files.
 
 ## WP Codebox Artifact Lookup
 

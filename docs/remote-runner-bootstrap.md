@@ -166,9 +166,10 @@ missing that extension.
 WordPress test and bench workloads use the runner-side WP Codebox cache at
 `~/.cache/homeboy/wp-codebox/source` when WP Codebox is installed from source.
 Homeboy extension adapters do not inspect that cache to discover private Codebox
-package files; runners should expose public Codebox package exports or set
-`HOMEBOY_WP_CODEBOX_CORE_MODULE` explicitly when a public module is not on
-Node's resolution path.
+package files; runners should expose public Codebox package exports. Setting
+`HOMEBOY_WP_CODEBOX_CORE_MODULE` explicitly remains a transitional compatibility
+loader for runner images that have not exposed a public module on Node's
+resolution path.
 Refresh that cache before collecting lab evidence that must point at a known WP
 Codebox revision:
 
