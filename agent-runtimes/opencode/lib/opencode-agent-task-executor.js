@@ -245,19 +245,17 @@ function opencodeConfigContentForRequest(request = {}, existingContent = '') {
 	const content = parseOpenCodeConfigContent(existingContent);
 	content.$schema = content.$schema || 'https://opencode.ai/config.json';
 	content.agent = objectValue(content.agent);
-	content.agents = objectValue(content.agents);
+	delete content.agents;
 
 	if (model) {
 		content.model = model;
 		const primaryAgent = config.agent || 'build';
 		content.agent[primaryAgent] = { ...objectValue(content.agent[primaryAgent]), model };
-		content.agents[primaryAgent] = { ...objectValue(content.agents[primaryAgent]), model };
 	}
 
 	if (smallModel) {
 		content.small_model = smallModel;
 		content.agent.title = { ...objectValue(content.agent.title), model: smallModel };
-		content.agents.title = { ...objectValue(content.agents.title), model: smallModel };
 	}
 
 	return JSON.stringify(content);
@@ -539,7 +537,7 @@ async function executeOpenCodeAgentTask(request = {}, options = {}) {
 		});
 	}
 
-	const cwd = config.cwd || request.workspace_path || request.workspace?.path || process.cwd();
+	const cwd = config.cwd || config.workspace_root || config.workspaceRoot || request.workspace_path || request.workspace?.path || request.workspace?.root || process.cwd();
 	const model = config.model || request.executor.model || request.model;
 	const args = [
 		...commandSpec.args,

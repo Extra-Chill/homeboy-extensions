@@ -141,17 +141,22 @@ process.exit(0);
 	assert.equal(`${runResult.stdout}\n${runResult.stderr}`.includes('refresh-token-must-not-leak'), false);
 	assert.equal(`${runResult.stdout}\n${runResult.stderr}`.includes('access-token-must-not-leak'), false);
 
+	const modelWorkspace = path.join(root, 'model-workspace');
+	fs.mkdirSync(modelWorkspace, { recursive: true });
+	const realModelWorkspace = fs.realpathSync(modelWorkspace);
 	const modelCliPath = path.join(root, 'mock-opencode-model.cjs');
 	fs.writeFileSync(modelCliPath, `#!/usr/bin/env node
 const assert = require('node:assert/strict');
+assert.equal(process.cwd(), ${JSON.stringify(realModelWorkspace)});
 assert.deepEqual(process.argv.slice(2, 5), ['run', '--model', 'opencode-go/kimi-k2.7-code']);
 const config = JSON.parse(process.env.OPENCODE_CONFIG_CONTENT || '{}');
+assert.equal(config.$schema, 'https://opencode.ai/config.json');
 assert.equal(config.model, 'opencode-go/kimi-k2.7-code');
 assert.equal(config.agent.build.model, 'opencode-go/kimi-k2.7-code');
-assert.equal(config.agents.build.model, 'opencode-go/kimi-k2.7-code');
 assert.equal(config.small_model, 'zai-coding-plan/glm-5.2');
 assert.equal(config.agent.title.model, 'zai-coding-plan/glm-5.2');
-assert.equal(config.agents.title.model, 'zai-coding-plan/glm-5.2');
+assert.deepEqual(config.mcp, { example: { type: 'local' } });
+assert.equal(Object.hasOwn(config, 'agents'), false);
 process.exit(0);
 `);
 	const modelResult = await executeOpenCodeAgentTask({
@@ -163,6 +168,13 @@ process.exit(0);
 			config: {
 				...request.executor.config,
 				command_args: [modelCliPath],
+				workspace_root: modelWorkspace,
+				runtime_env: {
+					OPENCODE_CONFIG_CONTENT: JSON.stringify({
+						mcp: { example: { type: 'local' } },
+						agents: { build: { model: 'invalid-plural-key/must-not-survive' } },
+					}),
+				},
 				small_model: 'zai-coding-plan/glm-5.2',
 			},
 		},
