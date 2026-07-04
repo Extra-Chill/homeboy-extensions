@@ -16,6 +16,9 @@ PROJECT_SCRIPTS_HELPER="${ROOT_DIR}/scripts/lib/project-scripts.sh"
 FIX_RESULTS_HELPER="${ROOT_DIR}/scripts/lib/fix-results.sh"
 BASH_PREFLIGHT_HELPER="${HOMEBOY_RUNTIME_BASH_PREFLIGHT:-${HOMEBOY_CORE_DIR}/src/core/extension/runtime/bash-preflight.sh}"
 SETTINGS_HELPER="${ROOT_DIR}/scripts/lib/settings.sh"
+RUNNER_HARNESS_HELPER="${ROOT_DIR}/scripts/lib/runner-harness.sh"
+TEST_FAILURES_ADAPTER_HELPER="${ROOT_DIR}/scripts/lib/test-failures-adapter.sh"
+LINT_FINDINGS_ADAPTER_HELPER="${ROOT_DIR}/scripts/lib/lint-findings-adapter.sh"
 
 assert_file() {
     local path="$1"
@@ -73,6 +76,12 @@ assert_file "$FIX_RESULTS_HELPER"
 bash -c 'source "$1"; type homeboy_fix_results_capture >/dev/null; type homeboy_fix_results_append_changed >/dev/null; type homeboy_fix_results_write >/dev/null' _ "$FIX_RESULTS_HELPER"
 assert_file "$SETTINGS_HELPER"
 bash -c 'source "$1"; type homeboy_setting >/dev/null; type homeboy_setting_bool >/dev/null; type homeboy_setting_array >/dev/null' _ "$SETTINGS_HELPER"
+assert_file "$RUNNER_HARNESS_HELPER"
+bash -c 'source "$1"; type homeboy_runner_harness_init >/dev/null; type homeboy_runner_harness_temp >/dev/null; type homeboy_runner_harness_source_command_capture >/dev/null' _ "$RUNNER_HARNESS_HELPER"
+assert_file "$TEST_FAILURES_ADAPTER_HELPER"
+bash -c 'source "$1"; type homeboy_test_failures_merge_file >/dev/null; type homeboy_test_failure_record_json >/dev/null; type homeboy_test_failure_emit_record_json >/dev/null' _ "$TEST_FAILURES_ADAPTER_HELPER"
+assert_file "$LINT_FINDINGS_ADAPTER_HELPER"
+bash -c 'source "$1"; type homeboy_lint_findings_merge_file >/dev/null; type homeboy_lint_findings_write_empty >/dev/null; type homeboy_lint_findings_require_writer >/dev/null' _ "$LINT_FINDINGS_ADAPTER_HELPER"
 bash -c 'source "$1"; type homeboy_run_step >/dev/null; type homeboy_run_step_capture >/dev/null; type homeboy_cleanup_step_capture >/dev/null' _ "$COMMAND_CAPTURE_CORE_HELPER"
 
 # Single-source guarantee: extension-owned shared libs (settings, fix-results,
@@ -140,6 +149,12 @@ assert_resolves nodejs/scripts/lint    ../../../scripts/lib/fix-results.sh      
 assert_resolves rust/scripts           ../../scripts/lib/fix-results.sh         "$FIX_RESULTS_HELPER"
 assert_resolves wordpress/scripts/lint ../../../scripts/lib/fix-results.sh      "$FIX_RESULTS_HELPER"
 assert_resolves nodejs/scripts/lib     ../../../scripts/lib/project-scripts.sh  "$PROJECT_SCRIPTS_HELPER"
+assert_resolves go/scripts             ../../scripts/lib/runner-harness.sh      "$RUNNER_HARNESS_HELPER"
+assert_resolves rust/scripts           ../../scripts/lib/runner-harness.sh      "$RUNNER_HARNESS_HELPER"
+assert_resolves swift/scripts          ../../scripts/lib/runner-harness.sh      "$RUNNER_HARNESS_HELPER"
+assert_resolves nodejs/scripts/test    ../../../scripts/lib/runner-harness.sh   "$RUNNER_HARNESS_HELPER"
+assert_resolves nodejs/scripts/lint    ../../../scripts/lib/lint-findings-adapter.sh "$LINT_FINDINGS_ADAPTER_HELPER"
+assert_resolves wordpress/scripts/lint ../../../scripts/lib/lint-findings-adapter.sh "$LINT_FINDINGS_ADAPTER_HELPER"
 
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
@@ -212,6 +227,22 @@ assert_contains "$SIDECAR_TMP_DIR/lint.json" '"id":"lint"'
 assert_contains "$SIDECAR_TMP_DIR/test.json" '"test_id":"test"'
 assert_contains "$SIDECAR_TMP_DIR/fix.json" '"file":"fixed.php"'
 assert_contains "$SIDECAR_TMP_DIR/annotations/phpcs.json" '"file":"plugin.php"'
+
+HARNESS_TEMP=""
+source "$RUNNER_HARNESS_HELPER"
+homeboy_runner_harness_temp HARNESS_TEMP "homeboy-harness-smoke.XXXXXX"
+if [ ! -f "$HARNESS_TEMP" ]; then
+    echo "Expected harness temp helper to create a file" >&2
+    exit 1
+fi
+homeboy_runner_harness_cleanup
+if [ -e "$HARNESS_TEMP" ]; then
+    echo "Expected harness cleanup to remove temp file" >&2
+    exit 1
+fi
+
+FAILURE_RECORD="$(source "$TEST_FAILURES_ADAPTER_HELPER"; homeboy_test_failure_record_json smoke 'suite::test' suite tests/smoke.test 12 'failed hard' assertion 'stdout tail' '')"
+printf '%s' "$FAILURE_RECORD" | node -e 'const fs=require("node:fs"); const record=JSON.parse(fs.readFileSync(0,"utf8")); if (record.test_id!=="suite::test" || record.file!=="tests/smoke.test" || record.line!==12 || !/^[a-f0-9]{64}$/.test(record.fingerprint)) process.exit(1);'
 
 WORDPRESS_OUTPUT="$TMP_DIR/phpunit.txt"
 WORDPRESS_RESULTS="$TMP_DIR/wordpress-results.json"
