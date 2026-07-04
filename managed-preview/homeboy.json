@@ -1,9 +1,8 @@
 {
-  "id": "go",
-  "changelog_target": "docs/CHANGELOG.md",
+  "id": "managed-preview",
   "version_targets": [
     {
-      "file": "go.json",
+      "file": "managed-preview.json",
       "pattern": "\"version\":\\s*\"([0-9.]+)\""
     }
   ]
