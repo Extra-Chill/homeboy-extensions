@@ -59,6 +59,24 @@ assert_sources() {
     fi
 }
 
+assert_sources_prelude() {
+    local file="$1"
+    if ! grep -Fq 'HOMEBOY_RUNTIME_RUNNER_PRELUDE' "$file" \
+        && ! grep -Fq '/runner-harness.sh' "$file"; then
+        echo "Expected $file to load the runner prelude directly (HOMEBOY_RUNTIME_RUNNER_PRELUDE) or via the shared runner-harness.sh" >&2
+        exit 1
+    fi
+}
+
+assert_sources_command_capture() {
+    local file="$1"
+    if ! grep -Fq 'HOMEBOY_RUNTIME_COMMAND_CAPTURE' "$file" \
+        && ! grep -Fq 'homeboy_runner_harness_source_command_capture' "$file"; then
+        echo "Expected $file to load command capture directly (HOMEBOY_RUNTIME_COMMAND_CAPTURE) or via the shared harness" >&2
+        exit 1
+    fi
+}
+
 assert_file "$FAILURE_TRAP_HELPER"
 assert_file "$WRITE_TEST_RESULTS_HELPER"
 assert_file "$SIDECAR_WRITER_HELPER"
@@ -380,7 +398,7 @@ for runner in \
     swift/scripts/test-runner.sh \
     wordpress/scripts/lint/lint-runner.sh \
     wordpress/scripts/test/test-runner.sh; do
-    assert_sources "$ROOT_DIR/$runner" 'HOMEBOY_RUNTIME_RUNNER_PRELUDE'
+    assert_sources_prelude "$ROOT_DIR/$runner"
 done
 
 for runner in \
@@ -415,7 +433,7 @@ for runner in \
     nodejs/scripts/test/test-runner.sh \
     rust/scripts/lint-runner.sh \
     rust/scripts/test-runner.sh; do
-    assert_sources "$ROOT_DIR/$runner" 'HOMEBOY_RUNTIME_COMMAND_CAPTURE'
+    assert_sources_command_capture "$ROOT_DIR/$runner"
 done
 
 for runner in \
@@ -423,14 +441,14 @@ for runner in \
     rust/scripts/bench/bench-runner.sh \
     rust/scripts/test-runner.sh \
     wordpress/scripts/test/test-runner.sh; do
-    assert_sources "$ROOT_DIR/$runner" 'scripts/lib/settings.sh'
+    assert_sources "$ROOT_DIR/$runner" '/settings.sh'
 done
 
 for runner in \
     nodejs/scripts/lint/lint-runner.sh \
     rust/scripts/lint-runner.sh \
     wordpress/scripts/lint/lint-runner.sh; do
-    assert_sources "$ROOT_DIR/$runner" 'scripts/lib/fix-results.sh'
+    assert_sources "$ROOT_DIR/$runner" '/fix-results.sh'
 done
 
 echo "runtime helper smoke passed"
