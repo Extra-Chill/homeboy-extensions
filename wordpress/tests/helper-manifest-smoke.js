@@ -56,5 +56,9 @@ assert.equal(
 	manifest.helpers.woocommerceExpensiveShipping,
 	path.resolve(__dirname, '..', 'scripts', 'bench', 'lib', 'woocommerce-expensive-shipping.php')
 );
+assert.equal(
+	manifest.helpers.fuzzManifestContracts,
+	path.resolve(__dirname, '..', 'lib', 'fuzz-manifest-contracts.js')
+);
 
 console.log('helper manifest smoke passed');
