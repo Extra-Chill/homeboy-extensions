@@ -9,6 +9,8 @@ const WORDPRESS_EXTENSION_ROOT = path.resolve(__dirname, '..');
 
 const HELPER_PATHS = Object.freeze({
 	requestProfiler: path.join(WORDPRESS_EXTENSION_ROOT, 'lib', 'request-profiler.js'),
+	restDbQueryProfiler: path.join(WORDPRESS_EXTENSION_ROOT, 'lib', 'rest-db-query-profiler.js'),
+	externalHttpGuardrail: path.join(WORDPRESS_EXTENSION_ROOT, 'lib', 'external-http-guardrail.js'),
 	timingCorrelator: path.join(WORDPRESS_EXTENSION_ROOT, 'lib', 'timing-correlator.js'),
 	wordpressRouteLatency: path.join(WORDPRESS_EXTENSION_ROOT, 'lib', 'wordpress-route-latency.js'),
 	bootstrapTimeline: path.join(WORDPRESS_EXTENSION_ROOT, 'lib', 'wordpress-bootstrap-timeline.js'),
@@ -20,7 +22,6 @@ const HELPER_PATHS = Object.freeze({
 	fidelityComparison: path.join(WORDPRESS_EXTENSION_ROOT, 'lib', 'fidelity-comparison.js'),
 	fixtureSetup: path.join(WORDPRESS_EXTENSION_ROOT, 'lib', 'fixture-setup.js'),
 	fuzzManifestContracts: path.join(WORDPRESS_EXTENSION_ROOT, 'lib', 'fuzz-manifest-contracts.js'),
-	woocommerceExpensiveShipping: path.join(WORDPRESS_EXTENSION_ROOT, 'scripts', 'bench', 'lib', 'woocommerce-expensive-shipping.php'),
 });
 
 function getWordPressHelperManifest() {

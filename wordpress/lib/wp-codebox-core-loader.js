@@ -8,13 +8,21 @@ const { existsSync, readdirSync } = require('node:fs');
 const { homedir } = require('node:os');
 const { pathToFileURL } = require('node:url');
 
+/**
+ * Internal dependencies
+ */
+const {
+	resolveWpCodeboxIdentity,
+} = require('./wp-codebox-resolver');
+
 const DEFAULT_CODEBOX_CORE_MODULE = '@automattic/wp-codebox-core';
 const RUNTIME_CORE_ENTRY = 'packages/runtime-core/dist/index.js';
 const DEFAULT_CORE_PACKAGE_CANDIDATES = [DEFAULT_CODEBOX_CORE_MODULE];
 const DEFAULT_RUNTIME_CORE_ENTRIES = [RUNTIME_CORE_ENTRY];
 
 function coreModuleSpecifier(options = {}) {
-	const explicit = options.wpCodeboxCoreModule || options.coreModule || process.env.HOMEBOY_WP_CODEBOX_CORE_MODULE || process.env.WP_CODEBOX_CORE_MODULE;
+	const identity = resolveWpCodeboxIdentity(options);
+	const explicit = identity.coreModulePath || options.wpCodeboxCoreModule || options.coreModule || process.env.HOMEBOY_WP_CODEBOX_CORE_MODULE || process.env.WP_CODEBOX_CORE_MODULE;
 	if (!explicit) {
 		return DEFAULT_CODEBOX_CORE_MODULE;
 	}
@@ -28,10 +36,14 @@ function normalizeCoreModuleSpecifier(specifier) {
 	if (specifier.startsWith('file:') || specifier.startsWith('node:')) {
 		return specifier;
 	}
-	if (specifier.startsWith('.') || specifier.startsWith('/') || specifier.includes(path.sep)) {
+	if (isPathSpecifier(specifier)) {
 		return pathToFileURL(path.resolve(specifier)).href;
 	}
 	return specifier;
+}
+
+function isPathSpecifier(specifier) {
+	return specifier.startsWith('.') || path.isAbsolute(specifier) || specifier.startsWith('~') || specifier.includes('\\') || existsSync(path.resolve(specifier));
 }
 
 function coreModuleCandidates(options = {}) {
@@ -40,8 +52,13 @@ function coreModuleCandidates(options = {}) {
 		return [normalizeCoreModuleSpecifier(explicit)];
 	}
 
+	const usesCustomCandidateSearch = options.packageCandidates || options.runtimeCoreEntries || options.globalNodeModuleRoots;
+	const identity = usesCustomCandidateSearch ? null : resolveWpCodeboxIdentity(options);
+	if (identity?.coreModulePath && identity.coreModulePath !== DEFAULT_CODEBOX_CORE_MODULE) {
+		return [normalizeCoreModuleSpecifier(identity.coreModulePath)];
+	}
+
 	const packageCandidates = options.packageCandidates || DEFAULT_CORE_PACKAGE_CANDIDATES;
-	const runtimeCoreEntries = options.runtimeCoreEntries || DEFAULT_RUNTIME_CORE_ENTRIES;
 	const candidates = [...packageCandidates];
 	for (const candidate of setupCacheCoreModuleCandidates(options)) {
 		if (existsSync(candidate) && !candidates.includes(candidate)) {
@@ -51,11 +68,19 @@ function coreModuleCandidates(options = {}) {
 
 	for (const root of workspaceRoots(options)) {
 		for (const repoPath of codeboxRepoCandidates(root)) {
-			for (const entry of runtimeCoreEntries) {
+			for (const entry of options.runtimeCoreEntries || DEFAULT_RUNTIME_CORE_ENTRIES) {
 				const runtimeCore = path.resolve(repoPath, entry);
 				if (existsSync(runtimeCore) && !candidates.includes(runtimeCore)) {
 					candidates.push(runtimeCore);
 				}
+			}
+		}
+	}
+
+	for (const root of globalNodeModuleRoots(options)) {
+		for (const candidate of globalNodeModuleCoreCandidates(root, options)) {
+			if (existsSync(candidate) && !candidates.includes(candidate)) {
+				candidates.push(candidate);
 			}
 		}
 	}
@@ -89,6 +114,37 @@ function workspaceRoots(options = {}) {
 	];
 
 	return [...new Set(roots.filter(Boolean))];
+}
+
+function globalNodeModuleRoots(options = {}) {
+	if (options.includeGlobalNodeModuleRoots === false) {
+		return [];
+	}
+
+	const configuredRoots = Array.isArray(options.globalNodeModuleRoots) ? options.globalNodeModuleRoots : [];
+	const roots = [
+		...configuredRoots,
+		process.env.HOMEBOY_GLOBAL_NODE_MODULE_ROOT,
+		path.resolve(path.dirname(process.execPath), '..', 'lib', 'node_modules'),
+	];
+
+	return [...new Set(roots.filter(Boolean))];
+}
+
+function globalNodeModuleCoreCandidates(root, options = {}) {
+	const runtimeCoreEntries = options.runtimeCoreEntries || DEFAULT_RUNTIME_CORE_ENTRIES;
+	const packageDistEntries = options.packageDistEntries || ['index.js'];
+	const candidates = [];
+
+	for (const entry of runtimeCoreEntries) {
+		candidates.push(path.resolve(root, 'wp-codebox-workspace', entry));
+	}
+	for (const entry of packageDistEntries) {
+		candidates.push(path.resolve(root, '@automattic', 'wp-codebox-core', 'dist', entry));
+		candidates.push(path.resolve(root, 'wp-codebox-workspace', 'node_modules', '@automattic', 'wp-codebox-core', 'dist', entry));
+	}
+
+	return candidates;
 }
 
 function codeboxRepoCandidates(root) {
@@ -162,5 +218,6 @@ module.exports = {
 	loadWpCodeboxCore,
 	loadWpCodeboxCoreExport,
 	loadWpCodeboxCoreFunction,
+	globalNodeModuleRoots,
 	RUNTIME_CORE_ENTRY,
 };

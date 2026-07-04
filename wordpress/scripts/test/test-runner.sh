@@ -3,8 +3,9 @@ set -euo pipefail
 
 # Test runner router for WordPress Homeboy extension.
 #
-# Plugin/theme PHPUnit tests and core-dev checkouts run through WP Codebox.
-# Pure host-PHP smoke suites can explicitly use the host-smoke backend.
+# Plugin/theme PHPUnit tests and core-dev checkouts run through the selected
+# WordPress runtime backend. Pure host-PHP smoke suites can explicitly use the
+# host-smoke backend.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_PRELUDE="${HOMEBOY_RUNTIME_RUNNER_PRELUDE:?HOMEBOY_RUNTIME_RUNNER_PRELUDE is required}"
@@ -12,8 +13,9 @@ RUNNER_PRELUDE="${HOMEBOY_RUNTIME_RUNNER_PRELUDE:?HOMEBOY_RUNTIME_RUNNER_PRELUDE
 SMOKE_RUNNER="${HOMEBOY_RUNTIME_TEST_RUNNER_HOST_SMOKE_WP:-${SCRIPT_DIR}/test-runner-host-smoke-wp.sh}"
 WP_CODEBOX_RUNNER="${HOMEBOY_RUNTIME_TEST_RUNNER_WP_CODEBOX:-${SCRIPT_DIR}/test-runner-wp-codebox.sh}"
 CORE_WP_CODEBOX_RUNNER="${HOMEBOY_RUNTIME_TEST_RUNNER_CORE_WP_CODEBOX:-${SCRIPT_DIR}/test-runner-core-dev-wp-codebox.sh}"
+WORDPRESS_TEST_RUNTIME_BACKEND="${HOMEBOY_WORDPRESS_TEST_RUNTIME_BACKEND:-wp-codebox}"
 
-SETTINGS_HELPER="${HOMEBOY_RUNTIME_SETTINGS_HELPER:-${SCRIPT_DIR}/../lib/settings.sh}"
+SETTINGS_HELPER="${HOMEBOY_RUNTIME_SETTINGS_HELPER:-${SCRIPT_DIR}/../../../scripts/lib/settings.sh}"
 # shellcheck source=/dev/null
 source "$RUNNER_PRELUDE"
 homeboy_runner_init --bash 4 --component-alias PLUGIN_PATH
@@ -26,10 +28,10 @@ if [ "${HOMEBOY_DEBUG:-}" = "1" ]; then
     echo "DEBUG: Component path: ${COMPONENT_PATH:-$(pwd)}"
 fi
 
-# WordPress tests run through WP Codebox against real WordPress. The default
-# suite is PHPUnit. Standalone smoke scripts are diagnostic/operator targets and
-# run only when selected explicitly with --file, --host-smoke-file, or the
-# HOMEBOY_WORDPRESS_HOST_SMOKE_FILES scope environment.
+# WordPress tests run through the selected runtime backend against real
+# WordPress. The default suite is PHPUnit. Standalone smoke scripts are
+# diagnostic/operator targets and run only when selected explicitly with --file,
+# --host-smoke-file, or the HOMEBOY_WORDPRESS_HOST_SMOKE_FILES scope environment.
 
 show_usage() {
     cat <<'EOF'
@@ -39,14 +41,44 @@ Usage: homeboy test <component-id> [-- --file <path>]
 Options passed after `--` are handled by the WordPress extension runner:
   --file <path>             Run one test file, routed by file type.
   --host-smoke-file <path>  Run one real-WordPress host smoke through the same
-                            WP Codebox/wordpress.run-php harness used by CI.
+                            WordPress runtime harness used by CI.
                             The file must match tests/**/*-smoke.php.
   --help                    Show this help.
+
+Runtime backend:
+  HOMEBOY_WORDPRESS_TEST_RUNTIME_BACKEND selects the real-WordPress runtime
+  backend for PHPUnit and core-dev tests. Supported: wp-codebox (default).
 
 Real-WordPress host smokes preserve the HOST_SMOKE_BEGIN,
 HOST_SMOKE_PROGRESS, HOST_SMOKE_OK, HOST_SMOKE_FAIL, and
 HOST_SMOKE_SUMMARY markers for machine parsing.
 EOF
+}
+
+homeboy_wordpress_runtime_runner() {
+    case "$WORDPRESS_TEST_RUNTIME_BACKEND" in
+        wp-codebox)
+            printf '%s\n' "$WP_CODEBOX_RUNNER"
+            ;;
+        *)
+            echo "ERROR: unsupported WordPress test runtime backend: ${WORDPRESS_TEST_RUNTIME_BACKEND}" >&2
+            echo "  Supported backends: wp-codebox" >&2
+            return 2
+            ;;
+    esac
+}
+
+homeboy_wordpress_core_runtime_runner() {
+    case "$WORDPRESS_TEST_RUNTIME_BACKEND" in
+        wp-codebox)
+            printf '%s\n' "$CORE_WP_CODEBOX_RUNNER"
+            ;;
+        *)
+            echo "ERROR: unsupported WordPress core-dev test runtime backend: ${WORDPRESS_TEST_RUNTIME_BACKEND}" >&2
+            echo "  Supported backends: wp-codebox" >&2
+            return 2
+            ;;
+    esac
 }
 
 TARGET_FILE=""
@@ -103,10 +135,11 @@ if [ -z "$COMPONENT_SHAPE" ]; then
 fi
 
 if [ "$COMPONENT_SHAPE" = "core-dev" ]; then
+    CORE_WORDPRESS_RUNTIME_RUNNER="$(homeboy_wordpress_core_runtime_runner)" || exit $?
     if [ -n "$TARGET_FILE" ]; then
-        HOMEBOY_WORDPRESS_CORE_PHPUNIT_TEST_FILE="$TARGET_FILE" exec bash "$CORE_WP_CODEBOX_RUNNER" "${PASSTHROUGH_ARGS[@]}"
+        HOMEBOY_WORDPRESS_CORE_PHPUNIT_TEST_FILE="$TARGET_FILE" exec bash "$CORE_WORDPRESS_RUNTIME_RUNNER" "${PASSTHROUGH_ARGS[@]}"
     fi
-    exec bash "$CORE_WP_CODEBOX_RUNNER" "${PASSTHROUGH_ARGS[@]}"
+    exec bash "$CORE_WORDPRESS_RUNTIME_RUNNER" "${PASSTHROUGH_ARGS[@]}"
 fi
 
 homeboy_wordpress_rel_test_file() {
@@ -127,6 +160,10 @@ homeboy_wordpress_rel_test_file() {
         abs_path="${PLUGIN_PATH}/${raw_path#wordpress/}"
     fi
 
+    if [ ! -f "$abs_path" ] && [ "${raw_path#/}" != "$raw_path" ]; then
+        abs_path=$(homeboy_wordpress_resolve_wp_codebox_sandbox_path "$raw_path" || true)
+    fi
+
     if [ ! -f "$abs_path" ]; then
         return 1
     fi
@@ -134,6 +171,60 @@ homeboy_wordpress_rel_test_file() {
     case "$abs_path" in
         "${PLUGIN_PATH}"/*)
             printf '%s\n' "${abs_path#"${PLUGIN_PATH}/"}"
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+homeboy_wordpress_resolve_wp_codebox_sandbox_path() {
+    local sandbox_path="$1"
+    local settings_json="${HOMEBOY_SETTINGS_JSON:-}"
+    [ -n "$settings_json" ] || settings_json="{}"
+
+    if [ -e "$sandbox_path" ]; then
+        printf '%s\n' "$sandbox_path"
+        return 0
+    fi
+
+    printf '%s' "$settings_json" | jq -r --arg sandboxPath "$sandbox_path" '
+        (.wp_codebox_phpunit_mounts // [])[]
+        | select((.source // "") != "" and (.target // "") != "")
+        | (.target | rtrimstr("/")) as $target
+        | (.source | rtrimstr("/")) as $source
+        | select($sandboxPath == $target or ($sandboxPath | startswith($target + "/")))
+        | $source + ($sandboxPath | sub("^" + ($target | gsub("([][\\.^$*+?{}|()-])"; "\\\\\\1")); ""))
+    ' 2>/dev/null | while IFS= read -r candidate; do
+        if [ -e "$candidate" ]; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+}
+
+homeboy_wordpress_configured_phpunit_test_root() {
+    local settings_json="${HOMEBOY_SETTINGS_JSON:-}"
+    local test_root
+    [ -n "$settings_json" ] || settings_json="{}"
+
+    test_root=$(printf '%s' "$settings_json" | jq -r '.wp_codebox_phpunit_test_root // empty' 2>/dev/null || true)
+    [ -n "$test_root" ] || return 1
+
+    homeboy_wordpress_resolve_wp_codebox_sandbox_path "$test_root"
+}
+
+homeboy_wordpress_is_configured_phpunit_file() {
+    local target_rel="$1"
+    local test_root
+    local target_abs="${PLUGIN_PATH}/${target_rel}"
+
+    test_root=$(homeboy_wordpress_configured_phpunit_test_root || true)
+    [ -n "$test_root" ] || return 1
+
+    case "$target_abs" in
+        "${test_root%/}"/*.php|"${test_root%/}"/*/*.php|"${test_root%/}"/*/*/*.php|"${test_root%/}"/*/*/*/*.php)
+            return 0
             ;;
         *)
             return 1
@@ -334,6 +425,26 @@ if [ -n "$TARGET_FILE" ]; then
         exit 0
     fi
 
+    if homeboy_wordpress_is_configured_phpunit_file "$target_rel"; then
+        configured_phpunit_root=$(homeboy_wordpress_configured_phpunit_test_root || true)
+        configured_phpunit_target="${PLUGIN_PATH}/${target_rel}"
+        configured_phpunit_rel="${configured_phpunit_target#"${configured_phpunit_root%/}/"}"
+        if [ -z "$configured_phpunit_root" ] || [ "$configured_phpunit_rel" = "$configured_phpunit_target" ]; then
+            configured_phpunit_rel="$target_rel"
+        fi
+        case "$target_base" in
+            *Test.php|test-*.php)
+                WORDPRESS_RUNTIME_RUNNER="$(homeboy_wordpress_runtime_runner)" || exit $?
+                HOMEBOY_WORDPRESS_PHPUNIT_TEST_FILE="$configured_phpunit_rel" exec bash "$WORDPRESS_RUNTIME_RUNNER" "${PASSTHROUGH_ARGS[@]}"
+                ;;
+            *)
+                echo "ERROR: cannot classify requested WordPress test file under configured PHPUnit test root: ${target_rel}" >&2
+                echo "  PHPUnit files must match *Test.php or test-*.php." >&2
+                exit 2
+                ;;
+        esac
+    fi
+
     case "$target_rel" in
         tests/*.php|tests/*/*.php|tests/*/*/*.php|tests/*/*/*/*.php)
             case "$target_base" in
@@ -341,7 +452,8 @@ if [ -n "$TARGET_FILE" ]; then
                     HOMEBOY_WORDPRESS_HOST_SMOKE_FILE="$target_rel" exec bash "$SMOKE_RUNNER" "${PASSTHROUGH_ARGS[@]}"
                     ;;
                 *Test.php|test-*.php)
-                    HOMEBOY_WORDPRESS_PHPUNIT_TEST_FILE="$target_rel" exec bash "$WP_CODEBOX_RUNNER" "${PASSTHROUGH_ARGS[@]}"
+                    WORDPRESS_RUNTIME_RUNNER="$(homeboy_wordpress_runtime_runner)" || exit $?
+                    HOMEBOY_WORDPRESS_PHPUNIT_TEST_FILE="$target_rel" exec bash "$WORDPRESS_RUNTIME_RUNNER" "${PASSTHROUGH_ARGS[@]}"
                     ;;
                 *)
                     echo "ERROR: cannot classify requested WordPress test file: ${target_rel}" >&2
@@ -361,4 +473,5 @@ fi
 # Full-suite run (no --file, no changed-file scope): run the canonical PHPUnit
 # backend only. Ad hoc PHP smoke scripts are intentionally not release gates;
 # rerun one explicitly with --host-smoke-file or --file when diagnosing it.
-exec bash "$WP_CODEBOX_RUNNER" "${PASSTHROUGH_ARGS[@]}"
+WORDPRESS_RUNTIME_RUNNER="$(homeboy_wordpress_runtime_runner)" || exit $?
+exec bash "$WORDPRESS_RUNTIME_RUNNER" "${PASSTHROUGH_ARGS[@]}"

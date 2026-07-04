@@ -20,7 +20,7 @@ set -euo pipefail
 
 homeboy_get_validation_dependencies_raw() {
     if ! type homeboy_setting_json >/dev/null 2>&1; then
-        local settings_helper="${HOMEBOY_RUNTIME_SETTINGS_HELPER:-$(dirname "${BASH_SOURCE[0]}")/settings.sh}"
+        local settings_helper="${HOMEBOY_RUNTIME_SETTINGS_HELPER:-$(dirname "${BASH_SOURCE[0]}")/../../../scripts/lib/settings.sh}"
         # shellcheck source=/dev/null
         source "$settings_helper"
     fi
@@ -83,6 +83,36 @@ _homeboy_validation_dependency_entry_source_type() {
     if _homeboy_validation_dependency_entry_is_object "$entry"; then
         printf '%s' "$entry" | jq -r '.source_type // .type // empty'
     fi
+}
+
+_homeboy_validation_dependency_entry_package_path() {
+    local entry="${1:-}"
+
+    if _homeboy_validation_dependency_entry_is_object "$entry"; then
+        printf '%s' "$entry" | jq -r '.package_path // .packagePath // .subdir // .subdirectory // .plugin_path // .pluginPath // empty'
+    fi
+}
+
+_homeboy_validation_dependency_package_root() {
+    local resolved_path="${1:-}"
+    local package_path="${2:-}"
+
+    [ -n "$resolved_path" ] && [ -d "$resolved_path" ] || return 1
+    [ -n "$package_path" ] || {
+        printf '%s\n' "$resolved_path"
+        return 0
+    }
+
+    case "$package_path" in
+        /*|*..*) return 1 ;;
+    esac
+
+    if [ -d "${resolved_path%/}/${package_path}" ]; then
+        printf '%s\n' "${resolved_path%/}/${package_path}"
+        return 0
+    fi
+
+    return 1
 }
 
 _homeboy_validation_dependency_catalog_dir() {
@@ -182,16 +212,17 @@ _homeboy_resolve_validation_dependency_entry_path() {
         return $?
     fi
 
-    local source_type source slug revision url resolved
+    local source_type source slug revision url package_path resolved package_root
     source_type=$(_homeboy_validation_dependency_entry_source_type "$entry")
     source=$(printf '%s' "$entry" | jq -r '.path // .local_path // .dependency // .source // empty')
     slug=$(_homeboy_validation_dependency_entry_slug "$entry")
     revision=$(printf '%s' "$entry" | jq -r '.revision // .ref // .version // empty')
     url=$(printf '%s' "$entry" | jq -r '.url // .zip_url // empty')
+    package_path=$(_homeboy_validation_dependency_entry_package_path "$entry")
 
     if [ -n "$source" ] && [ -d "$source" ]; then
-        printf '%s\n' "$source"
-        return 0
+        package_root=$(_homeboy_validation_dependency_package_root "$source" "$package_path" || true)
+        [ -n "$package_root" ] && printf '%s\n' "$package_root" && return 0
     fi
 
     case "$source_type" in
@@ -199,18 +230,22 @@ _homeboy_resolve_validation_dependency_entry_path() {
             local repo
             repo=$(printf '%s' "$entry" | jq -r '.repo // .repository // .source // empty')
             resolved=$(_homeboy_clone_catalog_github_dependency "$repo" "$slug" "$revision" || true)
-            [ -n "$resolved" ] && [ -d "$resolved" ] && printf '%s\n' "$resolved" && return 0
+            package_root=$(_homeboy_validation_dependency_package_root "$resolved" "$package_path" || true)
+            [ -n "$package_root" ] && [ -d "$package_root" ] && printf '%s\n' "$package_root" && return 0
             ;;
         wp.org|wporg|wordpress.org|wp.org-zip|wordpress.org-zip)
             [ -n "$slug" ] || slug=$(printf '%s' "$entry" | jq -r '.dependency // empty')
             resolved=$(_homeboy_materialize_wordpress_org_zip_dependency "$slug" "$revision" "$url" || true)
-            [ -n "$resolved" ] && [ -d "$resolved" ] && printf '%s\n' "$resolved" && return 0
+            package_root=$(_homeboy_validation_dependency_package_root "$resolved" "$package_path" || true)
+            [ -n "$package_root" ] && [ -d "$package_root" ] && printf '%s\n' "$package_root" && return 0
             ;;
     esac
 
     if [ -n "$source" ]; then
-        homeboy_resolve_validation_dependency_path "$source"
-        return $?
+        resolved=$(homeboy_resolve_validation_dependency_path "$source" || true)
+        package_root=$(_homeboy_validation_dependency_package_root "$resolved" "$package_path" || true)
+        [ -n "$package_root" ] && printf '%s\n' "$package_root" && return 0
+        return 1
     fi
 
     [ -n "$slug" ] || return 1
@@ -298,7 +333,7 @@ homeboy_get_requires_plugins_from_header() {
 
 # Resolve the wp-content/plugins/<slug> path segment for a plugin checkout.
 # Normal checkouts keep using their directory basename. Worktree-style
-# directories may carry a branch suffix (for example data-machine@fix/foo), so
+# directories may carry a branch suffix (for example example-plugin@fix/foo), so
 # use the root plugin entry file when it matches the pre-suffix basename.
 homeboy_get_validation_dependency_slug() {
     local plugin_path="${1:-}"
@@ -584,7 +619,7 @@ homeboy_preflight_declared_validation_dependency_paths() {
     while IFS= read -r dependency; do
         [ -n "$dependency" ] || continue
         if _homeboy_validation_dependency_entry_is_object "$dependency"; then
-            dependency=$(_homeboy_validation_dependency_entry_token "$dependency" || true)
+            dependency=$(_homeboy_resolve_validation_dependency_entry_path "$dependency" || true)
             [ -n "$dependency" ] || continue
         fi
         case "$dependency" in
@@ -958,16 +993,6 @@ _homeboy_prepare_cloned_dependency() {
     fi
 }
 
-_homeboy_known_dependency_github_org() {
-    local slug="${1:-}"
-
-    case "$slug" in
-        data-machine)
-            printf '%s\n' 'Extra-Chill'
-            ;;
-    esac
-}
-
 _homeboy_git_dependency_summary() {
     local repo_dir="${1:-}"
 
@@ -1098,19 +1123,7 @@ homeboy_resolve_validation_dependency_path() {
             github_org=$(_homeboy_infer_github_org "${_HOMEBOY_DEP_PLUGIN_PATH:-.}" || true)
         fi
 
-        local known_github_org
-        known_github_org=$(_homeboy_known_dependency_github_org "$dependency" || true)
-        if [ -n "$known_github_org" ]; then
-            local cloned_path
-            cloned_path=$(_homeboy_clone_dependency "$dependency" "$known_github_org" || true)
-            if [ -n "$cloned_path" ] && [ -d "$cloned_path" ]; then
-                _homeboy_report_resolved_dependency "$dependency" "git clone from ${known_github_org}/${dependency}" "$cloned_path"
-                printf '%s\n' "$cloned_path"
-                return 0
-            fi
-        fi
-
-        if [ -n "$github_org" ] && [ "$github_org" != "$known_github_org" ]; then
+        if [ -n "$github_org" ]; then
             local cloned_path
             cloned_path=$(_homeboy_clone_dependency "$dependency" "$github_org" || true)
             if [ -n "$cloned_path" ] && [ -d "$cloned_path" ]; then
@@ -1163,7 +1176,7 @@ _homeboy_walk_validation_dependency() {
 
     # Deduplicate equivalent dependency checkouts by the WordPress plugin slug
     # Playground will mount/load, not just by host path. This prevents a
-    # worktree path like data-machine@fix/foo and a canonical data-machine
+    # worktree path like example-plugin@fix/foo and a canonical example-plugin
     # checkout from loading as two copies of the same plugin.
     if [ -n "${seen_slugs[$resolved_slug]+x}" ]; then
         return 0
@@ -1541,7 +1554,7 @@ _homeboy_prepared_dependency_cache_metadata() {
         '($catalogEntry // {}) as $catalog |
         {
             schema: $schema,
-            slug: $slug,
+            slug: ($catalog.slug // $slug),
             source_type: ($catalog.source_type // null),
             requested_version: ($catalog.requested_version // null),
             requested_revision: ($catalog.requested_revision // null),
@@ -1597,6 +1610,103 @@ _homeboy_record_prepared_dependency_metadata() {
         --arg cache_status "$cache_status" \
         '$existing + [($dependency + {cache_key: $cache_key, prepared_path: $prepared_path, cache_status: $cache_status})]' > "$tmp_file"
     mv "$tmp_file" "$metadata_file"
+}
+
+homeboy_get_prepared_validation_dependency_slug() {
+    local dependency_path="${1:-}"
+    local artifacts_dir="${2:-}"
+
+    [ -n "$dependency_path" ] && [ -n "$artifacts_dir" ] || return 1
+    command -v jq >/dev/null 2>&1 || return 1
+
+    local metadata_file dependency_realpath
+    metadata_file="${artifacts_dir%/}/prepared-bench-dependencies.json"
+    [ -f "$metadata_file" ] || return 1
+    dependency_realpath=$(cd "$dependency_path" && pwd -P 2>/dev/null || printf '%s\n' "$dependency_path")
+
+    jq -er --arg dependencyPath "$dependency_path" --arg dependencyRealpath "$dependency_realpath" '
+        if type == "array" then . else [] end
+        | map(select(.prepared_path == $dependencyPath or .prepared_path == $dependencyRealpath or .package_root == $dependencyPath or .package_root == $dependencyRealpath))
+        | .[-1].slug // empty
+    ' "$metadata_file" 2>/dev/null
+}
+
+homeboy_export_wordpress_dependencies_json() {
+    local dependency_paths="${1:-}"
+    local artifacts_dir="${2:-}"
+
+    command -v jq >/dev/null 2>&1 || return 0
+
+    local metadata_file dependencies_json
+    metadata_file="${artifacts_dir%/}/prepared-bench-dependencies.json"
+    if [ -n "$artifacts_dir" ] && [ -f "$metadata_file" ]; then
+        dependencies_json=$(jq -c '
+            if type == "array" then . else [] end
+            | map({
+                slug,
+                path: (.prepared_path // .package_root // .source_path),
+                local_path: (.source_path // .package_root // .prepared_path),
+                runner_path: (.mounted_plugin_dir // null),
+                source: (.source_type // .cache_status // null),
+                source_type: (.source_type // null),
+                ref: (.requested_revision // null),
+                plugin_file: (.plugin_file // null),
+                resolved_by: (if .cache_status then "wp-codebox-bench-prepare" else "wordpress-dependency-resolution" end)
+            })
+        ' "$metadata_file" 2>/dev/null || printf '[]\n')
+        export HOMEBOY_WORDPRESS_DEPENDENCIES_JSON="$dependencies_json"
+        return 0
+    fi
+
+    local catalog_json="${HOMEBOY_WORDPRESS_DEPENDENCY_CATALOG_JSON:-${_HOMEBOY_RESOLVED_DEPENDENCY_CATALOG_JSON:-[]}}"
+    if printf '%s' "$catalog_json" | jq -e 'type == "array" and length > 0' >/dev/null 2>&1; then
+        dependencies_json=$(printf '%s' "$catalog_json" | jq -c '
+            map({
+                slug,
+                path: .resolved_path,
+                local_path: .resolved_path,
+                runner_path: (if .slug then "/wordpress/wp-content/plugins/" + .slug else null end),
+                source: (.source_type // null),
+                source_type: (.source_type // null),
+                ref: (.requested_revision // null),
+                plugin_file: (.plugin_file // null),
+                resolved_by: "wordpress-dependency-resolution"
+            })
+        ' 2>/dev/null || printf '[]\n')
+        export HOMEBOY_WORDPRESS_DEPENDENCIES_JSON="$dependencies_json"
+        return 0
+    fi
+
+    local entries="[]" dependency_path dependency_slug plugin_file plugin_relative_file
+    while IFS= read -r dependency_path; do
+        [ -n "$dependency_path" ] || continue
+        [ -d "$dependency_path" ] || continue
+        dependency_slug=$(homeboy_get_validation_dependency_slug "$dependency_path" || basename "$dependency_path")
+        plugin_file=""
+        plugin_relative_file=""
+        plugin_file=$(homeboy_find_validation_dependency_plugin_main_file "$dependency_path" || true)
+        if [ -n "$plugin_file" ]; then
+            plugin_relative_file="${dependency_slug}/${plugin_file#"${dependency_path%/}/"}"
+        fi
+        entries=$(jq -nc \
+            --argjson entries "$entries" \
+            --arg slug "$dependency_slug" \
+            --arg path "$dependency_path" \
+            --arg pluginFile "$plugin_relative_file" \
+            '$entries + [{
+                slug: $slug,
+                path: $path,
+                local_path: $path,
+                runner_path: "/wordpress/wp-content/plugins/" + $slug,
+                source: "path",
+                source_type: null,
+                ref: null,
+                plugin_file: (if $pluginFile == "" then null else $pluginFile end),
+                resolved_by: "wordpress-dependency-paths"
+            }]')
+    done <<< "$dependency_paths"
+
+    export HOMEBOY_WORDPRESS_DEPENDENCIES_JSON="$entries"
 }
 
 _homeboy_command_version() {
@@ -1700,10 +1810,13 @@ homeboy_prepare_validation_dependency_for_wp_codebox_bench() {
 
     [ -n "$dependency_path" ] && [ -d "$dependency_path" ] || return 1
 
-    local dependency_slug package_root
+    local dependency_slug package_root catalog_entry_json catalog_slug
     dependency_slug=$(homeboy_get_validation_dependency_slug "$dependency_path" || basename "$dependency_path")
     package_root=$(homeboy_find_validation_dependency_plugin_package_root "$dependency_path" "$dependency_slug" || true)
     [ -n "$package_root" ] && [ -d "$package_root" ] || package_root="$dependency_path"
+    catalog_entry_json=$(_homeboy_prepared_dependency_catalog_entry "$dependency_path" "$package_root")
+    catalog_slug=$(printf '%s' "$catalog_entry_json" | jq -r '.slug // empty' 2>/dev/null || true)
+    [ -n "$catalog_slug" ] && dependency_slug="$catalog_slug"
 
     if ! homeboy_dependency_needs_composer_prepare "$package_root"; then
         local source_realpath package_realpath relative_source_plugin_path metadata_json

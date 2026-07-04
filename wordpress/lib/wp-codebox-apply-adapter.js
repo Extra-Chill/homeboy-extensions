@@ -11,7 +11,7 @@ const { spawnSync } = require('node:child_process');
 /**
  * Internal dependencies
  */
-const { loadWpCodeboxCoreFunction } = require('./wp-codebox-core-loader');
+const { createCodeboxClient } = require('./codebox-client');
 
 const ADAPTER_ID = 'homeboy/wp-codebox-apply-adapter/v1';
 const APPLY_RESULT_SCHEMA = 'homeboy/apply-result/v1';
@@ -187,19 +187,16 @@ function runWpCodeboxApplyPreflight(options) {
     throw new Error('approvedFiles is required for WP Codebox apply preflight');
   }
 
-  const wpCommand = options.wpCommand || options.wpCli || process.env.HOMEBOY_WP_CLI || 'wp';
-  const args = [
-    'codebox',
-    'artifacts',
-    'preflight-apply',
+  return createCodeboxClient(options).runArtifactApplyPreflight({
     artifactId,
-    `--artifacts-path=${artifactsPath}`,
-    `--approved-files=${JSON.stringify(approvedFiles)}`,
-    '--format=json',
-  ];
-
-  const output = run(wpCommand, args, { cwd: options.cwd, env: options.env });
-  return JSON.parse(output);
+    artifactsPath,
+    bundlePath,
+    approvedFiles,
+    cwd: options.cwd,
+    env: options.env,
+    wpCommand: options.wpCommand,
+    wpCli: options.wpCli,
+  });
 }
 
 function normalizeWpCodeboxPreflight(input) {
@@ -233,6 +230,7 @@ function normalizeWpCodeboxPreflight(input) {
     verifyWpCodeboxPayload(payload);
     return {
       ...preflight,
+      ready: preflight.ready !== false,
       payload,
     };
   }
@@ -251,24 +249,14 @@ function normalizeWpCodeboxPreflight(input) {
 }
 
 async function normalizeWpCodeboxPreflightAsync(input) {
-  const normalizeArtifactApplyPreflight = await loadWpCodeboxCoreFunction('normalizeArtifactApplyPreflight', input);
-  if (!normalizeArtifactApplyPreflight) {
-    return normalizeWpCodeboxPreflight(input);
-  }
-  const preflight = await normalizeArtifactApplyPreflight(input);
-  if (!preflight.ready) {
-    const details = (preflight.violations || []).map((violation) => violation.message || violation.code).filter(Boolean).join('; ');
-    throw new Error(`WP Codebox apply preflight is not ready${details ? `: ${details}` : ''}`);
-  }
-  return preflight;
+  return normalizeWpCodeboxPreflight(input);
 }
 
 async function wpCodeboxApplyRequestFromBundleAsync(options) {
-  const createArtifactApplyRequest = await loadWpCodeboxCoreFunction('createArtifactApplyRequest', options);
-  if (!createArtifactApplyRequest) {
-    return wpCodeboxApplyRequestFromBundle(options);
-  }
-  return createArtifactApplyRequest(options);
+  return wpCodeboxApplyRequestFromBundle({
+    ...options,
+    preflight: await normalizeWpCodeboxPreflightAsync(options),
+  });
 }
 
 function normalizeApplyRequest(input) {

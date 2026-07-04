@@ -13,10 +13,10 @@ usage() {
     cat <<'USAGE'
 Usage: scripts/update-wp-codebox-cache.sh [options]
 
-Update the WP Codebox source cache used by Homeboy lab runners.
+Update the WP Codebox source cache used by remote Homeboy runners.
 
 Options:
-  --target <runner-id>      Runner ID such as homeboy-lab. Omit to run locally.
+  --target <runner-id>      Runner ID such as example-runner. Omit to run locally.
   --runner <runner-id>      Alias for --target.
   --source <git-url>        WP Codebox repository URL.
                            Default: https://github.com/Automattic/wp-codebox.git
@@ -29,8 +29,8 @@ Options:
   -h, --help                Show this help.
 
 Examples:
-  scripts/update-wp-codebox-cache.sh --target homeboy-lab
-  scripts/update-wp-codebox-cache.sh --runner homeboy-lab --ref main
+  scripts/update-wp-codebox-cache.sh --target example-runner
+  scripts/update-wp-codebox-cache.sh --runner example-runner --ref main
   scripts/update-wp-codebox-cache.sh --source git@github.com:Automattic/wp-codebox.git --ref afe6890
 USAGE
 }
@@ -84,7 +84,7 @@ if [ -z "$NPM_BIN" ]; then
 fi
 
 RUNNER_ID="${TARGET:-local}"
-RUNNER_ARGS=(runner exec "$RUNNER_ID" --script-file - --raw --env "SOURCE=$SOURCE" --env "REQUESTED_REF=$REF" --env "CACHE_DIR=$CACHE_DIR" --env "NPM_BIN=$NPM_BIN")
+RUNNER_ARGS=(runner exec --script-file - --raw --env "SOURCE=$SOURCE" --env "REQUESTED_REF=$REF" --env "CACHE_DIR=$CACHE_DIR" --env "NPM_BIN=$NPM_BIN")
 
 if [ -n "$TARGET" ]; then
     RUNNER_ARGS+=(--ssh)
@@ -93,6 +93,8 @@ fi
 if [ "$DRY_RUN" -eq 1 ]; then
     RUNNER_ARGS+=(--dry-run)
 fi
+
+RUNNER_ARGS+=("$RUNNER_ID")
 
 homeboy "${RUNNER_ARGS[@]}" <<'REMOTE_SCRIPT'
 set -euo pipefail

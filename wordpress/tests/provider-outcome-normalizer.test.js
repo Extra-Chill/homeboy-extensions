@@ -27,6 +27,8 @@ assert.equal(legacyProviderError.schema, 'homeboy/agent-task-outcome/v1');
 assert.equal(legacyProviderError.task_id, 'provider-task-123');
 assert.equal(legacyProviderError.status, 'provider_error');
 assert.equal(legacyProviderError.failure_classification, 'provider');
+assert.equal(legacyProviderError.failure_category, 'provider.auth');
+assert.equal(legacyProviderError.retryable, false);
 assert.equal(legacyProviderError.summary, 'Provider failed before runtime startup.');
 assert.equal(legacyProviderError.artifacts[0].id, 'bundle-1');
 assert.equal(legacyProviderError.artifacts[0].path, '/tmp/provider-artifacts');
@@ -43,6 +45,8 @@ const completedWithNonZeroExit = normalizeProviderTaskOutcome(request, {
 
 assert.equal(completedWithNonZeroExit.status, 'failed');
 assert.equal(completedWithNonZeroExit.failure_classification, 'execution_failed');
+assert.equal(completedWithNonZeroExit.failure_category, 'runtime.execution_failed');
+assert.equal(completedWithNonZeroExit.retryable, false);
 assert.equal(completedWithNonZeroExit.outputs.issue_url, 'https://github.com/example/repo/issues/12');
 assert.equal(completedWithNonZeroExit.evidence_refs[0].kind, 'issue');
 
@@ -80,6 +84,8 @@ const timeoutWithoutSuccess = normalizeAgentTaskOutcome(request, {
 });
 assert.equal(timeoutWithoutSuccess.status, 'timeout');
 assert.equal(timeoutWithoutSuccess.failure_classification, 'timeout');
+assert.equal(timeoutWithoutSuccess.failure_category, 'runtime.timeout');
+assert.equal(timeoutWithoutSuccess.retryable, true);
 
 const emptyJsonOutcome = normalizeAgentTaskOutcome(request, {});
 assert.equal(emptyJsonOutcome.status, 'failed');
@@ -88,12 +94,22 @@ assert.equal(emptyJsonOutcome.failure_classification, 'execution_failed');
 const noOpOutcome = normalizeAgentTaskOutcome(request, { success: true, outcome: 'no_op' });
 assert.equal(noOpOutcome.status, 'no_op');
 assert.equal(noOpOutcome.failure_classification, undefined);
+assert.equal(noOpOutcome.failure_category, undefined);
+assert.equal(noOpOutcome.retryable, undefined);
 
 assert.equal(normalizeAgentTaskStatus({ status: 'completed' }), 'succeeded');
 assert.equal(normalizeAgentTaskStatus({ success: false }), 'failed');
 
 assert.equal(normalizeProviderStatus({ success: true, outcome: 'no_op' }), 'no_op');
+assert.equal(normalizeProviderStatus({ arbitrary: 'payload' }), 'provider_error');
+const unknownProviderOutput = normalizeAgentTaskOutcome(request, { arbitrary: 'payload' });
+assert.equal(unknownProviderOutput.status, 'provider_error');
+assert.equal(unknownProviderOutput.failure_classification, 'provider');
+assert.equal(unknownProviderOutput.failure_category, 'provider.error');
 assert.equal(providerFailureClassification('task', 'failed'), 'execution_failed');
+assert.equal(providerFailureClassification('incomplete', 'failed'), 'execution_failed');
+assert.equal(providerFailureClassification('max_turns', 'timeout'), 'timeout');
+assert.equal(providerFailureClassification('custom-runtime-detail', 'failed'), 'unknown');
 assert.throws(() => normalizeProviderTaskOutcome({}, {}), /request.task_id/);
 
 console.log('✓ provider outcome normalizer boundary test PASSED');

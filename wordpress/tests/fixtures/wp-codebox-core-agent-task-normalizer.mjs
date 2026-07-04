@@ -1,3 +1,10 @@
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
+const { runtimeContractManifest } = require('../../../tests/fixtures/wp-codebox-core-runtime-contract.cjs');
+
+export { runtimeContractManifest };
+
 export function normalizeAgentTaskRunResult(raw, options = {}) {
   const result = raw && typeof raw === 'object' ? raw : {};
   const runtime = result.run?.runtime || {};
@@ -13,12 +20,15 @@ export function normalizeAgentTaskRunResult(raw, options = {}) {
     status,
     success: status === 'succeeded',
     summary: result.summary || `fixture normalized ${status}`,
-    artifacts: [{
-      id: 'fixture-normalized-patch',
-      kind: 'codebox-patch',
-      path: '/tmp/fixture-normalized/patch.diff',
-      sha256: patch.sha256,
-    }],
+    artifacts: [
+      ...(Array.isArray(result.artifacts) ? result.artifacts : []),
+      {
+        id: 'fixture-normalized-patch',
+        kind: 'codebox-patch',
+        path: '/tmp/fixture-normalized/patch.diff',
+        sha256: patch.sha256,
+      },
+    ],
     refs: {
       artifact_bundles: [],
       changed_files: [],
@@ -76,6 +86,37 @@ export function normalizeRecipeRunSummary(raw, options = {}) {
       failure_phase: failedPhase,
       recipe_pack: result.pack,
       recipe_name: result.name,
+    },
+  };
+}
+
+export function normalizeRuntimeProfilePayload(payload) {
+  return {
+    ...payload,
+    metadata: {
+      ...(payload.metadata || {}),
+      fixture_runtime_profile_normalizer: true,
+    },
+  };
+}
+
+export function normalizeTypedArtifactEntry(name, raw) {
+  const artifact = raw && typeof raw === 'object' ? raw : {};
+  const artifactName = artifact.name || name;
+  if (!artifactName) {
+    return null;
+  }
+  return {
+    schema: 'homeboy/agent-task-typed-artifact/v1',
+    name: artifactName,
+    type: artifact.type || artifact.kind,
+    artifact_schema: artifact.artifact_schema || artifact.artifactSchema || artifact.schema,
+    payload: artifact.payload !== undefined ? artifact.payload : artifact.data,
+    provenance: artifact.provenance || {},
+    file_refs: artifact.file_refs || artifact.fileRefs || [],
+    metadata: {
+      ...(artifact.metadata || {}),
+      fixture_typed_artifact_normalizer: true,
     },
   };
 }

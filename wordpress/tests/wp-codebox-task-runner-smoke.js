@@ -16,6 +16,14 @@ const wpCodeboxTaskRunner = path.join(
   'agent',
   'homeboy-wp-codebox-task-runner.cjs'
 );
+process.env.HOMEBOY_WP_CODEBOX_CORE_MODULE ||= path.join(
+  __dirname,
+  '..',
+  '..',
+  'tests',
+  'fixtures',
+  'wp-codebox-core-runtime-contract.cjs'
+);
 
 function readJson(filePath) {
   return JSON.parse(fs.readFileSync(filePath, 'utf8'));
@@ -30,6 +38,8 @@ const out = process.env.FIXTURE_WP_CODEBOX_CAPTURE;
 const inputArg = process.argv.find((arg) => arg.startsWith('--input-file='));
 const inputPath = inputArg ? inputArg.slice('--input-file='.length) : '';
 const input = inputPath ? JSON.parse(fs.readFileSync(inputPath, 'utf8')) : null;
+const taskInput = input?.task_input || input;
+const artifactsPath = input?.artifacts_path || taskInput?.artifacts_path;
 if (process.env.FIXTURE_WP_CODEBOX_VALIDATION_FAILURE) {
   const generatedRoot = fs.mkdtempSync(require('node:path').join(require('node:os').tmpdir(), 'wp-codebox-agent-task-recipe-'));
   const generatedRecipePath = require('node:path').join(generatedRoot, 'recipe.json');
@@ -60,7 +70,7 @@ if (process.env.FIXTURE_WP_CODEBOX_JSON_VALIDATION_FAILURE) {
     status: 'failed',
     summary: 'WP Codebox agent task failed.',
     diagnostics: [{ class: 'wp-codebox.agent_task_run_failed', message: 'Recipe validation failed with 2 issues.', data: { exit_code: 1 } }],
-    artifacts: input.artifacts_path,
+    artifacts: artifactsPath,
     metadata: {
       run: {
         error: { name: 'RecipeValidationError', message: 'Recipe validation failed with 2 issues.' },
@@ -70,8 +80,8 @@ if (process.env.FIXTURE_WP_CODEBOX_JSON_VALIDATION_FAILURE) {
   }));
   process.exit(0);
 }
-const isAgentBundle = Boolean(input.agent_bundle && Object.keys(input.agent_bundle).length);
-const isRuntimeTask = Boolean(input.runtime_task && Object.keys(input.runtime_task).length && input.runtime_task.ability !== 'datamachine/run-agent-bundle');
+const isAgentBundle = Boolean(taskInput.agent_bundle && Object.keys(taskInput.agent_bundle).length);
+const isRuntimeTask = Boolean(taskInput.runtime_task && Object.keys(taskInput.runtime_task).length && taskInput.runtime_task.ability !== 'example/run-agent-bundle');
 const bundleRun = isAgentBundle && process.env.FIXTURE_WP_CODEBOX_BUNDLE_RUN
   ? {
       schema: 'datamachine/agent-bundle-run/v1',
@@ -80,18 +90,25 @@ const bundleRun = isAgentBundle && process.env.FIXTURE_WP_CODEBOX_BUNDLE_RUN
       job_id: 1,
       job_status: 'completed',
       bundle: {
-        bundle_slug: 'store-idea-agent',
-        flow_slug: 'static-site-manual-flow',
-        pipeline_slug: 'static-site-pipeline',
+        bundle_slug: 'example-agent',
+        flow_slug: 'example-manual-flow',
+        pipeline_slug: 'example-pipeline',
       },
       typed_artifacts: {
-        static_site_candidate: {
-          schema: 'static-site-importer/static-site-candidate/v1',
-          type: 'StaticSiteCandidate',
-          payload: { slug: 'store-idea-agent', import_ready: true },
-          provenance: { bundle_slug: 'store-idea-agent', task_id: input.orchestrator.agent_task_id },
-          file_refs: [{ path: input.artifacts_path + '/static-site-candidate.json', mime: 'application/json' }]
+        example_review: {
+          schema: 'example/review-artifact/v1',
+          type: 'ExampleReviewArtifact',
+          payload: { slug: 'example-agent', review_ready: true },
+          provenance: { bundle_slug: 'example-agent', task_id: taskInput.orchestrator.agent_task_id },
+          file_refs: [{ path: artifactsPath + '/example-review.json', mime: 'application/json' }]
         }
+      },
+      artifacts: {
+        result: { path: artifactsPath + '/datamachine-result.json', mime: 'application/json' }
+      },
+      transcripts: {
+        json: artifactsPath + '/transcript.json',
+        summary: artifactsPath + '/transcript.md'
       },
       workflow: { steps: [{ step_type: 'ai' }] },
       wait_result: { success: true, terminal_state: 'completed' },
@@ -105,21 +122,31 @@ const bundleRun = isAgentBundle && process.env.FIXTURE_WP_CODEBOX_BUNDLE_RUN
                   tool_result_data: {
                     data: {
                       issue_number: 123,
-                      issue_url: 'https://github.com/chubes4/wp-site-generator/issues/123'
+                      issue_url: 'https://github.com/example-org/example-repo/issues/123'
                     }
                   }
                 }
               }]
             }
           }
-        : { store_idea_agent: { issue_number: 123, issue_url: 'https://github.com/chubes4/wp-site-generator/issues/123' } }
+        : { example_agent: { issue_number: 123, issue_url: 'https://github.com/example-org/example-repo/issues/123' } }
     }
   : null;
 const runtimeTaskResult = isRuntimeTask
-  ? {
+  ? (taskInput.runtime_task.ability === 'wp-codebox/run-runtime-package' && process.env.FIXTURE_WP_CODEBOX_CHAT_REPLY
+    ? {
+        agent_runtime: {
+          success: true,
+          input: taskInput.runtime_task.input || {},
+          result: {
+            reply: '## Commerce Concept Packet\\n\\nA focused commerce concept packet.',
+          },
+        },
+      }
+    : {
       agent_runtime: {
         success: true,
-        input: input.runtime_task.input || {},
+        input: taskInput.runtime_task.input || {},
         result: {
           success: true,
           import_validation_result: {
@@ -136,7 +163,7 @@ const runtimeTaskResult = isRuntimeTask
           }
         }
       }
-    }
+    })
   : null;
 const agentResult = isRuntimeTask
   ? runtimeTaskResult
@@ -168,21 +195,16 @@ const agentResult = isRuntimeTask
           summary: 'Created issue 123.',
           outputs: {
             issue_number: 123,
-            issue_url: 'https://github.com/chubes4/wp-site-generator/issues/123'
+            issue_url: 'https://github.com/example-org/example-repo/issues/123'
           },
           diagnostics: [{ class: 'agent_runtime.output', message: 'Semantic outputs captured.' }]
         }
   : (isAgentBundle && !process.env.FIXTURE_WP_CODEBOX_INCOMPLETE_AGENT_BUNDLE
-      ? { metrics: { config_present: 1 }, metadata: { engine_data: { store_idea_agent: { issue_number: 123 } } } }
+      ? { metrics: { config_present: 1 }, metadata: { engine_data: { example_agent: { issue_number: 123 } } } }
       : { status: 'completed' })))));
 fs.writeFileSync(out, JSON.stringify({
   argv: process.argv.slice(2),
   input,
-  codex_env: {
-    access_refreshed: process.env.AI_PROVIDER_OPENAI_CODEX_ACCESS_TOKEN === 'fresh-access-token-value',
-    refresh_refreshed: process.env.AI_PROVIDER_OPENAI_CODEX_REFRESH_TOKEN === 'fresh-refresh-token-value',
-    expires_refreshed: Number(process.env.AI_PROVIDER_OPENAI_CODEX_EXPIRES_AT || 0) > Math.floor(Date.now() / 1000),
-  },
 }, null, 2));
 const execution = { recipeCommand: 'wp-codebox.agent-sandbox-run', exitCode: 0, stdout: JSON.stringify({ status: 'completed', output: JSON.stringify(agentResult) }) };
 const executions = [execution];
@@ -192,13 +214,13 @@ process.stdout.write(JSON.stringify({
   status: isAgentBundle ? 'failed' : 'completed',
   session: {
     schema: 'wp-codebox/sandbox-session/v1',
-    id: input.sandbox_session_id,
+    id: taskInput.sandbox_session_id,
     status: isAgentBundle ? 'failed' : 'completed',
-    artifacts: { bundle_id: 'artifact-bundle-sha256-fixture', path: input.artifacts_path, preview_url: 'https://preview.example.test/' + input.sandbox_session_id },
-    orchestrator: input.orchestrator
+    artifacts: { bundle_id: 'artifact-bundle-sha256-fixture', path: artifactsPath, preview_url: 'https://preview.example.test/' + taskInput.sandbox_session_id },
+    orchestrator: taskInput.orchestrator
   },
-  task_input: input,
-  artifacts: input.artifacts_path,
+  task_input: taskInput,
+  artifacts: artifactsPath,
   run: isAgentBundle && process.env.FIXTURE_WP_CODEBOX_BUNDLE_RUN ? { executions } : (isAgentBundle ? {} : { agentResult }),
   executions: isAgentBundle && process.env.FIXTURE_WP_CODEBOX_BUNDLE_RUN ? [] : executions,
 }));
@@ -280,15 +302,13 @@ try {
   const providerPluginPath = path.join(root, 'example-provider@feature-branch');
   const preparedProviderPluginPath = path.join(root, 'artifacts', 'prepared-plugins', 'example-provider');
   const workspaceRoot = path.join(root, 'wp-coding-agents@proof-homeboy-fanout-a');
-  const defaultDataMachinePath = path.join(root, 'data-machine');
-  const defaultAgentsApiPath = path.join(defaultDataMachinePath, 'vendor', 'wordpress', 'agents-api');
-  const defaultDataMachineCodePath = path.join(root, 'data-machine-code');
+  const defaultRuntimePath = path.join(root, 'example-runtime');
+  const defaultRuntimeToolsPath = path.join(root, 'example-runtime-tools');
   fs.mkdirSync(providerPluginPath, { recursive: true });
   fs.writeFileSync(path.join(providerPluginPath, 'example-provider.php'), '<?php\n/* Plugin Name: Example Provider */\n');
   fs.writeFileSync(path.join(providerPluginPath, 'composer.json'), JSON.stringify({ name: 'extra-chill/example-provider' }));
   fs.mkdirSync(workspaceRoot, { recursive: true });
-  fs.mkdirSync(defaultAgentsApiPath, { recursive: true });
-  fs.mkdirSync(defaultDataMachineCodePath, { recursive: true });
+  fs.mkdirSync(defaultRuntimeToolsPath, { recursive: true });
 
   const request = {
     schema: 'wp-codebox/task-input/v1',
@@ -302,8 +322,8 @@ try {
     model: 'opencode-go/kimi-k2.6',
     provider_plugin_paths: [providerPluginPath],
     runtime_component_paths: {
-      agent_runtime: '/components/data-machine',
-      agent_runtime_tools: '/components/data-machine-code',
+      agent_runtime: '/components/example-runtime',
+      agent_runtime_tools: '/components/example-runtime-tools',
     },
     component_contracts: [{ slug: 'domain-component', path: '/workspace/domain-component', activate: true }],
     runtime_env: {
@@ -326,14 +346,13 @@ try {
     runtime_stack_mounts: [{ source: '/components/php-ai-client', target: '/wordpress/wp-includes/php-ai-client', mode: 'readonly' }],
     runtime_overlays: [{ kind: 'bundled-library', library: 'php-ai-client' }],
     secret_env: ['OPENCODE_API_KEY'],
-    verify_steps: [{ command: 'wordpress.phpunit', args: ['plugin-slug=data-machine'] }],
+    verify_steps: [{ command: 'wordpress.phpunit', args: ['plugin-slug=example-plugin'] }],
     orchestrator: { agent_task_id: 'agent-task-123', run_id: 'run-123' },
   };
 
   const result = spawnSync(process.execPath, [
     wpCodeboxTaskRunner,
     '--wp-codebox-bin', fixtureWpCodebox,
-    '--agents-api', '/components/agents-api',
     '--mount', '/repo/plugin:/wordpress/wp-content/plugins/plugin:readwrite',
     '--runtime-stack-mount', '/components/wordpress-develop:/wordpress:readonly',
     '--max-turns', '80',
@@ -353,52 +372,49 @@ try {
   assert.equal(output.artifacts, path.join(root, 'artifacts'));
 
   const captured = readJson(capturePath);
-  assert.deepEqual(captured.argv.slice(0, 1), ['agent-task-run']);
+  assert.deepEqual(captured.argv.slice(0, 1), ['run-agent-task']);
   assert(captured.argv.some((arg) => arg.startsWith('--input-file=')));
   assert.equal(captured.argv.includes('--json'), true);
   assert(!captured.argv.includes('recipe-run'));
-  assert.equal(captured.input.schema, 'wp-codebox/task-input/v1');
+  assert.equal(captured.input.schema, 'wp-codebox/run-agent-task/v1');
   assert.equal(captured.input.version, 1);
-  assert.equal(captured.input.goal, 'Fix the finding.');
-  assert.equal(Object.hasOwn(captured.input, 'agent'), false);
-  assert.equal(captured.input.sandbox_tool_policy.schema, 'wp-codebox/sandbox-tool-policy/v1');
-  assert.equal(captured.input.sandbox_tool_policy.version, 1);
-  assert.equal(captured.input.sandbox_tool_policy.tools[0].id, 'homeboy/no-runtime-tools');
-  assert.equal(captured.input.sandbox_tool_policy.tools[0].allowed, false);
-  assert.equal(captured.input.sandbox_tool_policy.tools[0].runtime.environment, 'control_plane');
-  assert.equal(captured.input.sandbox_tool_policy.tools[0].runtime.capability_scope, 'control_plane');
-  assert.equal(captured.input.provider, 'opencode');
-  assert.equal(captured.input.model, 'opencode-go/kimi-k2.6');
-  assert.deepEqual(captured.input.secret_env, ['OPENCODE_API_KEY']);
-  assert.equal(captured.input.provider_plugin_paths[0], preparedProviderPluginPath);
-  assert.equal(captured.input.extra_plugins.find((plugin) => plugin.slug === 'example-provider').source, preparedProviderPluginPath);
-  assert.equal(captured.input.extra_plugins.find((plugin) => plugin.slug === 'example-provider').activate, true);
-  assert.deepEqual(captured.input.runtime_env, request.runtime_env);
-  assert.deepEqual(captured.input.ability_tools, request.ability_tools);
-  assert.deepEqual(captured.input.runtime_state_mounts, request.runtime_state_mounts);
-  assert.deepEqual(captured.input.runtime_config_mounts, request.runtime_config_mounts);
-  assert.equal(captured.input.runtime_stack_mounts[0].source, '/components/php-ai-client');
-  assert.equal(captured.input.runtime_stack_mounts[1].source, '/components/wordpress-develop');
-  assert.equal(captured.input.mounts[0].source, '/repo/plugin');
-  assert.equal(captured.input.runtime_component_paths.agents_api, '/components/agents-api');
-  assert.equal(captured.input.runtime_component_paths.agent_runtime, '/components/data-machine');
-  assert.equal(captured.input.runtime_component_paths.agent_runtime_tools, '/components/data-machine-code');
-  assert.equal(Object.hasOwn(captured.input, 'agents_api_path'), false);
-  assert.equal(Object.hasOwn(captured.input, 'data_machine_path'), false);
-  assert.equal(Object.hasOwn(captured.input, 'data_machine_code_path'), false);
-  assert.equal(captured.input.extra_plugins.find((plugin) => plugin.slug === 'agents-api').source, '/components/agents-api');
-  assert.equal(captured.input.extra_plugins.find((plugin) => plugin.slug === 'data-machine').source, '/components/data-machine');
-  assert.equal(captured.input.extra_plugins.find((plugin) => plugin.slug === 'data-machine-code').source, '/components/data-machine-code');
-  assert.equal(captured.input.extra_plugins.find((plugin) => plugin.slug === 'data-machine').loadAs, 'mu-plugin');
-  assert.equal(captured.input.extra_plugins.find((plugin) => plugin.slug === 'data-machine-code').activate, false);
-  // WP Codebox 0.8.0 mounts runtime components from `component_contracts`.
-  assert.equal(captured.input.component_contracts.find((contract) => contract.slug === 'agents-api').path, '/components/agents-api');
-  assert.equal(captured.input.component_contracts.find((contract) => contract.slug === 'data-machine').path, '/components/data-machine');
-  assert.equal(captured.input.component_contracts.find((contract) => contract.slug === 'data-machine-code').path, '/components/data-machine-code');
-  assert.equal(captured.input.component_contracts.find((contract) => contract.slug === 'data-machine').loadAs, 'mu-plugin');
-  assert.equal(captured.input.component_contracts.find((contract) => contract.slug === 'data-machine-code').activate, false);
-  assert.equal(captured.input.component_contracts.find((contract) => contract.slug === 'domain-component').path, '/workspace/domain-component');
-  assert.equal(captured.input.component_contracts.find((contract) => contract.slug === 'domain-component').activate, true);
+  const capturedTask = captured.input.task_input;
+  assert.equal(capturedTask.goal, 'Fix the finding.');
+  assert.equal(Object.hasOwn(capturedTask, 'agent'), false);
+  assert.equal(capturedTask.sandbox_tool_policy.schema, 'wp-codebox/sandbox-tool-policy/v1');
+  assert.equal(capturedTask.sandbox_tool_policy.version, 1);
+  assert.equal(capturedTask.sandbox_tool_policy.tools[0].id, 'homeboy/no-runtime-tools');
+  assert.equal(capturedTask.sandbox_tool_policy.tools[0].allowed, false);
+  assert.equal(capturedTask.sandbox_tool_policy.tools[0].runtime.environment, 'control_plane');
+  assert.equal(capturedTask.sandbox_tool_policy.tools[0].runtime.capability_scope, 'control_plane');
+  assert.equal(capturedTask.provider, 'opencode');
+  assert.equal(capturedTask.model, 'opencode-go/kimi-k2.6');
+  assert.deepEqual(capturedTask.secret_env, ['OPENCODE_API_KEY']);
+  assert.equal(capturedTask.provider_plugin_paths[0], preparedProviderPluginPath);
+  assert.equal(capturedTask.extra_plugins.find((plugin) => plugin.slug === 'example-provider').source, preparedProviderPluginPath);
+  assert.equal(capturedTask.extra_plugins.find((plugin) => plugin.slug === 'example-provider').activate, true);
+  assert.equal(capturedTask.runtime_env.GENERIC_PROVIDER_CONFIG, request.runtime_env.GENERIC_PROVIDER_CONFIG);
+  assert.equal(capturedTask.runtime_env.XDG_DATA_HOME, request.runtime_env.XDG_DATA_HOME);
+  assert.match(capturedTask.runtime_env.HOMEBOY_CALLBACK_DATA_PATH, /homeboy-runtime-callback-data\.json$/);
+  assert.deepEqual(capturedTask.ability_tools, request.ability_tools);
+  assert.deepEqual(capturedTask.runtime_state_mounts, request.runtime_state_mounts);
+  assert.deepEqual(capturedTask.runtime_config_mounts, request.runtime_config_mounts);
+  assert.equal(capturedTask.runtime_stack_mounts[0].source, '/components/php-ai-client');
+  assert.equal(capturedTask.runtime_stack_mounts[1].source, '/components/wordpress-develop');
+  assert.equal(capturedTask.mounts[0].source, '/repo/plugin');
+  assert.equal(capturedTask.runtime_component_paths.agent_runtime, '/components/example-runtime');
+  assert.equal(capturedTask.runtime_component_paths.agent_runtime_tools, '/components/example-runtime-tools');
+  assert.equal(Object.hasOwn(capturedTask, 'agents_api_path'), false);
+  assert.equal(Object.hasOwn(capturedTask, 'data_machine_path'), false);
+  assert.equal(Object.hasOwn(capturedTask, 'data_machine_code_path'), false);
+  assert.equal(capturedTask.extra_plugins.some((plugin) => plugin.slug === 'agents-api'), false);
+  assert.equal(capturedTask.extra_plugins.some((plugin) => plugin.slug === 'example-runtime'), false);
+  assert.equal(capturedTask.extra_plugins.some((plugin) => plugin.slug === 'example-runtime-tools'), false);
+  assert.equal(capturedTask.component_contracts.some((contract) => contract.slug === 'agents-api'), false);
+  assert.equal(capturedTask.component_contracts.some((contract) => contract.slug === 'example-runtime'), false);
+  assert.equal(capturedTask.component_contracts.some((contract) => contract.slug === 'example-runtime-tools'), false);
+  assert.equal(capturedTask.component_contracts.find((contract) => contract.slug === 'domain-component').path, '/workspace/domain-component');
+  assert.equal(capturedTask.component_contracts.find((contract) => contract.slug === 'domain-component').activate, true);
 
   const nestedOnlyCapturePath = path.join(root, 'capture-nested-component-contracts.json');
   const requestWithoutComponentContracts = { ...request };
@@ -406,7 +422,6 @@ try {
   const nestedOnlyResult = spawnSync(process.execPath, [
     wpCodeboxTaskRunner,
     '--wp-codebox-bin', fixtureWpCodebox,
-    '--agents-api', '/components/agents-api',
   ], {
     encoding: 'utf8',
     input: JSON.stringify({
@@ -421,7 +436,7 @@ try {
     env: { ...process.env, FIXTURE_WP_CODEBOX_CAPTURE: nestedOnlyCapturePath, OPENCODE_API_KEY: 'redacted-test-key' },
   });
   assert.equal(nestedOnlyResult.status, 0, nestedOnlyResult.stderr || nestedOnlyResult.stdout);
-  const nestedOnlyInput = readJson(nestedOnlyCapturePath).input;
+  const nestedOnlyInput = readJson(nestedOnlyCapturePath).input.task_input;
   assert.equal(nestedOnlyInput.component_contracts.find((contract) => contract.slug === 'nested-only-domain-component').path, '/workspace/nested-only-domain-component');
   assert.equal(nestedOnlyInput.component_contracts.find((contract) => contract.slug === 'nested-only-domain-component').activate, true);
   assert.equal(nestedOnlyInput.component_contracts.filter((contract) => contract.slug === 'nested-only-domain-component').length, 1);
@@ -439,14 +454,14 @@ try {
     env: { ...process.env, FIXTURE_WP_CODEBOX_CAPTURE: explicitAgentCapturePath, OPENCODE_API_KEY: 'redacted-test-key' },
   });
   assert.equal(explicitAgentResult.status, 0, explicitAgentResult.stderr || explicitAgentResult.stdout);
-  assert.equal(readJson(explicitAgentCapturePath).input.agent, 'custom-sandbox-agent');
+  assert.equal(readJson(explicitAgentCapturePath).input.task_input.agent, 'custom-sandbox-agent');
 
-  // Verification gate flows through to the agent-task-run input so WP Codebox
+  // Verification gate flows through to the run-agent-task payload so WP Codebox
   // can emit it as a recipe workflow.after step and fail the run if it is red.
-  assert.equal(captured.input.verify_steps.length, 1);
-  assert.equal(captured.input.verify_steps[0].command, 'wordpress.phpunit');
-  assert.deepEqual(captured.input.verify_steps[0].args, ['plugin-slug=data-machine']);
-  assert(!JSON.stringify(captured.input).includes('redacted-test-key'));
+  assert.equal(capturedTask.verify_steps.length, 1);
+  assert.equal(capturedTask.verify_steps[0].command, 'wordpress.phpunit');
+  assert.deepEqual(capturedTask.verify_steps[0].args, ['plugin-slug=example-plugin']);
+  assert(!JSON.stringify(capturedTask).includes('redacted-test-key'));
 
   const runtimeTaskCapturePath = path.join(root, 'capture-runtime-task.json');
   const runtimeTaskResult = spawnSync(process.execPath, [
@@ -487,13 +502,14 @@ try {
   });
   assert.equal(runtimeTaskResult.status, 0, runtimeTaskResult.stderr || runtimeTaskResult.stdout);
   const runtimeTaskCaptured = readJson(runtimeTaskCapturePath);
-  assert.equal(runtimeTaskCaptured.input.sandbox_tool_policy.tools[0].id, 'homeboy-canary/write-file');
-  assert.equal(runtimeTaskCaptured.input.runtime_task.ability, 'homeboy-canary/write-file');
-  assert.deepEqual(runtimeTaskCaptured.input.agent_bundles, [{ source: '/workspace/bundles/canary-agent', slug: 'canary-agent' }]);
-  assert.equal(runtimeTaskCaptured.input.structured_artifacts[0].name, 'concept_packet');
-  assert.equal(runtimeTaskCaptured.input.artifact_declarations[0].name, 'import_validation_result');
-  assert.equal(runtimeTaskCaptured.input.artifact_declarations[0].required, false);
-  assert.equal(runtimeTaskCaptured.input.workspaces[0].target, '/workspace/codebox-canary');
+  const runtimeTaskCapturedTask = runtimeTaskCaptured.input.task_input;
+  assert.equal(runtimeTaskCapturedTask.sandbox_tool_policy.tools[0].id, 'homeboy-canary/write-file');
+  assert.equal(runtimeTaskCapturedTask.runtime_task.ability, 'homeboy-canary/write-file');
+  assert.deepEqual(runtimeTaskCapturedTask.agent_bundles, [{ source: '/workspace/bundles/canary-agent', slug: 'canary-agent' }]);
+  assert.equal(runtimeTaskCapturedTask.structured_artifacts[0].name, 'concept_packet');
+  assert.equal(runtimeTaskCapturedTask.artifact_declarations[0].name, 'import_validation_result');
+  assert.equal(runtimeTaskCapturedTask.artifact_declarations[0].required, false);
+  assert.equal(runtimeTaskCapturedTask.workspaces[0].target, '/workspace/codebox-canary');
 
   const bridgeCapturePath = path.join(root, 'capture-runtime-tool-bridge.json');
   const bridgeResult = spawnSync(process.execPath, [
@@ -528,16 +544,10 @@ try {
   });
   assert.equal(bridgeResult.status, 0, bridgeResult.stderr || bridgeResult.stdout);
   const bridgeCaptured = readJson(bridgeCapturePath);
-  const bridgePlugin = bridgeCaptured.input.extra_plugins.find((plugin) => plugin.slug === 'homeboy-runtime-tool-bridge');
-  assert.equal(Boolean(bridgePlugin), true);
-  assert.equal(bridgePlugin.loadAs, 'mu-plugin');
-  assert.equal(bridgePlugin.pluginFile, 'homeboy-runtime-tool-bridge/homeboy-runtime-tool-bridge.php');
-  assert.match(bridgeCaptured.input.runtime_env.HOMEBOY_AGENT_TOOL_BRIDGE_URL, /^http:\/\/127\.0\.0\.1:\d+$/);
-  assert.equal(bridgeCaptured.input.runtime_env.HOMEBOY_AGENT_TASK_ID, 'agent-task-123');
-  const bridgePluginSource = fs.readFileSync(path.join(bridgePlugin.source, 'homeboy-runtime-tool-bridge.php'), 'utf8');
-  assert.match(bridgePluginSource, /Plugin Name: Homeboy Runtime Tool Bridge/);
-  assert.match(bridgePluginSource, /add_filter\(\s*'datamachine_runtime_tool_result'/);
-  assert.match(bridgePluginSource, new RegExp(bridgeCaptured.input.runtime_env.HOMEBOY_AGENT_TOOL_BRIDGE_URL.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  const bridgeCapturedTask = bridgeCaptured.input.task_input;
+  const bridgePlugin = bridgeCapturedTask.extra_plugins.find((plugin) => plugin.slug === 'homeboy-runtime-tool-bridge');
+  assert.equal(Boolean(bridgePlugin), false);
+  assert.equal(Object.hasOwn(bridgeCapturedTask.runtime_env, 'HOMEBOY_AGENT_TOOL_BRIDGE_URL'), false);
 
   const abilityBridgeResult = spawnSync(process.execPath, [
     wpCodeboxTaskRunner,
@@ -554,13 +564,9 @@ try {
         executor: {
           config: {
             ability: 'example/validate-artifact',
-            output_mappings: {
+            runtime_output_projections: {
               import_validation_result: 'result.import_validation_result',
               finding_packets: 'result.finding_packets',
-            },
-            engine_data_outputs: {
-              import_validation_result: 'outputs.import_validation_result',
-              finding_packets: 'outputs.finding_packets',
             },
           },
         },
@@ -591,11 +597,8 @@ try {
         executor: {
           config: {
             ability: 'example/validate-artifact',
-            output_mappings: {
-              import_validation_result: 'result.import_validation_result',
-            },
-            engine_data_outputs: {
-              missing_validation_output: 'outputs.missing_validation_output',
+            runtime_output_projections: {
+              missing_validation_output: 'result.missing_validation_output',
             },
           },
         },
@@ -643,14 +646,15 @@ try {
     input: JSON.stringify({
       ...request,
       agent_bundle: {
-        source: 'bundles/store-idea-agent',
-        flow_slug: 'store-idea-artifact-flow',
+        runtime_bundle_ability: 'example/run-agent-bundle',
+        source: 'bundles/example-agent',
+        flow_slug: 'example-artifact-flow',
       },
       artifact_declarations: [{
         schema: 'wp-codebox/artifact-declaration/v1',
         name: 'concept_packet',
         type: 'ConceptPacket',
-        artifact_schema: 'static-site-generator/concept-packet/v1',
+        artifact_schema: 'example/concept-packet/v1',
         required: true,
       }],
     }),
@@ -667,6 +671,37 @@ try {
   assert.equal(failedRuntimeMetadataOutput.diagnostics.some((diagnostic) => diagnostic.class === 'agent_runtime.failed'), true);
   assert.equal(failedRuntimeMetadataOutput.diagnostics.some((diagnostic) => diagnostic.class === 'wp-codebox.required_typed_artifacts_missing'), true);
   assert.equal(failedRuntimeMetadataOutput.session.status, 'failed');
+
+  const chatReplyTypedArtifactResult = spawnSync(process.execPath, [
+    wpCodeboxTaskRunner,
+    '--wp-codebox-bin', fixtureWpCodebox,
+  ], {
+    encoding: 'utf8',
+    input: JSON.stringify({
+      ...request,
+      runtime_task: {
+        ability: 'wp-codebox/run-runtime-package',
+        input: { required_artifacts: ['concept_packet'] },
+      },
+      artifact_declarations: [{
+        schema: 'wp-codebox/artifact-declaration/v1',
+        name: 'concept_packet',
+        type: 'ConceptPacket',
+        artifact_schema: 'example/concept-packet/v1',
+        required: true,
+      }],
+    }),
+    env: {
+      ...process.env,
+      FIXTURE_WP_CODEBOX_CAPTURE: path.join(root, 'capture-chat-reply-typed-artifact.json'),
+      FIXTURE_WP_CODEBOX_CHAT_REPLY: '1',
+      OPENCODE_API_KEY: 'redacted-test-key',
+    },
+  });
+  assert.equal(chatReplyTypedArtifactResult.status, 1, chatReplyTypedArtifactResult.stderr || chatReplyTypedArtifactResult.stdout);
+  const chatReplyTypedArtifactOutput = JSON.parse(chatReplyTypedArtifactResult.stdout);
+  assert.equal(chatReplyTypedArtifactOutput.success, false);
+  assert.equal(chatReplyTypedArtifactOutput.diagnostics.some((diagnostic) => diagnostic.class === 'wp-codebox.required_typed_artifacts_missing'), true);
 
   const codexCapturePath = path.join(root, 'capture-codex.json');
   const codexSecretEnv = [
@@ -696,23 +731,12 @@ try {
       AI_PROVIDER_OPENAI_CODEX_EXPIRES_AT: '1',
       AI_PROVIDER_OPENAI_CODEX_ACCOUNT_ID: 'account-id-value',
       AI_PROVIDER_OPENAI_CODEX_FEDRAMP: '0',
-      HOMEBOY_WP_CODEBOX_CODEX_TOKEN_URL: codexOAuthServer.url,
     },
   });
   assert.equal(codexResult.status, 0, codexResult.stderr || codexResult.stdout);
-  const codexCapture = readJson(codexCapturePath);
-  const codexInput = codexCapture.input;
-  assert.deepEqual(codexInput.secret_env, codexSecretEnv);
-  assert.equal(codexInput.provider, 'codex');
-  assert.equal(codexInput.model, 'gpt-5.5');
-  assert.equal(codexInput.provider_plugin_paths[0], '/components/ai-provider-for-openai');
-  assert.deepEqual(codexCapture.codex_env, {
-    access_refreshed: true,
-    refresh_refreshed: true,
-    expires_refreshed: true,
-  });
-  assert(!JSON.stringify(codexInput).includes('access-token-value'));
-  assert(!JSON.stringify(codexInput).includes('refresh-token-value'));
+  assert(!codexResult.stderr.includes('access-token-value'));
+  assert(!codexResult.stderr.includes('refresh-token-value'));
+  assert(fs.existsSync(codexCapturePath));
 
   const expiredCodexCapturePath = path.join(root, 'capture-expired-codex.json');
   const expiredCodexResult = spawnSync(process.execPath, [
@@ -766,16 +790,12 @@ try {
       AI_PROVIDER_OPENAI_CODEX_EXPIRES_AT: '1',
       AI_PROVIDER_OPENAI_CODEX_ACCOUNT_ID: 'stale-account-id-value',
       AI_PROVIDER_OPENAI_CODEX_FEDRAMP: '0',
-      HOMEBOY_WP_CODEBOX_CODEX_TOKEN_URL: codexOAuthServer.url,
     },
   });
-  assert.equal(staleCodexResult.status, 1, staleCodexResult.stderr || staleCodexResult.stdout);
-  assert.match(staleCodexResult.stderr, /Codex provider auth preflight failed/);
-  assert.match(staleCodexResult.stderr, /OAuth refresh returned HTTP 401/);
-  assert.match(staleCodexResult.stderr, /Refresh Codex OAuth credentials/);
+  assert.equal(staleCodexResult.status, 0, staleCodexResult.stderr || staleCodexResult.stdout);
   assert(!staleCodexResult.stderr.includes('stale-access-token-value'));
   assert(!staleCodexResult.stderr.includes('stale-refresh-token-value'));
-  assert(!fs.existsSync(staleCodexCapturePath));
+  assert(fs.existsSync(staleCodexCapturePath));
 
   const implicitRuntimeRequest = { ...request };
   delete implicitRuntimeRequest.runtime_component_paths;
@@ -791,146 +811,8 @@ try {
   });
   assert.equal(implicitRuntimeResult.status, 0, implicitRuntimeResult.stderr || implicitRuntimeResult.stdout);
   const implicitRuntimeInput = readJson(implicitRuntimeCapturePath).input;
-  assert.equal(implicitRuntimeInput.extra_plugins.find((plugin) => plugin.slug === 'agents-api').source, defaultAgentsApiPath);
-  assert.equal(implicitRuntimeInput.extra_plugins.find((plugin) => plugin.slug === 'data-machine').source, defaultDataMachinePath);
-  assert.equal(implicitRuntimeInput.extra_plugins.find((plugin) => plugin.slug === 'data-machine-code').source, defaultDataMachineCodePath);
-
-  const labRuntimeRoot = path.join(root, 'lab-runtime-components');
-  const labAgentsApi = path.join(labRuntimeRoot, 'agents-api');
-  const labDataMachine = path.join(labRuntimeRoot, 'data-machine');
-  const labDataMachineCode = path.join(labRuntimeRoot, 'data-machine-code');
-  fs.mkdirSync(labAgentsApi, { recursive: true });
-  fs.mkdirSync(labDataMachine, { recursive: true });
-  fs.mkdirSync(labDataMachineCode, { recursive: true });
-  fs.writeFileSync(path.join(labAgentsApi, 'agents-api.php'), "<?php\n/* Plugin Name: Agents API */\n");
-  fs.writeFileSync(path.join(labDataMachine, 'data-machine.php'), "<?php\n/* Plugin Name: Data Machine */\n");
-  fs.writeFileSync(path.join(labDataMachineCode, 'data-machine-code.php'), "<?php\n/* Plugin Name: Data Machine Code */\n");
-  const labRuntimeCapturePath = path.join(root, 'capture-lab-runtime-components.json');
-  const labRuntimeArtifacts = path.join(root, 'lab-runtime-artifacts');
-  const labRuntimeResult = spawnSync(process.execPath, [
-    wpCodeboxTaskRunner,
-    '--wp-codebox-bin', fixtureWpCodebox,
-    '--artifacts', labRuntimeArtifacts,
-  ], {
-    encoding: 'utf8',
-    input: JSON.stringify({
-      ...request,
-      runtime_component_paths: {
-        agents_api: '.ci/agents-api',
-        agent_runtime: '.ci/data-machine',
-        agent_runtime_tools: '.ci/data-machine-code',
-      },
-      component_contracts: [
-        { slug: 'agents-api', path: '.ci/agents-api', loadAs: 'mu-plugin', activate: false },
-      ],
-    }),
-    env: {
-      ...process.env,
-      FIXTURE_WP_CODEBOX_CAPTURE: labRuntimeCapturePath,
-      OPENCODE_API_KEY: 'redacted-test-key',
-      HOMEBOY_LAB_OFFLOAD_JSON: JSON.stringify({
-        workspace_mapping: {
-          workspaces: [
-            { role: 'dependency', local_path: '/Users/chubes/Developer/agents-api', remote_path: labAgentsApi },
-            { role: 'dependency', local_path: '/Users/chubes/Developer/data-machine', remote_path: labDataMachine },
-            { role: 'dependency', local_path: '/Users/chubes/Developer/data-machine-code', remote_path: labDataMachineCode },
-          ],
-        },
-      }),
-    },
-  });
-  assert.equal(labRuntimeResult.status, 0, labRuntimeResult.stderr || labRuntimeResult.stdout);
-  const labRuntimeInput = readJson(labRuntimeCapturePath).input;
-  const preparedLabDataMachine = path.join(labRuntimeArtifacts, 'prepared-plugins', 'data-machine');
-  assert.equal(labRuntimeInput.runtime_component_paths.agent_runtime, preparedLabDataMachine);
-  assert.equal(labRuntimeInput.extra_plugins.find((plugin) => plugin.slug === 'agents-api').source, path.join(labRuntimeArtifacts, 'prepared-plugins', 'agents-api'));
-  assert.equal(labRuntimeInput.component_contracts.find((contract) => contract.slug === 'agents-api').path, path.join(labRuntimeArtifacts, 'prepared-plugins', 'agents-api'));
-  assert.equal(labRuntimeInput.extra_plugins.find((plugin) => plugin.slug === 'data-machine-code').source, path.join(labRuntimeArtifacts, 'prepared-plugins', 'data-machine-code'));
-  assert.equal(fs.existsSync(path.join(preparedLabDataMachine, 'data-machine.php')), true);
-
-  const runtimeComponentSource = path.join(root, 'runtime-components', 'data-machine-code');
-  const runtimeComponentArtifacts = path.join(root, 'prepared-runtime-component-artifacts');
-  fs.mkdirSync(runtimeComponentSource, { recursive: true });
-  fs.writeFileSync(path.join(runtimeComponentSource, 'data-machine-code.php'), "<?php\n/* Plugin Name: Data Machine Code */\n");
-  const preparedRuntimeCapturePath = path.join(root, 'capture-prepared-runtime-component.json');
-  const preparedRuntimeResult = spawnSync(process.execPath, [
-    wpCodeboxTaskRunner,
-    '--wp-codebox-bin', fixtureWpCodebox,
-    '--artifacts', runtimeComponentArtifacts,
-  ], {
-    encoding: 'utf8',
-    input: JSON.stringify({
-      ...request,
-      runtime_component_paths: {
-        agent_runtime_tools: runtimeComponentSource,
-      },
-    }),
-    env: { ...process.env, FIXTURE_WP_CODEBOX_CAPTURE: preparedRuntimeCapturePath, OPENCODE_API_KEY: 'redacted-test-key' },
-  });
-  assert.equal(preparedRuntimeResult.status, 0, preparedRuntimeResult.stderr || preparedRuntimeResult.stdout);
-  const preparedRuntimeInput = readJson(preparedRuntimeCapturePath).input;
-  const preparedRuntimePath = path.join(runtimeComponentArtifacts, 'prepared-plugins', 'data-machine-code');
-  assert.equal(preparedRuntimeInput.extra_plugins.find((plugin) => plugin.slug === 'data-machine-code').source, preparedRuntimePath);
-  assert.equal(preparedRuntimeInput.component_contracts.find((contract) => contract.slug === 'data-machine-code').path, preparedRuntimePath);
-  assert.equal(preparedRuntimeInput.runtime_component_paths.agent_runtime_tools, preparedRuntimePath);
-  assert.equal(fs.existsSync(path.join(preparedRuntimePath, 'data-machine-code.php')), true);
-
-  const nestedRuntimeRoot = path.join(root, 'nested-runtime-components');
-  const nestedDataMachine = path.join(nestedRuntimeRoot, 'data-machine');
-  const nestedAgentsApi = path.join(nestedDataMachine, 'vendor', 'wordpress', 'agents-api');
-  const nestedArtifacts = path.join(root, 'prepared-nested-runtime-component-artifacts');
-  fs.mkdirSync(nestedAgentsApi, { recursive: true });
-  fs.writeFileSync(path.join(nestedDataMachine, 'data-machine.php'), "<?php\n/* Plugin Name: Data Machine */\n");
-  fs.writeFileSync(path.join(nestedAgentsApi, 'agents-api.php'), "<?php\n/* Plugin Name: Agents API */\n");
-  const nestedRuntimeCapturePath = path.join(root, 'capture-nested-prepared-runtime-component.json');
-  const nestedRuntimeResult = spawnSync(process.execPath, [
-    wpCodeboxTaskRunner,
-    '--wp-codebox-bin', fixtureWpCodebox,
-    '--artifacts', nestedArtifacts,
-  ], {
-    encoding: 'utf8',
-    input: JSON.stringify({
-      ...request,
-      runtime_component_paths: {
-        agents_api: nestedAgentsApi,
-        agent_runtime: nestedDataMachine,
-      },
-    }),
-    env: { ...process.env, FIXTURE_WP_CODEBOX_CAPTURE: nestedRuntimeCapturePath, OPENCODE_API_KEY: 'redacted-test-key' },
-  });
-  assert.equal(nestedRuntimeResult.status, 0, nestedRuntimeResult.stderr || nestedRuntimeResult.stdout);
-  const nestedRuntimeInput = readJson(nestedRuntimeCapturePath).input;
-  const preparedDataMachine = path.join(nestedArtifacts, 'prepared-plugins', 'data-machine');
-  const preparedAgentsApi = path.join(preparedDataMachine, 'vendor', 'wordpress', 'agents-api');
-  assert.equal(nestedRuntimeInput.runtime_component_paths.agent_runtime, preparedDataMachine);
-  assert.equal(nestedRuntimeInput.runtime_component_paths.agents_api, preparedAgentsApi);
-  assert.equal(nestedRuntimeInput.extra_plugins.find((plugin) => plugin.slug === 'agents-api').source, preparedAgentsApi);
-  assert.equal(nestedRuntimeInput.component_contracts.find((contract) => contract.slug === 'agents-api').path, preparedAgentsApi);
-  assert.equal(fs.existsSync(path.join(preparedAgentsApi, 'agents-api.php')), true);
-
-  const legacyRuntimeCapturePath = path.join(root, 'capture-legacy-runtime-stack.json');
-  const legacyRuntimeResult = spawnSync(process.execPath, [
-    wpCodeboxTaskRunner,
-    '--wp-codebox-bin', fixtureWpCodebox,
-  ], {
-    encoding: 'utf8',
-    input: JSON.stringify({
-      ...request,
-      runtime_component_paths: undefined,
-      agents_api_path: '/legacy/agents-api',
-      data_machine_path: '/legacy/data-machine',
-      data_machine_code_path: '/legacy/data-machine-code',
-    }),
-    env: { ...process.env, FIXTURE_WP_CODEBOX_CAPTURE: legacyRuntimeCapturePath, OPENCODE_API_KEY: 'redacted-test-key' },
-  });
-  assert.equal(legacyRuntimeResult.status, 0, legacyRuntimeResult.stderr || legacyRuntimeResult.stdout);
-  const legacyRuntimeInput = readJson(legacyRuntimeCapturePath).input;
-  assert.equal(legacyRuntimeInput.runtime_component_paths.agents_api, '/legacy/agents-api');
-  assert.equal(legacyRuntimeInput.runtime_component_paths.agent_runtime, '/legacy/data-machine');
-  assert.equal(legacyRuntimeInput.runtime_component_paths.agent_runtime_tools, '/legacy/data-machine-code');
-  assert.equal(legacyRuntimeInput.component_contracts.find((contract) => contract.slug === 'agents-api').path, '/legacy/agents-api');
-  assert.equal(Object.hasOwn(legacyRuntimeInput, 'data_machine_path'), false);
-  assert.equal(Object.hasOwn(legacyRuntimeInput, 'data_machine_code_path'), false);
+  assert.equal(Object.hasOwn(implicitRuntimeInput, 'runtime_component_paths'), false);
+  assert.equal(Object.hasOwn(implicitRuntimeInput, 'extra_plugins'), false);
 
   const sourceRoot = path.join(root, 'source-plugin');
   fs.mkdirSync(sourceRoot, { recursive: true });
@@ -948,49 +830,6 @@ try {
   assert.equal(riskyResult.status, 0, riskyResult.stderr || riskyResult.stdout);
   assert.match(riskyResult.stderr, /may be captured recursively/);
 
-  const agentBundleCapturePath = path.join(root, 'capture-agent-bundle.json');
-  const agentBundleResult = spawnSync(process.execPath, [
-    wpCodeboxTaskRunner,
-    '--wp-codebox-bin',
-    fixtureWpCodebox,
-    '--artifacts',
-    path.join(root, 'datamachine-artifacts'),
-  ], {
-    encoding: 'utf8',
-    input: JSON.stringify({
-      ...request,
-      agent_bundle: {
-        bundle_path: '/workspace/wp-site-generator/bundles/store-idea-agent',
-        engine_data_outputs: { issue_number: 'metadata.engine_data.store_idea_agent.issue_number' },
-      },
-      provider_plugin_paths: [],
-    }),
-    env: {
-      ...process.env,
-      FIXTURE_WP_CODEBOX_CAPTURE: agentBundleCapturePath,
-      OPENCODE_API_KEY: 'redacted-test-key',
-    },
-  });
-  assert.equal(agentBundleResult.status, 0, agentBundleResult.stderr || agentBundleResult.stdout);
-  const agentBundleCapture = readJson(agentBundleCapturePath);
-  assert.equal(agentBundleCapture.argv[0], 'agent-task-run');
-  assert(!agentBundleCapture.input.secret_env.some((name) => name.includes('HOMEBOY')));
-  assert.equal(agentBundleCapture.input.sandbox_tool_policy.schema, 'wp-codebox/sandbox-tool-policy/v1');
-  assert.equal(agentBundleCapture.input.sandbox_tool_policy.tools.length, 1);
-  assert.equal(agentBundleCapture.input.sandbox_tool_policy.tools[0].id, 'homeboy/no-runtime-tools');
-  assert.equal(agentBundleCapture.input.sandbox_tool_policy.tools[0].allowed, false);
-  assert.equal(agentBundleCapture.input.sandbox_tool_policy.tools[0].runtime.environment, 'control_plane');
-  assert.equal(agentBundleCapture.input.sandbox_tool_policy.tools[0].runtime.capability_scope, 'control_plane');
-  assert.equal(agentBundleCapture.input.agent_bundle.engine_data_outputs.issue_number, 'metadata.engine_data.store_idea_agent.issue_number');
-  assert.equal(agentBundleCapture.input.runtime_task.ability, 'datamachine/run-agent-bundle');
-  assert.equal(agentBundleCapture.input.runtime_task.input.source, '/workspace/wp-site-generator/bundles/store-idea-agent');
-  assert.equal(agentBundleCapture.input.runtime_task.input.wait_for_completion, true);
-  assert.equal(agentBundleCapture.input.runtime_task.input.runtime_bundles, undefined);
-  const agentBundleOutput = JSON.parse(agentBundleResult.stdout);
-  assert.equal(agentBundleOutput.success, true);
-  assert.equal(agentBundleOutput.session.status, 'completed');
-  assert.equal(agentBundleOutput.run.agentResult.scenarios[0].metadata.engine_data.store_idea_agent.issue_number, 123);
-
   const singleResultCapturePath = path.join(root, 'capture-single-result-datamachine.json');
   const singleResult = spawnSync(process.execPath, [
     wpCodeboxTaskRunner,
@@ -1003,10 +842,11 @@ try {
     input: JSON.stringify({
       ...request,
       agent_bundle: {
-        bundle_path: '/workspace/wp-site-generator/bundles/store-idea-agent',
+        runtime_bundle_ability: 'example/run-agent-bundle',
+        bundle_path: '/workspace/example-repo/bundles/example-agent',
         engine_data_outputs: {
-          issue_number: 'metadata.engine_data.store_idea_agent.issue_number',
-          issue_url: 'metadata.engine_data.store_idea_agent.issue_url',
+          issue_number: 'metadata.engine_data.example_agent.issue_number',
+          issue_url: 'metadata.engine_data.example_agent.issue_url',
         },
       },
       provider_plugin_paths: [],
@@ -1022,9 +862,9 @@ try {
   const singleResultOutput = JSON.parse(singleResult.stdout);
   assert.equal(singleResultOutput.success, true);
   assert.equal(singleResultOutput.session.status, 'completed');
-  assert.equal(singleResultOutput.run.agentResult.outputs.issue_number, 123);
-  assert.equal(singleResultOutput.run.agentResult.outputs.issue_url, 'https://github.com/chubes4/wp-site-generator/issues/123');
-  assert.equal(Array.isArray(singleResultOutput.run.agentResult.scenarios), false);
+  assert.equal(singleResultOutput.outputs.issue_number, 123);
+  assert.equal(singleResultOutput.outputs.issue_url, 'https://github.com/example-org/example-repo/issues/123');
+  assert.equal(Array.isArray(singleResultOutput.outputs.scenarios), false);
   assert.equal(singleResultOutput.diagnostics.some((diagnostic) => diagnostic.class === 'agent_runtime.output'), true);
 
   const canonicalBundleRunCapturePath = path.join(root, 'capture-canonical-datamachine-bundle-run.json');
@@ -1039,8 +879,9 @@ try {
     input: JSON.stringify({
       ...request,
       agent_bundle: {
-        bundle_path: '/workspace/wp-site-generator/bundles/store-idea-agent',
-        engine_data_outputs: { issue_number: 'metadata.engine_data.store_idea_agent.issue_number' },
+        runtime_bundle_ability: 'example/run-agent-bundle',
+        bundle_path: '/workspace/example-repo/bundles/example-agent',
+        engine_data_outputs: { issue_number: 'metadata.engine_data.example_agent.issue_number' },
         dry_run: true,
       },
       provider_plugin_paths: [],
@@ -1056,14 +897,10 @@ try {
   const canonicalBundleRunOutput = JSON.parse(canonicalBundleRunResult.stdout);
   assert.equal(canonicalBundleRunOutput.success, true);
   assert.equal(canonicalBundleRunOutput.session.status, 'completed');
-  assert.equal(canonicalBundleRunOutput.run.agentResult.scenarios[0].metadata.schema, 'datamachine/agent-bundle-run/v1');
-  assert.equal(canonicalBundleRunOutput.run.agentResult.scenarios[0].metadata.job_status, 'completed');
-  assert.equal(canonicalBundleRunOutput.run.agentResult.scenarios[0].metadata.engine_data.store_idea_agent.issue_number, 123);
-  assert.equal(canonicalBundleRunOutput.run.agentResult.scenarios[0].metadata.dry_run, true);
-  assert.equal(canonicalBundleRunOutput.run.agentResult.scenarios[0].metrics.workflow_step_count, 1);
-  assert.equal(canonicalBundleRunOutput.outputs.typed_artifacts.static_site_candidate.type, 'StaticSiteCandidate');
-  assert.equal(canonicalBundleRunOutput.outputs.typed_artifacts.static_site_candidate.artifact_schema, 'static-site-importer/static-site-candidate/v1');
-  assert.equal(canonicalBundleRunOutput.outputs.typed_artifacts.static_site_candidate.payload.import_ready, true);
+  assert.equal(canonicalBundleRunOutput.outputs.issue_number, undefined);
+  assert.equal(canonicalBundleRunOutput.outputs.typed_artifacts.example_review.type, 'ExampleReviewArtifact');
+  assert.equal(canonicalBundleRunOutput.outputs.typed_artifacts.example_review.artifact_schema, 'example/review-artifact/v1');
+  assert.equal(canonicalBundleRunOutput.outputs.typed_artifacts.example_review.payload.review_ready, true);
 
   const recorderBundleRunCapturePath = path.join(root, 'capture-recorder-datamachine-bundle-run.json');
   const recorderBundleRunResult = spawnSync(process.execPath, [
@@ -1077,15 +914,16 @@ try {
     input: JSON.stringify({
       ...request,
       agent_bundle: {
-        bundle_path: '/workspace/wp-site-generator/bundles/store-idea-agent',
+        runtime_bundle_ability: 'example/run-agent-bundle',
+        bundle_path: '/workspace/example-repo/bundles/example-agent',
         engine_data_outputs: {
-          issue_number: 'metadata.engine_data.store_idea_agent.issue_number',
-          issue_url: 'metadata.engine_data.store_idea_agent.issue_url',
+          issue_number: 'metadata.engine_data.example_agent.issue_number',
+          issue_url: 'metadata.engine_data.example_agent.issue_url',
         },
         tool_recorders: [{
           tool: 'github_issue_publish',
           record: {
-            engine_key: 'store_idea_agent',
+            engine_key: 'example_agent',
             fields: {
               issue_number: 'data.issue_number',
               issue_url: 'data.issue_url',
@@ -1108,9 +946,49 @@ try {
   assert.equal(recorderBundleRunOutput.success, true);
   assert.equal(recorderBundleRunOutput.status, 'completed');
   assert.equal(recorderBundleRunOutput.outputs.issue_number, 123);
-  assert.equal(recorderBundleRunOutput.outputs.issue_url, 'https://github.com/chubes4/wp-site-generator/issues/123');
-  assert.equal(recorderBundleRunOutput.run.agentResult.outputs.issue_number, 123);
-  assert.equal(recorderBundleRunOutput.run.agentResult.outputs.issue_url, 'https://github.com/chubes4/wp-site-generator/issues/123');
+  assert.equal(recorderBundleRunOutput.outputs.issue_url, 'https://github.com/example-org/example-repo/issues/123');
+
+  const projectionBundleRunCapturePath = path.join(root, 'capture-projection-bundle-run.json');
+  const projectionBundleRunResult = spawnSync(process.execPath, [
+    wpCodeboxTaskRunner,
+    '--wp-codebox-bin',
+    fixtureWpCodebox,
+    '--artifacts',
+    path.join(root, 'projection-bundle-run-artifacts'),
+  ], {
+    encoding: 'utf8',
+    input: JSON.stringify({
+      ...request,
+      agent_bundle: {
+        runtime_bundle_ability: 'example/run-agent-bundle',
+        bundle_path: '/workspace/example-repo/bundles/example-agent',
+        runtime_output_projections: {
+          issue_number: 'metadata.engine_data.example_agent.issue_number',
+          issue_url: 'metadata.engine_data.example_agent.issue_url',
+        },
+        evidence_projections: [{
+          operation: 'github_issue_publish',
+          outputs: {
+            issue_number: 'data.issue_number',
+            issue_url: 'data.issue_url',
+          },
+        }],
+      },
+      provider_plugin_paths: [],
+    }),
+    env: {
+      ...process.env,
+      FIXTURE_WP_CODEBOX_CAPTURE: projectionBundleRunCapturePath,
+      FIXTURE_WP_CODEBOX_BUNDLE_RUN: '1',
+      FIXTURE_WP_CODEBOX_BUNDLE_RUN_TOOL_RECORDERS: '1',
+      OPENCODE_API_KEY: 'redacted-test-key',
+    },
+  });
+  assert.equal(projectionBundleRunResult.status, 0, projectionBundleRunResult.stderr || projectionBundleRunResult.stdout);
+  const projectionBundleRunOutput = JSON.parse(projectionBundleRunResult.stdout);
+  assert.equal(projectionBundleRunOutput.success, true);
+  assert.equal(projectionBundleRunOutput.outputs.issue_number, 123);
+  assert.equal(projectionBundleRunOutput.outputs.issue_url, 'https://github.com/example-org/example-repo/issues/123');
 
   const completedBundleNonzeroExitCapturePath = path.join(root, 'capture-completed-bundle-nonzero-exit.json');
   const completedBundleNonzeroExitResult = spawnSync(process.execPath, [
@@ -1124,15 +1002,16 @@ try {
     input: JSON.stringify({
       ...request,
       agent_bundle: {
-        bundle_path: '/workspace/wp-site-generator/bundles/store-idea-agent',
+        runtime_bundle_ability: 'example/run-agent-bundle',
+        bundle_path: '/workspace/example-repo/bundles/example-agent',
         engine_data_outputs: {
-          issue_number: 'metadata.engine_data.store_idea_agent.issue_number',
-          issue_url: 'metadata.engine_data.store_idea_agent.issue_url',
+          issue_number: 'metadata.engine_data.example_agent.issue_number',
+          issue_url: 'metadata.engine_data.example_agent.issue_url',
         },
         tool_recorders: [{
           tool: 'github_issue_publish',
           record: {
-            engine_key: 'store_idea_agent',
+            engine_key: 'example_agent',
             fields: {
               issue_number: 'data.issue_number',
               issue_url: 'data.issue_url',
@@ -1170,8 +1049,9 @@ try {
     input: JSON.stringify({
       ...request,
       agent_bundle: {
-        bundle_path: '/workspace/wp-site-generator/bundles/store-idea-agent',
-        engine_data_outputs: { issue_number: 'metadata.engine_data.store_idea_agent.issue_number' },
+        runtime_bundle_ability: 'example/run-agent-bundle',
+        bundle_path: '/workspace/example-repo/bundles/example-agent',
+        engine_data_outputs: { issue_number: 'metadata.engine_data.example_agent.issue_number' },
       },
       provider_plugin_paths: [],
     }),
@@ -1187,7 +1067,7 @@ try {
   assert.equal(incompleteDatamachineOutput.success, false);
   assert.equal(incompleteDatamachineOutput.session.status, 'failed');
   assert.equal(incompleteDatamachineOutput.diagnostics[0].class, 'agent_runtime.workload.incomplete');
-  assert.equal(incompleteDatamachineOutput.diagnostics[0].data.reason, 'missing_engine_data_outputs');
+  assert.equal(incompleteDatamachineOutput.diagnostics[0].data.reason, 'missing_runtime_output_projections');
   assert.match(incompleteDatamachineOutput.diagnostics[0].message, /issue_number/);
 
   const failedDatamachineCapturePath = path.join(root, 'capture-failed-datamachine.json');
@@ -1204,8 +1084,9 @@ try {
       execution_kind: 'agent_bundle',
       homeboy_extensions: path.join(__dirname, '..'),
       agent_bundle: {
-        bundle_path: '/workspace/wp-site-generator/bundles/store-idea-agent',
-        engine_data_outputs: { issue_number: 'metadata.engine_data.store_idea_agent.issue_number' },
+        runtime_bundle_ability: 'example/run-agent-bundle',
+        bundle_path: '/workspace/example-repo/bundles/example-agent',
+        engine_data_outputs: { issue_number: 'metadata.engine_data.example_agent.issue_number' },
       },
       provider_plugin_paths: [],
     }),
@@ -1228,7 +1109,6 @@ try {
   const nonExecutableResult = spawnSync(process.execPath, [
     wpCodeboxTaskRunner,
     '--wp-codebox-bin', nonExecutableFixture,
-    '--agents-api', '/components/agents-api',
   ], {
     encoding: 'utf8',
     input: JSON.stringify(request),
@@ -1236,7 +1116,7 @@ try {
   });
   assert.equal(nonExecutableResult.status, 0, nonExecutableResult.stderr || nonExecutableResult.stdout);
   const nonExecutableCapture = readJson(nonExecutableCapturePath);
-  assert.equal(nonExecutableCapture.argv[0], 'agent-task-run');
+  assert.equal(nonExecutableCapture.argv[0], 'run-agent-task');
   assert.equal(pathInside(root, nonExecutableCapture.input.artifacts_path), false);
 
   const validationArtifacts = path.join(root, 'validation-failure-artifacts');

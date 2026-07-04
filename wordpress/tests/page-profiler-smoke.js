@@ -27,6 +27,7 @@ const {
 	formatWordPressRestNetworkDiffMarkdownReport,
 	formatWordPressRestPayloadBudgetMarkdownReport,
 	formatWordPressRestWaterfallMarkdownReport,
+	DEFAULT_THIRD_PARTY_WATERFALL_GROUPS,
 	normalizeBrowserAction,
 	normalizePageManifest,
 	normalizeWordPressPageMatrixManifest,
@@ -44,6 +45,7 @@ const {
 	summarizeWordPressRestNetworkRows,
 	summarizeWordPressRestWaterfall,
 	summarizeResourceTimings,
+	WORDPRESS_PAGE_PROFILER_PRODUCT_ADAPTERS,
 } = require('../lib/page-profiler');
 
 class FakeFrame {
@@ -178,7 +180,9 @@ assert.equal(classifyResourceUrl('https://example.test/wp-json/wp/v2/posts?conte
 assert.equal(classifyResourceUrl('https://example.test/wp-admin/load-styles.php'), 'admin');
 assert.equal(classifyResourceUrl('https://example.test/wp-content/themes/theme/style.css'), 'content-asset');
 assert.equal(resourceFamily('https://example.test/wp-includes/js/dist/block-editor.min.js?ver=1'), '/wp-includes/js/dist/block-editor.js');
-assert.equal(resourceFamily('https://example.test/wp-content/plugins/data-machine/assets/admin.js?ver=1'), '/wp-content/plugins/data-machine');
+assert.equal(resourceFamily('https://example.test/wp-content/plugins/example-plugin/assets/admin.js?ver=1'), '/wp-content/plugins/example-plugin');
+assert.equal(DEFAULT_THIRD_PARTY_WATERFALL_GROUPS.some((group) => group.id === 'woocommerce-store-api'), false);
+assert.deepEqual(WORDPRESS_PAGE_PROFILER_PRODUCT_ADAPTERS, {});
 
 const manifest = normalizePageManifest({
 	pages: [
@@ -696,6 +700,16 @@ process.stdout.write(JSON.stringify(output) + '\\n');
 		});
 		assert.equal(standaloneAttribution.groups.find((group) => group.id === 'payments').responseCount, 3);
 		assert.equal(standaloneAttribution.groups.find((group) => group.id === 'same-origin').responseCount, 4);
+		assert.equal(standaloneAttribution.groups.find((group) => group.id === 'woocommerce-store-api'), undefined);
+		const woocommerceAttribution = summarizeThirdPartyWaterfall(browserNetworkRows, {
+			baseUrl: 'https://example.test',
+			productAdapters: [{
+				waterfallGroups: [{ id: 'woocommerce-store-api', label: 'WooCommerce Store API', urlIncludes: ['/wp-json/wc/store/', 'rest_route=/wc/store/'] }],
+				firstPartyWaterfallGroupIds: ['woocommerce-store-api'],
+			}],
+		});
+		assert.equal(woocommerceAttribution.groups.find((group) => group.id === 'woocommerce-store-api').responseCount, 1);
+		assert.equal(woocommerceAttribution.thirdPartyGroupCount, 3);
 		writeJson(path.join(browserDirectory, 'action-summary.json'), {
 			schema: 'wp-codebox/browser-actions/v1',
 			startedAt: '2026-01-01T00:00:01.250Z',
@@ -726,7 +740,8 @@ process.stdout.write(JSON.stringify(output) + '\\n');
 		assert.equal(artifactProfile.thirdPartyWaterfall.groups.find((group) => group.id === 'stripe').responseCount, 3);
 		assert.equal(artifactProfile.thirdPartyWaterfall.groups.find((group) => group.id === 'stripe').requestCount, 1);
 		assert.equal(artifactProfile.thirdPartyWaterfall.groups.find((group) => group.id === 'stripe').transferSizeBytes, 7800);
-		assert.equal(artifactProfile.thirdPartyWaterfall.groups.find((group) => group.id === 'woocommerce-store-api').responseCount, 1);
+		assert.equal(artifactProfile.thirdPartyWaterfall.groups.find((group) => group.id === 'wordpress-assets').responseCount, 4);
+		assert.equal(artifactProfile.thirdPartyWaterfall.groups.find((group) => group.id === 'woocommerce-store-api'), undefined);
 		assert.equal(artifactProfile.thirdPartyWaterfall.groups.find((group) => group.id === 'google').resourceTypes.font, 1);
 		assert.equal(artifactProfile.thirdPartyWaterfall.groups.find((group) => group.id === 'third-party:cdn.example-cdn.test').duplicateUrlPatterns[0].count, 2);
 		assert.equal(artifactProfile.browserMetrics.browser_network_stripe_transfer_size_bytes, 7800);
@@ -734,6 +749,48 @@ process.stdout.write(JSON.stringify(output) + '\\n');
 		assert.match(artifactProfile.wpCodebox.upstreamGaps[0], /network\.jsonl/);
 	} finally {
 		fs.rmSync(artifactRoot, { recursive: true, force: true });
+	}
+
+	const neutralArtifactRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'homeboy-browser-profile-artifacts-'));
+	try {
+		writeJson(path.join(neutralArtifactRoot, 'summary.json'), {
+			schema: 'homeboy/browser-summary/v1',
+			requestedUrl: 'https://example.test/wp-admin/plugins.php',
+			finalUrl: 'https://example.test/wp-admin/plugins.php',
+			waitFor: 'selector:#wpbody-content',
+			startedAt: '2026-01-01T00:00:00.000Z',
+			finishedAt: '2026-01-01T00:00:00.875Z',
+		});
+		writeJson(path.join(neutralArtifactRoot, 'metrics.json'), {
+			metrics: { browser_resource_count: 7 },
+		});
+		writeJsonl(path.join(neutralArtifactRoot, 'network.jsonl'), [
+			{ type: 'response', url: 'https://example.test/wp-admin/plugins.php', method: 'GET', resourceType: 'document', status: 200, transferSize: 900, timestamp: '2026-01-01T00:00:00.050Z' },
+			{ type: 'response', url: 'https://example.test/wp-json/wp/v2/plugins?context=edit', method: 'GET', resourceType: 'fetch', status: 200, transferSize: 500, contentType: 'application/json', timestamp: '2026-01-01T00:00:00.400Z' },
+		]);
+		writeJsonl(path.join(neutralArtifactRoot, 'actions.jsonl'), [
+			{ index: 0, action: { type: 'click', selector: '.plugin-title' }, status: 'ok' },
+		]);
+
+		const neutralArtifactProfile = await profileWordPressPage({
+			baseUrl: 'https://example.test',
+			spec: { id: 'plugins-root', path: '/wp-admin/plugins.php', ready: '#wpbody-content' },
+			artifactRefs: [
+				{ role: 'browser_summary', path: path.join(neutralArtifactRoot, 'summary.json') },
+				{ role: 'browser_network', path: path.join(neutralArtifactRoot, 'network.jsonl') },
+				{ role: 'browser_actions', path: path.join(neutralArtifactRoot, 'actions.jsonl') },
+				{ role: 'browser_metrics', path: path.join(neutralArtifactRoot, 'metrics.json'), capabilities: ['browser_metrics'] },
+			],
+			wpCodeboxArtifactsDirectory: path.join(neutralArtifactRoot, 'missing-codebox-bundle'),
+		});
+		assert.equal(neutralArtifactProfile.artifactProfile.source, 'provider-neutral-browser-artifacts');
+		assert.equal(neutralArtifactProfile.wpCodebox, undefined);
+		assert.equal(neutralArtifactProfile.readyMs, 875);
+		assert.equal(neutralArtifactProfile.resources.restCount, 1);
+		assert.equal(neutralArtifactProfile.browserMetrics.browser_resource_count, 7);
+		assert.equal(neutralArtifactProfile.interactions.actions[0].status, 'passed');
+	} finally {
+		fs.rmSync(neutralArtifactRoot, { recursive: true, force: true });
 	}
 
 	const multiPage = new FakePage(resources);

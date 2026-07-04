@@ -11,13 +11,19 @@ set -euo pipefail
 # flows go through `homeboy refactor --from lint --write` (#1145).
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-RUNNER_PRELUDE="${HOMEBOY_RUNTIME_RUNNER_PRELUDE:?HOMEBOY_RUNTIME_RUNNER_PRELUDE is required}"
+SHARED_LIB_DIR="${HOMEBOY_SHARED_LIB_DIR:-}"
+if [ -z "$SHARED_LIB_DIR" ] && [ -n "${HOMEBOY_EXTENSION_PATH:-}" ] && [ -d "${HOMEBOY_EXTENSION_PATH}/../scripts/lib" ]; then
+    SHARED_LIB_DIR="$(cd "${HOMEBOY_EXTENSION_PATH}/../scripts/lib" && pwd)"
+fi
+SHARED_LIB_DIR="${SHARED_LIB_DIR:-$(cd "${SCRIPT_DIR}/../../../scripts/lib" && pwd)}"
 # shellcheck source=/dev/null
-source "$RUNNER_PRELUDE"
-homeboy_runner_init --bash 4 --steps --sidecar-writer --component-alias PLUGIN_PATH
+source "${SHARED_LIB_DIR}/runner-harness.sh"
+# shellcheck source=/dev/null
+source "${SHARED_LIB_DIR}/lint-findings-adapter.sh"
+homeboy_runner_harness_init --bash 4 --steps --sidecar-writer --component-alias PLUGIN_PATH
 
-FIX_RESULTS_HELPER="${HOMEBOY_RUNTIME_FIX_RESULTS:-${SCRIPT_DIR}/../lib/fix-results.sh}"
-# shellcheck source=../lib/fix-results.sh
+FIX_RESULTS_HELPER="${HOMEBOY_RUNTIME_FIX_RESULTS:-${SHARED_LIB_DIR}/fix-results.sh}"
+# shellcheck source=../../../scripts/lib/fix-results.sh
 source "$FIX_RESULTS_HELPER"
 
 # Debug environment variables (only shown when HOMEBOY_DEBUG=1)
@@ -89,36 +95,13 @@ fi
 
 homeboy_mktemp() {
     local template="$1"
-    local tmpdir="${HOMEBOY_CACHE_DIR:-${TMPDIR:-/tmp}}"
-
-    if [ -d "$tmpdir" ] && [ -w "$tmpdir" ]; then
-        mktemp "${tmpdir%/}/${template}" 2>/dev/null && return 0
-    fi
-
-    mktemp 2>/dev/null
+    homeboy_runner_harness_mktemp "$template"
 }
 
 merge_findings_into_sidecar() {
     local extra_file="$1"
     [ ! -f "$extra_file" ] && return 0
-
-    if type homeboy_sidecar_merge >/dev/null 2>&1; then
-        homeboy_sidecar_merge lint.findings "$extra_file"
-        return $?
-    fi
-
-    if type homeboy_merge_lint_findings >/dev/null 2>&1; then
-        homeboy_merge_lint_findings "$extra_file"
-        return $?
-    fi
-
-    if type homeboy_sidecar_merge_json_array >/dev/null 2>&1; then
-        homeboy_sidecar_merge_json_array "${HOMEBOY_LINT_FINDINGS_FILE:-}" "$extra_file"
-        return $?
-    fi
-
-    echo "Error: HOMEBOY_RUNTIME_SIDECAR_WRITER is required to write lint findings" >&2
-    return 1
+    homeboy_lint_findings_merge_file "$extra_file"
 }
 
 write_lint_producers_sidecar() {
@@ -796,12 +779,12 @@ if [ -n "$json_output" ] && command -v php &> /dev/null; then
         echo "============================================"
     fi
 
-    # Write annotations sidecar JSON for CI inline comments
-    if [ -n "${HOMEBOY_ANNOTATIONS_DIR:-}" ] && [ -d "${HOMEBOY_ANNOTATIONS_DIR}" ]; then
-        if ! type homeboy_sidecar_merge >/dev/null 2>&1; then
-            echo "Error: HOMEBOY_RUNTIME_SIDECAR_WRITER is required to write annotations" >&2
-            exit 1
-        fi
+    # Write annotations sidecar JSON for CI inline comments. Annotations are
+    # Homeboy observability output, not a lint result — if the sidecar writer is
+    # unavailable (standalone run without HOMEBOY_RUNTIME_SIDECAR_WRITER), skip
+    # writing them rather than failing the lint step. A missing writer must
+    # never masquerade as a lint finding (homeboy-extensions#1402).
+    if [ -n "${HOMEBOY_ANNOTATIONS_DIR:-}" ] && [ -d "${HOMEBOY_ANNOTATIONS_DIR}" ] && type homeboy_sidecar_merge >/dev/null 2>&1; then
         _PHPCS_ANNOTATIONS_TMPFILE=$(homeboy_mktemp 'phpcs-annotations.XXXXXX')
         echo "$json_output" | php -r '
             ini_set("memory_limit", "-1");
@@ -916,7 +899,9 @@ if [ -n "$json_output" ] && command -v php &> /dev/null; then
             }
             file_put_contents($argv[2], json_encode($findings, JSON_UNESCAPED_SLASHES) . "\n");
         ' "$PLUGIN_PATH" "$_PHPCS_FINDINGS_TMPFILE" 2>/dev/null || true
-        merge_findings_into_sidecar "$_PHPCS_FINDINGS_TMPFILE" || exit 1
+        # Writing the findings sidecar is best-effort observability; never let a
+        # sidecar-writer failure fail the lint gate (homeboy-extensions#1402).
+        merge_findings_into_sidecar "$_PHPCS_FINDINGS_TMPFILE" || true
         rm -f "$_PHPCS_FINDINGS_TMPFILE"
     fi
 fi

@@ -7,6 +7,7 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wordpress-refactor-source-wp-codebox-'));
+const fixtureCodeboxCoreModule = path.join(__dirname, '..', '..', 'tests', 'fixtures', 'wp-codebox-core-runtime-contract.cjs');
 
 function pathInside(parent, candidate) {
   const relative = path.relative(fs.realpathSync(parent), path.resolve(candidate));
@@ -66,10 +67,11 @@ const os = require('node:os');
 const path = require('node:path');
 const inputArg = process.argv.find((arg) => arg.startsWith('--input-file='));
 const inputPath = inputArg ? inputArg.slice('--input-file='.length) : '';
-if (process.argv[2] !== 'agent-task-run' || !inputPath) {
+if (!['agent-task-run', 'run-agent-task'].includes(process.argv[2]) || !inputPath) {
   process.exit(2);
 }
-const task = JSON.parse(fs.readFileSync(inputPath, 'utf8'));
+const runRequest = JSON.parse(fs.readFileSync(inputPath, 'utf8'));
+const task = runRequest.task_input || runRequest;
 const artifactsRoot = task.artifacts_path || '';
 const sessionId = task.sandbox_session_id;
 if (process.env.FIXTURE_HANG_GROUP === task.group_key) {
@@ -179,16 +181,16 @@ process.stdout.write(JSON.stringify({
       wp_codebox_output_dir: writeOutputDir,
       wp_codebox_bin: fixtureWpCli,
       wp_codebox_agents_api_path: path.join(root, 'agents-api'),
-      wp_codebox_data_machine_path: path.join(root, 'data-machine'),
-      wp_codebox_data_machine_code_path: path.join(root, 'data-machine-code'),
+      wp_codebox_runtime_path: path.join(root, 'example-runtime'),
+      wp_codebox_runtime_tools_path: path.join(root, 'example-runtime-tools'),
       wp_codebox_homeboy_path: path.join(root, 'homeboy'),
       wp_codebox_homeboy_extensions_path: path.join(root, 'homeboy-extensions'),
       wp_codebox_task_timeout_seconds: 2,
     },
   };
   fs.mkdirSync(writeCommand.settings.wp_codebox_agents_api_path, { recursive: true });
-  fs.mkdirSync(writeCommand.settings.wp_codebox_data_machine_path, { recursive: true });
-  fs.mkdirSync(writeCommand.settings.wp_codebox_data_machine_code_path, { recursive: true });
+  fs.mkdirSync(writeCommand.settings.wp_codebox_runtime_path, { recursive: true });
+  fs.mkdirSync(writeCommand.settings.wp_codebox_runtime_tools_path, { recursive: true });
   fs.mkdirSync(writeCommand.settings.wp_codebox_homeboy_path, { recursive: true });
   fs.mkdirSync(writeCommand.settings.wp_codebox_homeboy_extensions_path, { recursive: true });
   fs.mkdirSync(path.join(writeCommand.settings.wp_codebox_agents_api_path, 'src'), { recursive: true });
@@ -201,6 +203,7 @@ process.stdout.write(JSON.stringify({
     input: JSON.stringify(writeCommand),
     env: {
       ...process.env,
+      HOMEBOY_WP_CODEBOX_CORE_MODULE: fixtureCodeboxCoreModule,
       OPENCODE_API_KEY: 'redacted-test-key',
     },
   });
@@ -224,6 +227,9 @@ process.stdout.write(JSON.stringify({
   assert.equal(run.records[0].command.args.includes('--task-timeout-seconds'), true);
   assert.equal(run.records[0].command.args.includes('--homeboy'), true);
   assert.equal(run.records[0].command.args.includes('--homeboy-extensions'), true);
+  assert.equal(run.records[0].command.args.includes('--agents-api'), false);
+  assert.equal(run.records[0].command.args.includes('--data-machine'), false);
+  assert.equal(run.records[0].command.args.includes('--data-machine-code'), false);
   const artifactsIndex = run.records[0].command.args.indexOf('--artifacts');
   assert.notEqual(artifactsIndex, -1);
   assert.equal(pathInside(writeCommand.root, run.records[0].command.args[artifactsIndex + 1]), false);
@@ -240,6 +246,7 @@ process.stdout.write(JSON.stringify({
     }),
     env: {
       ...process.env,
+      HOMEBOY_WP_CODEBOX_CORE_MODULE: fixtureCodeboxCoreModule,
       FIXTURE_INVALID_PATCH: '1',
       OPENCODE_API_KEY: 'redacted-test-key',
     },
@@ -266,6 +273,7 @@ process.stdout.write(JSON.stringify({
     }),
     env: {
       ...process.env,
+      HOMEBOY_WP_CODEBOX_CORE_MODULE: fixtureCodeboxCoreModule,
       FIXTURE_HANG_GROUP: 'docs-reference',
       OPENCODE_API_KEY: 'redacted-test-key',
     },
@@ -296,6 +304,7 @@ process.stdout.write(JSON.stringify({
     }),
     env: {
       ...process.env,
+      HOMEBOY_WP_CODEBOX_CORE_MODULE: fixtureCodeboxCoreModule,
       OPENCODE_API_KEY: '',
     },
   });

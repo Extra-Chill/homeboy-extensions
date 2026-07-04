@@ -3,7 +3,7 @@
 This package is the first-class WP Codebox agent-task runtime surface used by
 Homeboy. It declares the provider contract, runtime-local CLI, and normalized
 AgentTaskOutcome conversion for consumers that need a WordPress-capable AI
-runtime without embedding WP Codebox details in their own extension manifests.
+runtime through the WP Codebox executable and package contracts.
 
 ## Runtime Defaults
 
@@ -14,11 +14,58 @@ override through the provider contract or task conversion options:
 - `workspace_tools` declares the default read-only and read-write workspace tool ids.
 - `component_path_defaults` maps runtime component contracts, legacy aliases, and
   discovery hints into generic runtime component path keys.
+- `provider_metadata` declares the operator-facing provider ids, executor backend,
+  runtime id, model fields, and provider-plugin guidance consumed by the WP
+  Codebox runtime contract.
 
-The JavaScript executor consumes these manifest fields instead of owning product
-policy in code. Existing Data Machine and GitHub-oriented defaults remain declared
-there for compatibility, while alternate callers can supply their own generic
-manifest values without adding new runtime-specific branches.
+The JavaScript executor consumes these manifest fields as product policy. Callers
+can supply generic manifest values through the runtime package contract.
+
+Runtime selection and provider selection are separate concerns:
+
+- `executor.backend` selects the generic executor backend, currently `codebox` for
+  this runtime.
+- `runtime_id` selects the runtime package, currently `wp-codebox`.
+- `executor.config.provider` selects the WordPress AI provider id, such as
+  `openai`, `codex`, or `claude-code`.
+- `executor.config.model` or `executor.model` carries the provider model name as
+  runtime metadata. Homeboy forwards the model name to WP Codebox and provider
+  plugins through the provider contract.
+
+## Adapter Contract
+
+Homeboy Extensions is a thin adapter for Codebox-owned runtime primitives. It
+forwards `wp-codebox/runtime-profile/v1` dependencies, provider plugins, overlays,
+env, and mounts as runtime profile data, then invokes WP Codebox through the
+runtime package's executable contract.
+
+Codebox owns these primitives:
+
+- `wp-codebox/runtime-profile/v1` for runtime dependencies and mounts.
+- `wp-codebox/run-agent-task/v1` for launching a prepared agent task through a Codebox-owned run contract.
+- `wp-codebox/agent-task-run-result/v1` for the stable `agent_task_run_result` output produced by the run contract.
+- `wp-codebox/parent-tool-bridge/v1` for exposing parent-owned tools inside the sandbox.
+- `wp-codebox/provider-credential-boundary/v1` for the provider credential boundary: Homeboy passes only `secret_env` names, while provider plugins or parent control-plane filters resolve values.
+- `wp-codebox/provider-runtime-invocation-contract/v1` for runner workspace, transcript, and artifact handoff operations.
+- `wp-codebox/evidence-artifact-envelope/v1` for typed artifacts, evidence refs, and run summaries.
+
+`lib/codebox-run-agent-task-contract.js` is the adapter contract for launching
+Codebox agent tasks. It builds the `wp-codebox/run-agent-task/v1` request shape
+and invokes the stable `run-agent-task` CLI.
+
+Runtime-package callers should invoke `wp-codebox/run-runtime-package`.
+
+GitHub Actions callers should invoke `.github/workflows/runtime-agent-full-run.yml`
+directly with `runtime: wp-codebox` and canonical selected-runtime inputs such as
+`runtime_mounts`, `runtime_overlays`, `runtime_profiles`, and
+`artifact_declarations`. Product-specific composition belongs in caller-owned
+workflow setup or runtime input rendering helpers, not a second reusable workflow
+surface.
+
+Provider credentials stay outside adapter payloads. The adapter forwards
+`secret_env` names and a `provider_credential_boundary` descriptor, and rejects
+raw credential fields such as `secret_env_values` or `credentials` before a task
+request reaches WP Codebox.
 
 ## Delegated Run Preparation
 
@@ -29,8 +76,7 @@ backend-neutral fields such as `execution.type`, `execution.argv`,
 `execution.agent`, `input`, `workspace`, `limits`, `artifacts`, `diagnostics`, and
 `metadata`.
 
-The runtime manifest does not advertise a delegated-run capability yet. The
-current executable path still targets the existing task-input runner contract, so
-Homeboy should not select this runtime for generic delegated command execution
-until the substrate accepts the neutral request shape and returns the neutral
-result shape directly.
+The runtime manifest currently advertises agent-task execution. The current
+executable path targets the existing task-input runner contract; generic
+delegated command execution will use a future manifest capability when WP Codebox
+accepts the neutral request shape and returns the neutral result shape directly.

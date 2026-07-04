@@ -25,6 +25,14 @@ assert.equal(
 	path.resolve(__dirname, '..', 'lib', 'request-profiler.js')
 );
 assert.equal(
+	manifest.helpers.restDbQueryProfiler,
+	path.resolve(__dirname, '..', 'lib', 'rest-db-query-profiler.js')
+);
+assert.equal(
+	manifest.helpers.externalHttpGuardrail,
+	path.resolve(__dirname, '..', 'lib', 'external-http-guardrail.js')
+);
+assert.equal(
 	manifest.helpers.timingCorrelator,
 	path.resolve(__dirname, '..', 'lib', 'timing-correlator.js')
 );
@@ -53,12 +61,10 @@ assert.equal(
 	path.resolve(__dirname, '..', 'lib', 'editor-canvas-probes.js')
 );
 assert.equal(
-	manifest.helpers.woocommerceExpensiveShipping,
-	path.resolve(__dirname, '..', 'scripts', 'bench', 'lib', 'woocommerce-expensive-shipping.php')
-);
-assert.equal(
 	manifest.helpers.fuzzManifestContracts,
 	path.resolve(__dirname, '..', 'lib', 'fuzz-manifest-contracts.js')
 );
+assert.equal(manifest.helpers.woocommerceExpensiveShipping, undefined);
+assert.equal(manifest.productAdapters, undefined);
 
 console.log('helper manifest smoke passed');

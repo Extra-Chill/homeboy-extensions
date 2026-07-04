@@ -254,10 +254,8 @@ def namespace_to_path(namespace, psr4_mappings=None):
     """Convert a PHP namespace to a directory path using PSR-4 mappings.
 
     With PSR-4 mappings from composer.json:
-        DataMachineSocials\\Abilities\\Traits -> inc/Abilities/Traits
-        (if composer.json has "DataMachineSocials\\": "inc/")
-
-    Falls back to heuristic for DataMachine -> inc/ when no mappings found.
+        ExamplePlugin\\Abilities\\Traits -> inc/Abilities/Traits
+        (if composer.json has "ExamplePlugin\\": "inc/")
     """
     if psr4_mappings:
         # Sort by specificity — longest namespace prefix first
@@ -275,17 +273,13 @@ def namespace_to_path(namespace, psr4_mappings=None):
                 remainder = namespace[len(ns_prefix) + 1:]
                 return dir_path + '/' + remainder.replace('\\', '/')
 
-    # Fallback: hardcoded DataMachine -> inc/ for backwards compatibility
-    parts = namespace.split('\\')
-    if parts and parts[0] == 'DataMachine':
-        parts[0] = 'inc'
-    return '/'.join(parts)
+    return namespace.replace('\\', '/')
 
 
-def path_to_namespace(file_path, psr4_mappings=None, root_mapping='inc:DataMachine'):
+def path_to_namespace(file_path, psr4_mappings=None, root_mapping='inc:ExamplePlugin'):
     """Convert a file path to a PHP namespace using PSR-4 mappings.
 
-    inc/Abilities/Traits/HasPermissionCheck.php -> DataMachine\\Abilities\\Traits
+    inc/Abilities/Traits/HasPermissionCheck.php -> ExamplePlugin\\Abilities\\Traits
     """
     # Strip the file extension
     path = re.sub(r'\.php$', '', file_path)
@@ -416,7 +410,7 @@ def generate_trait_file(function_name, method_source, namespace_base, trait_name
     Args:
         function_name: Name of the duplicated function
         method_source: The full method source code (with doc comment)
-        namespace_base: Base namespace for the trait (e.g., DataMachine\\Abilities)
+        namespace_base: Base namespace for the trait (e.g., ExamplePlugin\\Abilities)
         trait_name: Name of the trait
         dependency_imports: List of use statements the method depends on
     """
@@ -472,9 +466,9 @@ def generate_trait_file(function_name, method_source, namespace_base, trait_name
 def common_namespace_prefix(namespaces):
     """Find the longest common namespace prefix from a list of namespaces.
 
-    ['DataMachine\\Abilities\\Flow', 'DataMachine\\Abilities\\Job',
-     'DataMachine\\Abilities\\Taxonomy']
-    → 'DataMachine\\Abilities'
+    ['ExamplePlugin\\Abilities\\Flow', 'ExamplePlugin\\Abilities\\Job',
+     'ExamplePlugin\\Abilities\\Taxonomy']
+    → 'ExamplePlugin\\Abilities'
     """
     if not namespaces:
         return ''
@@ -1006,17 +1000,12 @@ def apply_wp_codebox_fanout_artifacts(component_root, run, run_path='', workspac
 
 def wp_codebox_task_runner_args(data, settings, script_dir):
     component_root = data.get('root') or data.get('component_path') or os.getcwd()
-    agents_api_path = settings.get('wp_codebox_agents_api_path') or os.environ.get('HOMEBOY_WP_CODEBOX_AGENTS_API_PATH') or component_root
-    data_machine_path = settings.get('wp_codebox_data_machine_path') or os.environ.get('HOMEBOY_WP_CODEBOX_DATA_MACHINE_PATH') or default_sibling_path(component_root, 'data-machine')
-    data_machine_code_path = settings.get('wp_codebox_data_machine_code_path') or os.environ.get('HOMEBOY_WP_CODEBOX_DATA_MACHINE_CODE_PATH') or default_sibling_path(component_root, 'data-machine-code')
     homeboy_path = settings.get('wp_codebox_homeboy_path') or os.environ.get('HOMEBOY_WP_CODEBOX_HOMEBOY_PATH') or default_sibling_path(component_root, 'homeboy')
     homeboy_extensions_path = settings.get('wp_codebox_homeboy_extensions_path') or os.environ.get('HOMEBOY_WP_CODEBOX_HOMEBOY_EXTENSIONS_PATH') or default_sibling_path(component_root, 'homeboy-extensions')
+    extension_root = os.path.dirname(os.path.dirname(script_dir))
 
     args = [
-        os.path.join(script_dir, 'agent', 'homeboy-wp-codebox-task-runner.cjs'),
-        '--agents-api', agents_api_path,
-        '--data-machine', data_machine_path,
-        '--data-machine-code', data_machine_code_path,
+        os.path.join(extension_root, 'agent-runtimes', 'wp-codebox', 'scripts', 'agent', 'homeboy-wp-codebox-task-runner.cjs'),
     ]
     if os.path.isdir(homeboy_path):
         args.extend(['--homeboy', homeboy_path])

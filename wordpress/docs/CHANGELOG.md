@@ -2,6 +2,1720 @@
 
 All notable changes to the **wordpress** extension will be documented in this file.
 
+## [3.23.32] - 2026-07-04
+
+### Changed
+- Declare core extension seam data
+
+## [3.23.31] - 2026-07-04
+
+### Changed
+- Purge WP Codebox Data Machine plumbing
+
+## [3.23.30] - 2026-07-04
+
+### Changed
+- Consolidate WP Codebox contract adapter
+
+## [3.23.29] - 2026-07-04
+
+### Changed
+- Materialize WordPress vendor dependencies
+
+## [3.23.28] - 2026-07-04
+
+### Changed
+- Converge shell runners on shared harness
+
+## [3.23.27] - 2026-07-04
+
+### Changed
+- Consolidate runtime helper smoke coverage
+
+## [3.23.26] - 2026-07-04
+
+### Changed
+- Fail explicit PHPUnit no-test scopes
+
+## [3.23.25] - 2026-07-04
+
+### Fixed
+- Fix WP Codebox runtime freshness resolution
+
+## [3.23.24] - 2026-07-03
+
+### Changed
+- Prefer requested WP Codebox source setup
+
+## [3.23.23] - 2026-07-03
+
+### Changed
+- remove OpenCode executor re-export shim
+
+## [3.23.22] - 2026-07-03
+
+### Changed
+- Add WP Codebox PHPUnit preload setting
+
+## [3.23.21] - 2026-07-03
+
+### Changed
+- Add WordPress fuzz campaign orchestrator
+
+## [3.23.20] - 2026-07-03
+
+### Changed
+- Prefer managed WP Codebox fuzz contracts
+
+## [3.23.19] - 2026-07-03
+
+### Changed
+- Use runtime contract fixtures in direct tests
+
+## [3.23.18] - 2026-07-03
+
+### Changed
+- Promote runtime materialization helpers
+
+## [3.23.17] - 2026-07-03
+
+### Changed
+- remove WooCommerce fixtures from WordPress extension
+
+## [3.23.16] - 2026-07-03
+
+### Changed
+- Set WP Codebox test runner Node heap default
+
+## [3.23.15] - 2026-07-03
+
+### Fixed
+- Fix WP Codebox configured PHPUnit file routing
+
+## [3.23.14] - 2026-07-03
+
+### Changed
+- thin Codebox runtime profile boundary
+
+## [3.23.13] - 2026-07-02
+
+### Changed
+- Remove product defaults from WordPress runtime paths
+- Tighten Codebox artifact result boundary
+
+## [3.23.12] - 2026-07-02
+
+### Changed
+- Centralize agent task contract imports
+
+## [3.23.11] - 2026-07-02
+
+### Changed
+- Classify WP Codebox PHPUnit profile failures
+
+## [3.23.10] - 2026-07-02
+
+### Changed
+- Persist WP Codebox PHPUnit failure artifacts
+
+## [3.23.9] - 2026-07-02
+
+### Changed
+- Trim runtime agent CI root barrel
+- Document core fuzz plan boundary
+
+## [3.23.8] - 2026-07-02
+
+### Changed
+- Remove dead runtime compatibility wrappers
+
+## [3.23.7] - 2026-07-01
+
+### Changed
+- Support custom WP Codebox PHPUnit profiles
+
+## [3.23.6] - 2026-07-01
+
+### Changed
+- Fail configured PHPUnit runs with no tests directory
+
+## [3.23.5] - 2026-07-01
+
+### Fixed
+- stage WP Codebox workload PHP files
+
+## [3.23.4] - 2026-07-01
+
+### Fixed
+- Fix WP Codebox resolver default precedence
+
+## [3.23.3] - 2026-07-01
+
+### Changed
+- Honor installed WP Codebox defaults in fuzz runner
+
+## [3.23.2] - 2026-07-01
+
+### Changed
+- Persist WP Codebox setup overrides
+
+## [3.23.1] - 2026-07-01
+
+### Changed
+- Declare extension contract producers
+- Test secret env plans against Homeboy contract
+
+## [3.22.19] - 2026-07-01
+
+### Changed
+- Validate artifact postprocess contract export when available
+
+## [3.22.18] - 2026-07-01
+
+### Changed
+- Remove WordPress fanout reconcile script shim
+
+## [3.22.17] - 2026-07-01
+
+### Fixed
+- Fix Codebox fuzz nested plugin metadata
+
+## [3.22.16] - 2026-06-30
+
+### Fixed
+- Fix Codebox nested plugin file mapping
+
+## [3.22.15] - 2026-06-30
+
+### Changed
+- Honor explicit WP Codebox setup overrides
+
+## [3.22.14] - 2026-06-30
+
+### Changed
+- Pass Codebox nested plugin source fields
+
+## [3.22.13] - 2026-06-30
+
+### Changed
+- Resolve monorepo WordPress plugin file paths
+
+## [3.22.12] - 2026-06-30
+
+### Changed
+- Resolve rig-qualified fuzz component paths
+
+## [3.22.11] - 2026-06-30
+
+### Changed
+- Load WP Codebox runtime contract directly from core
+
+## [3.22.10] - 2026-06-30
+
+### Changed
+- Package WP Codebox runtime contract source
+
+## [3.22.9] - 2026-06-30
+
+### Changed
+- Prefer WP Codebox contracts module for runtime manifest
+
+## [3.22.8] - 2026-06-30
+
+### Changed
+- Resolve WP Codebox core from selected cache
+
+## [3.22.7] - 2026-06-30
+
+### Changed
+- Prefer WP Codebox cache over stale fuzz env
+
+## [3.22.6] - 2026-06-30
+
+### Fixed
+- Fix WP Codebox cache runner exec invocation
+
+## [3.22.5] - 2026-06-30
+
+### Changed
+- Require WordPress fuzz runtime contract fields
+
+## [3.22.4] - 2026-06-30
+
+### Fixed
+- package wordpress agent task contracts
+
+## [3.22.3] - 2026-06-30
+
+### Changed
+- reduce boundary smoke theater
+
+## [3.22.2] - 2026-06-30
+
+### Fixed
+- emit codebox replay summary metadata
+
+## [3.22.1] - 2026-06-30
+
+### Changed
+- Declare WordPress dependency materialization recipes
+
+## [3.21.18] - 2026-06-30
+
+### Changed
+- Map Codebox fuzz runtime primitives
+
+## [3.21.17] - 2026-06-29
+
+### Changed
+- Map generic WordPress admin form surfaces
+
+## [3.21.16] - 2026-06-29
+
+### Changed
+- Map runtime discovery CRUD surfaces to Codebox workloads
+
+## [3.21.15] - 2026-06-29
+
+### Changed
+- Map Codebox observations to fuzz hotspots
+
+## [3.21.14] - 2026-06-29
+
+### Changed
+- Add generic WordPress scale fuzz dimensions
+
+## [3.21.13] - 2026-06-29
+
+### Changed
+- Map WordPress fuzz workloads to Codebox mutation contracts
+
+## [3.21.12] - 2026-06-29
+
+### Changed
+- Require explicit Codebox fuzz contracts
+
+## [3.21.11] - 2026-06-29
+
+### Changed
+- Use disposable Codebox destructive fuzz contracts
+
+## [3.21.10] - 2026-06-29
+
+### Changed
+- Exclude runner .ci materialization from captured workspace patch
+
+## [3.21.9] - 2026-06-29
+
+### Changed
+- Use disposable Codebox mutation semantics
+- Map WordPress runtime actions through Codebox contracts
+- Add explicit WordPress fuzz surface family contracts
+
+## [3.21.8] - 2026-06-29
+
+### Changed
+- Accept disposable Codebox fuzz destruction
+- Harden Codebox fuzz runtime preflight
+
+## [3.21.7] - 2026-06-29
+
+### Changed
+- add release.update_dependency composer custom-package repin
+
+## [3.21.6] - 2026-06-29
+
+### Changed
+- Remove legacy contract compatibility
+
+## [3.21.5] - 2026-06-29
+
+### Fixed
+- fix(wp-codebox): suppress inner runtime_task for native run-agent-task self-call
+
+## [3.21.4] - 2026-06-28
+
+### Fixed
+- clean vendor/ before composer install in WP build
+
+## [3.21.3] - 2026-06-28
+
+### Changed
+- Gate destructive WordPress fuzz runs on Codebox artifacts
+
+## [3.21.2] - 2026-06-28
+
+### Fixed
+- canonicalize WP Codebox runtime dispatch
+
+## [3.21.1] - 2026-06-28
+
+### Fixed
+- require explicit Codebox runtime overlays
+
+## [3.21.0] - 2026-06-28
+
+### Added
+- orchestrate chaos fuzz generation
+- add aggressive isolated WordPress fuzz planning
+
+### Fixed
+- emit executable Codebox fuzz actions
+- align aggressive fuzz readiness
+
+## [3.20.1] - 2026-06-28
+
+### Fixed
+- honor AbortSignal/timeoutMs in wp-codebox-recipe-helper to kill+reap wedged recipe-run
+
+## [3.20.0] - 2026-06-28
+
+### Added
+- declared local-workspace dependency overrides with peer dedup
+
+## [3.19.30] - 2026-06-28
+
+### Changed
+- Harden WP Codebox runtime mount contracts
+
+## [3.19.29] - 2026-06-27
+
+### Fixed
+- generate agent-task core contract fixture from core's published contract
+
+## [3.19.28] - 2026-06-27
+
+### Changed
+- drop dead per-language runtime helper shims
+
+## [3.19.27] - 2026-06-27
+
+### Fixed
+- fix(wp-codebox): forward full secret-env-plan aggregation into sandbox
+
+## [3.19.26] - 2026-06-27
+
+### Changed
+- Single-source shared shell runner libs to top-level scripts/lib
+
+## [3.19.25] - 2026-06-27
+
+### Fixed
+- probe wp-codebox with `commands` instead of unsupported --version
+
+## [3.19.24] - 2026-06-27
+
+### Changed
+- Remove agent-task-contract reexport shims
+
+## [3.19.23] - 2026-06-27
+
+### Changed
+- Materialize WordPress fuzz required artifacts
+
+## [3.19.22] - 2026-06-27
+
+### Changed
+- Write empty WordPress hotspot artifacts
+
+## [3.19.21] - 2026-06-27
+
+### Changed
+- Write WordPress fuzz artifact files
+
+## [3.19.20] - 2026-06-27
+
+### Changed
+- Trust fuzz readiness preflight
+
+## [3.19.19] - 2026-06-27
+
+### Fixed
+- Fix WordPress contract re-export layout
+
+## [3.19.18] - 2026-06-27
+
+### Changed
+- Wire WordPress fuzz runtime readiness
+
+## [3.19.17] - 2026-06-27
+
+### Fixed
+- detect block themes by templates/index.html, not theme.json
+
+## [3.19.16] - 2026-06-27
+
+### Changed
+- Use public Codebox artifact APIs
+
+## [3.19.15] - 2026-06-27
+
+### Changed
+- Add WordPress Codebox client boundary
+
+## [3.19.14] - 2026-06-27
+
+### Changed
+- Add WordPress fuzz runtime operation contracts
+
+## [3.19.13] - 2026-06-27
+
+### Changed
+- Propagate fuzz result envelope artifacts
+
+## [3.19.12] - 2026-06-27
+
+### Changed
+- Emit Codebox runtime package artifact declarations
+
+## [3.19.11] - 2026-06-27
+
+### Changed
+- Add Codebox runtime package task schema
+
+## [3.19.10] - 2026-06-27
+
+### Changed
+- Tighten extension contract boundaries
+
+## [3.19.9] - 2026-06-27
+
+### Fixed
+- Fix Codebox runtime package handoff
+
+## [3.19.8] - 2026-06-27
+
+### Changed
+- Add rollback-safe REST fuzz contract
+
+## [3.19.7] - 2026-06-27
+
+### Changed
+- Bind REST fuzz fixtures into plans
+
+## [3.19.6] - 2026-06-27
+
+### Changed
+- Tier WordPress fuzz surface execution
+
+## [3.19.5] - 2026-06-27
+
+### Changed
+- Generalize WordPress query request profiling
+
+## [3.19.4] - 2026-06-27
+
+### Changed
+- Use runtime-backed WP Codebox fuzz suites
+
+## [3.19.3] - 2026-06-27
+
+### Changed
+- Expand WordPress live surface metadata discovery
+
+## [3.19.2] - 2026-06-27
+
+### Changed
+- Clarify fuzz runtime artifact normalization
+
+## [3.19.1] - 2026-06-27
+
+### Changed
+- Batch fixture workload matrix runs
+- Wire runtime agent CI package tests
+- Stream WP Codebox recipe output
+- Declare WordPress helper env provider
+- Preserve WP Codebox runtime artifacts
+- Support WP Codebox PHPUnit source roots
+- Use controller client runtime task input
+
+### Fixed
+- Fix Codebox provider plugin path precedence
+
+## [3.19.0] - 2026-06-26
+
+### Added
+- run WP Codebox browser coverage traces
+
+### Changed
+- Stop advertising legacy runtime package aliases
+- Echo dispatch identity in runtime outputs
+- Add canonical fuzz result envelope
+- Add WordPress fuzz manifest validator
+- Add WP Codebox browser coverage primitive
+
+### Fixed
+- fix(wp-codebox): normalize fanout runtime task abilities
+- honor runtime component env
+- default runtime package from profile
+- normalize neutral runtime package ability
+
+## [3.18.1] - 2026-06-26
+
+### Changed
+- Resolve WP Codebox identity once
+- dedupe support result helpers
+
+### Fixed
+- defer codex refresh to provider runtime
+
+## [3.18.0] - 2026-06-26
+
+### Added
+- project canonical fanout adapter metadata
+
+### Fixed
+- mark unsupported fuzz as non-proof
+- centralize runtime artifact contracts
+- share runner contract package
+
+## [3.17.8] - 2026-06-26
+
+### Fixed
+- pass codebox bench source roots
+- pass fuzz artifact roots to codebox
+- mount postprocess artifact roots
+- stage postprocess helpers
+- relativize postprocess helpers
+- preserve normalized postprocess steps
+- compact fuzz runner stdout
+- map artifact postprocess workloads
+- allow large codebox fuzz output
+- expose campaign artifacts
+
+## [3.17.7] - 2026-06-26
+
+### Fixed
+- emit fuzz result envelope artifact
+- expand workload template paths
+
+## [3.17.6] - 2026-06-26
+
+### Fixed
+- use public plugin activation command
+
+## [3.17.5] - 2026-06-26
+
+### Changed
+- Forward WP Codebox settings to fuzz runner
+
+## [3.17.4] - 2026-06-26
+
+### Changed
+- Build PHP fuzz workloads as workload-run input
+
+## [3.17.3] - 2026-06-26
+
+### Changed
+- Honor WP Codebox binary setting JSON in fuzz runner
+
+## [3.17.2] - 2026-06-26
+
+### Fixed
+- Fix fuzz runner WP Codebox binary override
+
+## [3.17.1] - 2026-06-26
+
+### Fixed
+- Fix direct fuzz postprocess input lookup
+- Fix direct WP Codebox fuzz execution
+
+## [3.17.0] - 2026-06-26
+
+### Added
+- bind fuzz proof outputs
+
+## [3.16.0] - 2026-06-25
+
+### Added
+- consume Codebox hotspot artifacts
+
+## [3.15.0] - 2026-06-25
+
+### Added
+- adapt fuzz plan cases to Codebox workloads
+
+## [3.14.4] - 2026-06-25
+
+### Fixed
+- dedupe fixture matrix diagnostics
+
+## [3.14.3] - 2026-06-25
+
+### Changed
+- Skip vendored package fixtures in WordPress builds
+
+## [3.14.2] - 2026-06-25
+
+### Changed
+- Normalize Codebox executor events
+
+## [3.14.1] - 2026-06-25
+
+### Changed
+- Replace static-site matrix with generic fixture workloads
+
+## [3.14.0] - 2026-06-25
+
+### Added
+- stabilize WordPress fuzz outputs
+
+## [3.13.36] - 2026-06-25
+
+### Fixed
+- Fix WP Codebox source CLI export
+
+## [3.13.35] - 2026-06-25
+
+### Changed
+- Normalize bench scenario profiler metrics
+
+## [3.13.34] - 2026-06-25
+
+### Changed
+- Preserve normalized fuzz summary metrics
+
+## [3.13.33] - 2026-06-25
+
+### Changed
+- Normalize workload profiler artifact metrics
+
+## [3.13.32] - 2026-06-25
+
+### Changed
+- Read nested workload execution metrics
+
+## [3.13.31] - 2026-06-25
+
+### Changed
+- Read workload execution metrics from Codebox results
+
+## [3.13.30] - 2026-06-25
+
+### Changed
+- Synthesize Codebox fuzz result artifacts
+
+## [3.13.29] - 2026-06-25
+
+### Changed
+- Embed source PHP workload files
+
+## [3.13.28] - 2026-06-25
+
+### Changed
+- Pass runtime requirements to Codebox CLI
+
+## [3.13.27] - 2026-06-25
+
+### Changed
+- Pass workload steps to Codebox fuzz runtime
+
+## [3.13.26] - 2026-06-25
+
+### Changed
+- Emit runtime args for Codebox fuzz workloads
+
+## [3.13.25] - 2026-06-24
+
+### Changed
+- Embed fixture payloads in SSI matrix artifacts
+- Collect SSI fixture results from Codebox executions
+- Use SSI allow-failure flag for matrix collection
+- Keep SSI fixture matrix collecting failed validations
+- Mount SSI fixture matrix artifacts in Codebox
+- Use supported WP Codebox plugin activation steps
+
+## [3.13.24] - 2026-06-24
+
+### Changed
+- Collect SSI fixture results from Codebox executions
+
+## [3.13.23] - 2026-06-24
+
+### Changed
+- Use SSI allow-failure flag for matrix collection
+
+## [3.13.22] - 2026-06-24
+
+### Changed
+- Keep SSI fixture matrix collecting failed validations
+
+## [3.13.21] - 2026-06-24
+
+### Changed
+- Mount SSI fixture matrix artifacts in Codebox
+
+## [3.13.20] - 2026-06-24
+
+### Changed
+- Use supported WP Codebox plugin activation steps
+
+## [3.13.19] - 2026-06-24
+
+### Fixed
+- Fix SSI fixture matrix activation step schema
+
+## [3.13.18] - 2026-06-24
+
+### Changed
+- Translate Codebox fuzz measurements
+
+## [3.13.17] - 2026-06-24
+
+### Fixed
+- Fix SSI fixture matrix workflow step schema
+
+## [3.13.16] - 2026-06-24
+
+### Fixed
+- Fix SSI fixture matrix extra plugins schema
+
+## [3.13.15] - 2026-06-24
+
+### Changed
+- Mount SSI in fixture matrix recipes
+
+## [3.13.14] - 2026-06-24
+
+### Changed
+- Expose typed WordPress dependency metadata
+
+## [3.13.13] - 2026-06-24
+
+### Changed
+- Collect SSI fixture matrix diagnostics
+
+## [3.13.12] - 2026-06-24
+
+### Changed
+- Probe npm global root for WP Codebox CLI
+
+## [3.13.11] - 2026-06-24
+
+### Changed
+- Discover global WP Codebox CLI entrypoints
+
+## [3.13.10] - 2026-06-24
+
+### Changed
+- Accept existing JS WP Codebox entrypoints
+- Accept JS WP Codebox CLI entrypoints
+- Skip stale WP Codebox wrappers
+
+## [3.13.9] - 2026-06-24
+
+### Changed
+- Discover global WP Codebox recipe builders
+
+## [3.13.8] - 2026-06-24
+
+### Changed
+- Run npm fallback after empty WordPress PHPUnit discovery
+
+## [3.13.7] - 2026-06-24
+
+### Changed
+- Publish fanout reconciliation contract statuses
+
+## [3.13.6] - 2026-06-24
+
+### Changed
+- Stabilize WordPress fuzz preflight
+
+## [3.13.5] - 2026-06-24
+
+### Changed
+- Add deterministic loop fanout primitives
+
+## [3.13.4] - 2026-06-24
+
+### Changed
+- Quarantine legacy Codebox aliases
+
+## [3.13.3] - 2026-06-24
+
+### Changed
+- Tighten Codebox public adapter boundary
+
+## [3.13.2] - 2026-06-24
+
+### Changed
+- Remove legacy Codebox result adapters
+- Use public Codebox adapter boundaries
+
+## [3.13.1] - 2026-06-24
+
+### Fixed
+- Fix public fuzz CLI invocation shape
+- Fix public fuzz Codebox binary selection
+
+## [3.13.0] - 2026-06-24
+
+### Added
+- add fuzz runtime task adapter
+
+## [3.12.74] - 2026-06-23
+
+### Changed
+- Centralize WP Codebox result boundary
+
+## [3.12.73] - 2026-06-23
+
+### Fixed
+- Fix WP Codebox public CLI payload dispatch
+
+## [3.12.72] - 2026-06-23
+
+### Changed
+- Use public Codebox CLI for WordPress fuzz runs
+
+## [3.12.71] - 2026-06-23
+
+### Changed
+- Add WordPress fuzz campaign compiler
+
+## [3.12.70] - 2026-06-23
+
+### Changed
+- Decouple generic runtime CI from WP Codebox
+
+## [3.12.69] - 2026-06-23
+
+### Changed
+- Align Codebox runtime package substrate
+- Lift runtime package provider options
+- Align Codebox runtime package tasks
+
+## [3.12.68] - 2026-06-23
+
+### Changed
+- Add WordPress fuzz performance evidence
+
+## [3.12.67] - 2026-06-23
+
+### Changed
+- Add WordPress CRUD result contract
+- Add WordPress live surface discovery
+- Add generic REST request case artifacts
+
+## [3.12.66] - 2026-06-23
+
+### Changed
+- Merge duplicate Codebox runtime contracts
+
+## [3.12.65] - 2026-06-23
+
+### Fixed
+- derive fuzz campaign safety
+
+## [3.12.64] - 2026-06-23
+
+### Changed
+- Preserve fuzz inputs across Lab remaps
+
+## [3.12.63] - 2026-06-23
+
+### Changed
+- Gate WordPress fuzz on runtime capabilities
+
+## [3.12.62] - 2026-06-23
+
+### Changed
+- Validate Codebox runtime ability contract
+
+## [3.12.61] - 2026-06-23
+
+### Changed
+- Pass WP Codebox monorepo source paths to fuzz
+
+## [3.12.60] - 2026-06-23
+
+### Changed
+- Pass fuzz workload root to WordPress runner
+
+## [3.12.59] - 2026-06-23
+
+### Changed
+- Extract fuzz contract builders
+
+## [3.12.58] - 2026-06-22
+
+### Changed
+- Accept embedded runtime success results
+- Preserve Codebox workspace mount refs
+- Keep Codebox runtime substrate internal
+
+## [3.12.57] - 2026-06-22
+
+### Changed
+- Prefer explicit fuzz artifact roles
+
+## [3.12.56] - 2026-06-22
+
+### Changed
+- Read embedded fuzz result artifacts
+
+## [3.12.55] - 2026-06-22
+
+### Changed
+- Mount fuzz workload roots in Codebox
+
+## [3.12.54] - 2026-06-22
+
+### Changed
+- Clean PHPUnit cache after WP Codebox tests
+
+## [3.12.53] - 2026-06-22
+
+### Changed
+- Forward Codebox chat handler components
+
+## [3.12.52] - 2026-06-22
+
+### Changed
+- Forward Agents API runtime requirements to Codebox
+
+## [3.12.51] - 2026-06-22
+
+### Changed
+- Honor WordPress release package settings
+
+## [3.12.50] - 2026-06-22
+
+### Changed
+- Normalize fuzz error statuses
+
+## [3.12.49] - 2026-06-22
+
+### Changed
+- Project generic fuzz primitives into Codebox
+
+## [3.12.48] - 2026-06-22
+
+### Changed
+- Project fuzz plan cases into Codebox
+
+## [3.12.47] - 2026-06-22
+
+### Changed
+- Remove legacy Data Machine Codebox compat lane
+
+## [3.12.46] - 2026-06-22
+
+### Changed
+- Make WordPress agent contracts installable
+
+## [3.12.45] - 2026-06-22
+
+### Changed
+- Mount fuzz workload runtime plugins
+
+## [3.12.44] - 2026-06-22
+
+### Changed
+- Dedupe WordPress generic agent contracts
+
+## [3.12.43] - 2026-06-22
+
+### Changed
+- Project fuzz manifests into Codebox cases
+
+## [3.12.42] - 2026-06-22
+
+### Changed
+- Allow WordPress builds to skip nested packages
+
+## [3.12.41] - 2026-06-22
+
+### Changed
+- Prefer managed Codebox cache for fuzz runs
+
+## [3.12.40] - 2026-06-22
+
+### Changed
+- Preserve fuzz agent task goals
+
+## [3.12.39] - 2026-06-22
+
+### Changed
+- Prefer discovered Codebox CLI over stale fuzz settings
+
+## [3.12.38] - 2026-06-22
+
+### Changed
+- Prefer cached WP Codebox CLI for fuzz runs
+
+## [3.12.37] - 2026-06-22
+
+### Fixed
+- Fix fuzz runner Codebox core setting env
+
+## [3.12.36] - 2026-06-22
+
+### Changed
+- Use Codebox contracts entrypoint for fuzz runner
+
+## [3.12.35] - 2026-06-22
+
+### Changed
+- Derive Codebox core module for fuzz runner
+
+## [3.12.34] - 2026-06-22
+
+### Changed
+- Pass Codebox core module to fuzz runner
+
+## [3.12.33] - 2026-06-22
+
+### Changed
+- Resolve fuzz runner Codebox runtime path
+
+## [3.12.32] - 2026-06-22
+
+### Changed
+- Pass goal to Codebox fuzz suites
+
+## [3.12.31] - 2026-06-22
+
+### Changed
+- Require public Codebox result envelopes
+
+## [3.12.30] - 2026-06-22
+
+### Changed
+- Add WP Codebox fuzz suite contract canary
+- Remove docs-agent-specific runner fixtures
+- Delegate to WP Codebox normalizers
+- Extract workspace publication lifecycle
+- Centralize agent task outcome normalization
+- Prefer public Codebox fuzz workload APIs
+- Normalize WordPress fuzz budgets
+- Add DB fuzz planning primitives
+- Move WooCommerce defaults behind product adapters
+- Use semantic full-surface coverage matching
+- Centralize WordPress surface vocabulary
+- Route fuzz runner through Codebox adapter
+- Canonicalize WP Codebox fuzz suite vocabulary
+- Use focused WP Codebox entrypoints
+- Add generic block fuzz cases
+- Plan admin page fuzz interactions
+- Expand WordPress CRUD fuzz planning
+- Plan REST fuzz cases by method
+- Normalize WordPress fuzz surface types
+
+### Fixed
+- Fix Codebox typed artifact expectations
+
+## [3.12.28] - 2026-06-22
+
+### Changed
+- Extract raw Codebox fuzz results in runner CLI
+
+## [3.12.27] - 2026-06-22
+
+### Changed
+- Extract raw Codebox fuzz results
+
+## [3.12.26] - 2026-06-22
+
+### Changed
+- Extract deeply nested Codebox fuzz results
+
+## [3.12.25] - 2026-06-22
+
+### Changed
+- Extract nested Codebox fuzz results
+
+## [3.12.24] - 2026-06-22
+
+### Changed
+- Use canonical WP Codebox fuzz ability
+
+## [3.12.23] - 2026-06-22
+
+### Changed
+- Mount WP Codebox for fuzz runtime tasks
+
+## [3.12.22] - 2026-06-22
+
+### Changed
+- Stabilize WP Codebox fuzz suite contract
+
+## [3.12.21] - 2026-06-22
+
+### Changed
+- Add Codebox fuzz sandbox tool policy
+
+## [3.12.20] - 2026-06-22
+
+### Fixed
+- Fix installed WordPress fuzz task contracts
+
+## [3.12.19] - 2026-06-22
+
+### Changed
+- Surface WP Codebox fuzz dispatch failures
+
+## [3.12.18] - 2026-06-22
+
+### Changed
+- Clean WordPress runtime adapter boundaries
+
+## [3.12.17] - 2026-06-22
+
+### Changed
+- Wrap fuzz dispatch as Codebox run-agent-task input
+
+## [3.12.16] - 2026-06-22
+
+### Changed
+- Dispatch WordPress fuzz runs through WP Codebox
+
+## [3.12.15] - 2026-06-22
+
+### Changed
+- Make Codebox run-agent-task contract the default
+- Add worktree PR capability bundles
+
+## [3.12.14] - 2026-06-22
+
+### Changed
+- Add manifest runtime invocation contract
+
+## [3.12.13] - 2026-06-22
+
+### Changed
+- Add Codebox fuzz runner dispatch
+
+### Fixed
+- Fix WordPress fuzz runner installed dependencies
+
+## [3.12.12] - 2026-06-22
+
+### Changed
+- Add WordPress workload setup declarations
+
+## [3.12.11] - 2026-06-22
+
+### Fixed
+- thin codebox workflow internals
+
+## [3.12.10] - 2026-06-22
+
+### Fixed
+- Fix WordPress fuzz runner script execution
+
+## [3.12.9] - 2026-06-22
+
+### Fixed
+- remove codebox agents api defaults
+
+## [3.12.8] - 2026-06-22
+
+### Changed
+- Add WordPress fuzz manifest contract
+
+## [3.12.7] - 2026-06-22
+
+### Changed
+- Add WordPress REST route discovery helper
+
+## [3.12.6] - 2026-06-22
+
+### Changed
+- Add runtime execution kind contracts
+- Extract generic fanout reconcile primitives
+
+## [3.12.5] - 2026-06-22
+
+### Fixed
+- align codebox public contracts
+
+## [3.12.4] - 2026-06-21
+
+### Changed
+- Add WordPress performance observation aggregation
+
+## [3.12.3] - 2026-06-21
+
+### Changed
+- Add WordPress runtime surface discovery helper
+
+### Fixed
+- adapt WordPress fuzz runner to Codebox suites
+
+## [3.12.2] - 2026-06-21
+
+### Fixed
+- keep Codebox recipe helper install-local
+
+## [3.12.1] - 2026-06-21
+
+### Fixed
+- use public WP Codebox contracts
+
+## [3.12.0] - 2026-06-21
+
+### Added
+- account for expected WordPress fuzz surfaces
+
+### Changed
+- Add generic WordPress fuzz primitives
+
+## [3.11.1] - 2026-06-21
+
+### Changed
+- Add generic WordPress discovery surfaces
+
+### Fixed
+- tighten wordpress fuzz artifact contracts
+- remove fuzz runner bench fallbacks
+
+## [3.11.0] - 2026-06-21
+
+### Added
+- pass WordPress runtime evidence steps
+
+## [3.10.3] - 2026-06-21
+
+### Changed
+- Isolate WP Codebox adapter boundary
+
+## [3.10.2] - 2026-06-21
+
+### Fixed
+- make runtime full run runtime-agnostic
+
+## [3.10.1] - 2026-06-21
+
+### Fixed
+- report bench artifacts from shared-state mount
+
+## [3.10.0] - 2026-06-21
+
+### Added
+- expand generic WordPress fuzz coverage artifacts
+
+## [3.9.8] - 2026-06-21
+
+### Fixed
+- keep bench artifact refs minimal
+
+## [3.9.7] - 2026-06-21
+
+### Changed
+- Centralize WP Codebox run task contract schemas
+
+## [3.9.6] - 2026-06-21
+
+### Fixed
+- emit portable bench artifact refs
+
+## [3.9.5] - 2026-06-21
+
+### Fixed
+- keep wordpress recipe helper packaged
+
+## [3.9.4] - 2026-06-21
+
+### Fixed
+- emit valid bench artifact refs
+
+## [3.9.3] - 2026-06-21
+
+### Changed
+- Centralize WP Codebox adapter compatibility
+
+## [3.9.2] - 2026-06-21
+
+### Changed
+- Split deterministic loop runner from agent task execution
+
+## [3.9.1] - 2026-06-21
+
+### Fixed
+- preserve prepared dependency plugin slugs
+
+## [3.9.0] - 2026-06-21
+
+### Added
+- convert WordPress surfaces into fuzz plans
+
+## [3.8.4] - 2026-06-21
+
+### Changed
+- Select runtime executors explicitly
+
+## [3.8.3] - 2026-06-21
+
+### Changed
+- Extract generic fanout reconcile runtime surface
+
+## [3.8.2] - 2026-06-21
+
+### Changed
+- centralize Codebox artifact discovery
+
+## [3.8.1] - 2026-06-21
+
+### Changed
+- Resolve object dependencies before preflight
+
+## [3.8.0] - 2026-06-21
+
+### Added
+- normalize WordPress fuzz result artifacts
+- add WordPress fuzz runner bridge
+
+### Changed
+- Fail invalid Codebox typed artifacts
+- Support packaged WordPress dependency subdirs
+- Extract generic agent loop runner
+- Centralize agent task planning primitives
+- Add WP Codebox fuzz plan recipe adapter
+- Add WordPress hook surface discovery
+- Add WP Codebox command diagnostics planning
+- Add WordPress fuzz schema contracts
+- Add WP Codebox fuzz-run consumer
+- Add WordPress frontend URL surface discovery
+- Add WordPress AJAX action surface planning
+- Add Codebox role matrix recipe inputs
+- Add WordPress discovery inventory helper
+- Add WordPress admin fuzz surface discovery
+- Use Codebox plugin-state for fixture activation
+- Map WordPress fixture profiles to site seeds
+- Add WP Codebox checkpoint isolation to bench recipes
+- Add WordPress REST fuzz surface discovery adapter
+- Add WordPress fuzz coverage aggregation
+
+## [3.7.62] - 2026-06-21
+
+### Changed
+- Tighten Codebox runtime adapter boundary
+
+## [3.7.61] - 2026-06-21
+
+### Changed
+- Align Codebox adapter with public runtime contracts
+- Add Codebox provider adapter boundary
+
+## [3.7.60] - 2026-06-21
+
+### Changed
+- Add Codebox provider adapter boundary
+
+## [3.7.59] - 2026-06-21
+
+### Changed
+- Isolate Data Machine bundle result mapping
+
+## [3.7.58] - 2026-06-21
+
+### Changed
+- Honor WP Codebox binary bench setting
+
+## [3.7.57] - 2026-06-21
+
+### Changed
+- Normalize WP Codebox runtime outcomes
+
+## [3.7.56] - 2026-06-21
+
+### Changed
+- Read WP Codebox binary from settings JSON
+
+## [3.7.55] - 2026-06-21
+
+### Changed
+- Accept WP Codebox binary setting
+
+## [3.7.54] - 2026-06-20
+
+### Changed
+- Add WordPress fuzz coverage primitives
+
+## [3.7.53] - 2026-06-20
+
+### Changed
+- Emit REST DB query shapes
+
+## [3.7.52] - 2026-06-20
+
+### Changed
+- Attach WP Codebox failure diagnostics artifacts
+- Guard WP Codebox external HTTP bench primitive
+- Preserve WP Codebox failed bench results
+- Load WP Codebox workload JSON fixtures
+
+## [3.7.51] - 2026-06-19
+
+### Changed
+- Add WordPress full-surface coverage reports
+
+## [3.7.50] - 2026-06-19
+
+### Changed
+- Consume current WP Codebox envelopes
+
+## [3.7.49] - 2026-06-19
+
+### Changed
+- Normalize browser request coverage evidence
+
+## [3.7.48] - 2026-06-19
+
+### Changed
+- Add WordPress DB inventory artifacts
+
+## [3.7.47] - 2026-06-19
+
+### Changed
+- Prefer Codebox artifact result envelopes
+
+## [3.7.46] - 2026-06-19
+
+### Changed
+- Correlate REST DB query profiles
+
+## [3.7.45] - 2026-06-19
+
+### Changed
+- Profile REST route DB queries
+
+## [3.7.44] - 2026-06-19
+
+### Changed
+- Resolve REST route matrix budgets
+
+## [3.7.43] - 2026-06-19
+
+### Changed
+- Preserve Codebox typed artifact handoffs
+
+## [3.7.42] - 2026-06-19
+
+### Changed
+- Report REST route matrix artifacts
+
+## [3.7.41] - 2026-06-19
+
+### Changed
+- Add WordPress external HTTP guardrails
+
+## [3.7.40] - 2026-06-19
+
+### Changed
+- Generate REST request cases from route schemas
+
+## [3.7.39] - 2026-06-19
+
+### Changed
+- Add WordPress REST route matrix helper
+
+## [3.7.38] - 2026-06-19
+
+### Changed
+- Thin Codebox artifact adapter boundary
+
+## [3.7.37] - 2026-06-19
+
+### Changed
+- Resolve Codebox helpers from installed runtime
+
+## [3.7.36] - 2026-06-19
+
+### Changed
+- Restore generic runtime CI inputs
+
+## [3.7.35] - 2026-06-19
+
+### Changed
+- Normalize runtime agent task contracts
+
+## [3.7.34] - 2026-06-19
+
+### Changed
+- Mount bundled Agents API for Codebox runtimes
+
+## [3.7.33] - 2026-06-19
+
+### Changed
+- Use shared Codebox core loader
+
+## [3.7.32] - 2026-06-19
+
+### Changed
+- Clean up agent runtime package surface
+
+## [3.7.31] - 2026-06-19
+
+### Fixed
+- Fix Codebox runtime requirements and workspace contract
+
+## [3.7.30] - 2026-06-19
+
+### Changed
+- Centralize Codebox runtime profile compatibility
+
+## [3.7.29] - 2026-06-19
+
+### Changed
+- Consume canonical WordPress runtime settings
+
+## [3.7.28] - 2026-06-19
+
+### Changed
+- Extract generic replay envelope primitives
+- Extract deterministic workspace lifecycle
+- Add explicit runtime execution descriptors
+
+## [3.7.27] - 2026-06-19
+
+### Changed
+- Add generic finding packet fanout helpers
+
+## [3.7.26] - 2026-06-19
+
+### Changed
+- Thin Codebox runtime adapter boundary
+
+## [3.7.25] - 2026-06-19
+
+### Changed
+- Remove Data Machine-specific runtime coupling
+- Decouple agent runtime selection from Codebox
+
+## [3.7.24] - 2026-06-19
+
+### Changed
+- Add standalone agent runtime integrations
+
+## [3.7.23] - 2026-06-19
+
+### Changed
+- Implement OpenCode agent task executor
+
+## [3.7.22] - 2026-06-19
+
+### Changed
+- Add generic seams for WordPress runtime backends
+
+## [3.7.21] - 2026-06-19
+
+### Changed
+- Extract audit fanout runtime provider seam
+
+## [3.7.20] - 2026-06-19
+
+### Changed
+- Quarantine remaining Codebox runtime surfaces
+
+## [3.7.19] - 2026-06-19
+
+### Changed
+- Decouple WordPress agent runtime selection
+
+## [3.7.18] - 2026-06-19
+
+### Changed
+- Register OpenCode agent runtime
+
+## [3.7.17] - 2026-06-18
+
+### Changed
+- Decouple agent runtime selection from Codebox
+
+## [3.7.16] - 2026-06-18
+
+### Changed
+- Add generic fanout reconcile workflow
+
+## [3.7.15] - 2026-06-18
+
+### Changed
+- Remove Data Machine agent CI workflow wrapper
+
+## [3.7.14] - 2026-06-18
+
+### Changed
+- Project Codebox transcripts as typed artifacts
+
+### Fixed
+- never fail the wordpress lint gate on a missing sidecar writer
+
+## [3.7.13] - 2026-06-18
+
+### Changed
+- Add generic runtime agent full-run workflow
+
+## [3.7.12] - 2026-06-18
+
+### Changed
+- Generalize runtime profile defaults
+
+## [3.7.11] - 2026-06-18
+
+### Changed
+- Centralize Codebox runtime profiles
+
+## [3.7.10] - 2026-06-18
+
+### Changed
+- Add generic runtime output projections
+
+## [3.7.9] - 2026-06-18
+
+### Changed
+- Add runtime execution descriptors to agent CI
+
+## [3.7.8] - 2026-06-18
+
+### Changed
+- Forward Codebox runtime profiles
+
+## [3.7.7] - 2026-06-18
+
+### Changed
+- Add generic Codebox runtime invocation config
+
+## [3.7.6] - 2026-06-18
+
+### Fixed
+- aggregate host-smoke failures instead of failing one per run (#4682)
+
+## [3.7.5] - 2026-06-18
+
+### Fixed
+- neutralize runtime version setting
+
+## [3.7.4] - 2026-06-18
+
+### Fixed
+- repair DB-activation PHPUnit smoke canary on main
+
+## [3.7.3] - 2026-06-18
+
+### Changed
+- Enforce generic runtime boundaries
+
+## [3.7.2] - 2026-06-18
+
+### Changed
+- Genericize adapter fixture examples
+
+## [3.7.1] - 2026-06-18
+
+### Changed
+- Add runtime provider resolver groundwork
+
+### Fixed
+- Fix fanout reconcile runner task determinism
+
+## [3.7.0] - 2026-06-18
+
+### Added
+- add static-site fanout adapter
+
 ## [3.6.1] - 2026-06-18
 
 ### Changed

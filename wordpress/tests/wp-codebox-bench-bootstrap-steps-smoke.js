@@ -52,6 +52,7 @@ if (process.argv[2] !== 'recipe-run' || recipeIndex < 0) {
   process.exit(2);
 }
 const recipe = JSON.parse(fs.readFileSync(process.argv[recipeIndex + 1], 'utf8'));
+const wordpressDependencies = JSON.parse(process.env.HOMEBOY_WORDPRESS_DEPENDENCIES_JSON || '[]');
 if (process.env.HOMEBOY_FORCE_BOOTSTRAP_FAILURE === '1') {
   process.stdout.write(JSON.stringify({
     success: false,
@@ -66,7 +67,11 @@ process.stdout.write(JSON.stringify({
     component_id: 'bootstrap-steps-fixture',
     iterations: 1,
     warmup_iterations: 0,
-    scenarios: [{ id: 'assert-bootstrap', metrics: { bootstrap_seen: 1 } }]
+    scenarios: [{ id: 'assert-bootstrap', metrics: { bootstrap_seen: 1 } }],
+    metadata: {
+      dependency_env: wordpressDependencies,
+      dependency_paths_env: process.env.HOMEBOY_WORDPRESS_DEPENDENCY_PATHS || ''
+    }
   }
 }) + '\\n');
 `);
@@ -109,6 +114,10 @@ homeboy_resolve_context() {
       },
     ],
     wp_codebox_core_module: fixtureCoreModule,
+    wordpress_runtime_blueprint: { features: { canonicalRuntimeSettings: true } },
+    wordpress_runtime_workloads: [
+      { id: 'canonical-workload', steps: [{ type: 'php', code: 'return [];' }] },
+    ],
     wp_codebox_extra_plugins: [
       { source: '/tmp/runtime-prerequisite', slug: 'runtime-prerequisite', activate: true },
     ],
@@ -155,6 +164,8 @@ homeboy_resolve_context() {
   assert.equal(recipe.inputs.extra_plugins.some((plugin) => plugin.slug === 'woocommerce-gateway-stripe'), true);
   assert.deepEqual(recipe.inputs.extra_plugins.find((plugin) => plugin.slug === 'runtime-prerequisite'), settings.wp_codebox_extra_plugins[0]);
   assert.deepEqual(recipe.inputs.pluginRuntime.setup, settings.wp_codebox_bootstrap_steps);
+  assert.deepEqual(recipe.runtime.blueprint.features, { canonicalRuntimeSettings: true });
+  assert.deepEqual(recipe.inputs.workloads, settings.wordpress_runtime_workloads);
   assert.equal(recipe.workflow.steps[0].command, 'wordpress.bench');
 
   const successResults = JSON.parse(fs.readFileSync(path.join(root, 'success-results.json'), 'utf8'));
@@ -170,6 +181,18 @@ homeboy_resolve_context() {
   assert.deepEqual(stripePrepared.build_commands, ['npm run build']);
   assert.equal(stripePrepared.runtime_requirements.node.node, '>=20');
   assert.equal(stripePrepared.runtime_requirements.node.npm, '>=10');
+  const wordpressDependencies = successResults.metadata.wordpress_dependencies;
+  assert.equal(Array.isArray(wordpressDependencies), true);
+  const stripeDependency = wordpressDependencies.find((dependency) => dependency.slug === 'woocommerce-gateway-stripe');
+  assert.equal([stripeDependencyPath, fs.realpathSync(stripeDependencyPath)].includes(stripeDependency.path), true);
+  assert.equal([stripeDependencyPath, fs.realpathSync(stripeDependencyPath)].includes(stripeDependency.local_path), true);
+  assert.equal(stripeDependency.runner_path, '/wordpress/wp-content/plugins/woocommerce-gateway-stripe');
+  assert.equal(stripeDependency.source, 'local');
+  assert.equal(stripeDependency.ref, 'fixture-revision');
+  assert.equal(stripeDependency.plugin_file, 'woocommerce-gateway-stripe/woocommerce-gateway-stripe.php');
+  assert.equal(stripeDependency.resolved_by, 'wp-codebox-bench-prepare');
+  assert.deepEqual(successResults.metadata.dependency_env, wordpressDependencies);
+  assert.equal(successResults.metadata.dependency_paths_env.includes(stripeDependencyPath), true);
 
   const scopedCoreResult = spawnSync('bash', [path.join(extensionPath, 'scripts', 'bench', 'bench-runner.sh')], {
     cwd: componentPath,

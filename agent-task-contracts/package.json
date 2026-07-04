@@ -1,0 +1,13 @@
+{
+  "name": "homeboy-agent-task-core-contracts",
+  "description": "Incubating Homeboy core agent-task public contract surface for extension runtimes.",
+  "version": "1.0.0",
+  "private": true,
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js"
+  },
+  "engines": {
+    "node": ">=18.12.0"
+  }
+}

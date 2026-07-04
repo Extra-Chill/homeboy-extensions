@@ -21,20 +21,89 @@ const {
   agentTaskEvidenceRefFromRef,
   agentTaskProviderContractFields,
   providerDefaultsContract,
-} = require('../../lib/agent-task-provider-contract');
+} = require('../../../agent-task-contracts');
 const {
   normalizeAgentTaskOutcome,
   providerFailureClassification,
-} = require('./provider-outcome-normalizer');
-
-const WP_CODEBOX_TASK_REQUEST_SCHEMA = 'wp-codebox/task-input/v1';
-const WP_CODEBOX_PROVIDER_ID = 'wordpress.codebox-agent-task-executor';
-const WP_CODEBOX_PROVIDER_LABEL = 'WP Codebox agent task executor';
-const WP_CODEBOX_BACKEND = 'codebox';
+} = require('../../../runtime-agent-ci/lib/agent-task-outcome-normalizer');
+const {
+  SECRET_ENV_PLAN_SCHEMA,
+} = require('../../../runtime-agent-ci/lib/runtime-contracts.cjs');
+const {
+  artifactResultEnvelopeFromCodeboxResult,
+  artifactNameFromDeclaration,
+  normalizeCodeboxArtifactDeclaration,
+  normalizeCodeboxArtifactOutcome: normalizeCodeboxArtifactOutcomeContract,
+  normalizeTypedArtifacts: normalizeCodeboxTypedArtifacts,
+  typedArtifactsFromCodeboxResult,
+} = require('./codebox-artifact-contract');
+const {
+  codeboxPublicResultEnvelope,
+  publicEnvelopeBoundaryDiagnostic,
+} = require('./codebox-result-boundary');
+const {
+  codeboxRuntimeComponentContracts,
+  codeboxRuntimeProfilePayload,
+} = require('./codebox-runtime-profile');
+const {
+  WP_CODEBOX_BACKEND,
+  WP_CODEBOX_AGENT_FANOUT_REQUEST_SCHEMA,
+  WP_CODEBOX_PROVIDER_ID,
+  WP_CODEBOX_PROVIDER_LABEL,
+  WP_CODEBOX_PROVIDER_RUNTIME_ABILITY_NAMES,
+  WP_CODEBOX_PROVIDER_RUNTIME_INVOCATION_CONTRACT_SCHEMA,
+  WP_CODEBOX_PROVIDER_RUNTIME_RESULT_SCHEMAS,
+  WP_CODEBOX_PROVIDER_RUNTIME_TASK_NAMES,
+  WP_CODEBOX_ROLE_ALIASES,
+  WP_CODEBOX_TASK_REQUEST_SCHEMA,
+  WP_CODEBOX_UPSTREAM_PRIMITIVE_REQUIREMENTS,
+  WP_CODEBOX_WORKSPACE_MOUNT_KIND,
+  wpCodeboxAgentFanoutAdapterContract,
+  wpCodeboxProviderRuntimeInvocationContract,
+  wpCodeboxProviderRuntimeOperationEntry,
+} = require('./wp-codebox-adapter-contract');
+const {
+  WP_CODEBOX_RUN_AGENT_TASK_REQUEST_SCHEMA,
+} = require('./codebox-run-agent-task-contract');
+const {
+  wpCodeboxProviderPluginPathsFromEnv,
+  wpCodeboxBin,
+} = require('./wp-codebox-adapter-descriptor');
+const {
+  assertProviderCredentialBoundaryNamesOnly,
+  providerCredentialBoundary,
+  providerCredentialRequestFields,
+} = require('./provider-credential-boundary');
 
 const RUNTIME_MANIFEST_PATH = path.resolve(__dirname, '..', 'wp-codebox.json');
-const RUNTIME_OVERLAY_CANONICAL_SHAPE = 'runtime_overlays entries must be objects with a non-empty string kind, for example { "kind": "bundled-library", "library": "php-ai-client", "source": "/path/to/php-ai-client" }. The legacy type field is not accepted.';
+// The full-run runner materializes its dependency checkouts into `.ci/` inside
+// the target repo working tree (see materialize-dependencies.cjs). Those clones
+// are untracked relative to the target repo's HEAD, so the sandbox workspace
+// diff would otherwise report every materialized file as an agent change. The
+// runner owns that directory, so it excludes its own materialization from the
+// captured workspace patch; genuine agent changes outside `.ci/` are retained.
+const RUNNER_MATERIALIZATION_EXCLUDE_PATHS = Object.freeze(['.ci/**']);
+const RUNTIME_OVERLAY_CANONICAL_SHAPE = 'runtime_overlays entries must be objects. WP Codebox owns the runtime overlay schema and reports field-level validation.';
+const RUNTIME_EXECUTION_DESCRIPTOR_SCHEMA = 'homeboy/runtime-execution/v1';
+const AGENT_TASK_EVENT_SCHEMA = 'homeboy/agent-task-event/v1';
 const PROVIDER_CAPABILITIES = runtimeProviderCapabilities();
+const HOMEBOY_RUN_RUNTIME_PACKAGE_ABILITY = 'homeboy/run-runtime-package';
+const WP_CODEBOX_RUN_RUNTIME_PACKAGE_ABILITY = 'wp-codebox/run-runtime-package';
+const WP_CODEBOX_RUNTIME_PACKAGE_TASK_SCHEMA = 'wp-codebox/runtime-package-task/v1';
+
+// The wp-codebox native agent-run ability is the OUTER invocation the runner
+// drives via the `run-agent-task` CLI command; it is not a delegated ability
+// that runs inside the sandbox. A profile must still declare it as
+// runtime_task_ability to satisfy the runner contract, but when it surfaces as
+// the resolved inner runtime task we suppress the sandbox-side runtime_task so
+// the sandbox runs its native agents/chat loop with the agent + goal already
+// present in the task input. A non-empty inner runtime_task would otherwise make
+// the sandbox self-delegate wp-codebox/run-agent-task with an input that lacks
+// goal. Runtime-native agent task invocation uses no inner runtime_task.
+const WP_CODEBOX_NATIVE_AGENT_RUN_ABILITIES = new Set([
+  'wp-codebox/run-agent-task',
+  'wp-codebox/agent-task-run',
+]);
 
 const AGENT_BUNDLE_CONFIG_FIELDS = [
   'bundle_path',
@@ -56,8 +125,12 @@ const AGENT_BUNDLE_CONFIG_FIELDS = [
   'pipeline_step_patches',
   'flow_step_patches',
   'tool_recorders',
+  'evidence_projections',
   'ability_tools',
   'engine_data_outputs',
+  'runtime_output_projections',
+  'runtime_task_ability',
+  'runtime_bundle_ability',
   'engine_key',
   'tool_results_key',
   'artifact_export_config',
@@ -86,28 +159,17 @@ const AGENT_BUNDLE_TRIGGER_FIELDS = AGENT_BUNDLE_CONFIG_FIELDS.filter((field) =>
   'provider_plugin_paths',
 ].includes(field));
 
-const LEGACY_RUNTIME_PREFIX = ['data', 'machine'].join('_');
-const LEGACY_BUNDLE_KEYS = [
-  `${LEGACY_RUNTIME_PREFIX}_bundle`,
-  `${LEGACY_RUNTIME_PREFIX}Bundle`,
+const WP_CODEBOX_RUNTIME_GAP_TRACKERS = [
+  {
+    gap: 'runtime-profile-normalizer',
+    needed_primitive: 'WP Codebox should export a stable runtime-profile builder/normalizer that accepts Homeboy-provided component contracts, provider plugin paths, runtime env, overlays, and parent-tool bridge declarations without Homeboy reshaping dependency fields locally.',
+  },
+  {
+    gap: 'typed-artifact-dto-normalizer',
+    needed_primitive: 'WP Codebox should export a stable typed-artifact DTO normalizer compatible with Homeboy agent-task typed artifact declarations while allowing caller-owned metadata redaction policy.',
+  },
 ];
-
-const WP_CODEBOX_RUNTIME_GAP_TRACKERS = [];
-
-const WP_CODEBOX_ROLE_ALIASES = {
-  artifact_kinds: {
-    patch: ['codebox-patch'],
-  },
-  artifact_filenames: {
-    preflight_evidence: ['homeboy-codebox-task-runner.json'],
-  },
-  outputs: {
-    provider_run_result: ['codebox_run_result'],
-  },
-  metadata: {
-    provider_run_result: ['codebox_run_result'],
-  },
-};
+const WP_CODEBOX_BUILTIN_ARTIFACT_DECLARATION_NAMES = new Set(['patch', 'agent_result', 'transcript']);
 
 function assertAgentTaskRequest(request) {
   if (!request || request.schema !== AGENT_TASK_REQUEST_SCHEMA) {
@@ -118,7 +180,7 @@ function assertAgentTaskRequest(request) {
   }
   const backend = request.executor?.backend;
   if (backend !== WP_CODEBOX_BACKEND) {
-    throw new Error('WP Codebox executor provider only accepts executor.backend "codebox".');
+    throw new Error('WP Codebox executor provider only accepts executor.backend "wp-codebox".');
   }
 }
 
@@ -128,20 +190,29 @@ function providerContract(options = {}) {
     id: options.id || WP_CODEBOX_PROVIDER_ID,
     label: options.label || WP_CODEBOX_PROVIDER_LABEL,
     backend: WP_CODEBOX_BACKEND,
+    runtime_id: options.runtimeId || options.runtime_id || runtimeManifest().id || 'wp-codebox',
     command: options.command || 'node {{runtime_path}}/scripts/agent/homeboy-codebox-agent-task-executor.cjs',
     invocation: runtimeCommandInvocation(options),
     ...agentTaskProviderContractFields(),
     secret_env_requirements: options.secretEnvRequirements || runtimeSecretEnvRequirements(),
     capabilities: normalizeArray(options.capabilities || PROVIDER_CAPABILITIES),
+    runtime_execution_contracts: runtimeExecutionContracts(),
     workspace_materialization: {
       cwd: 'git_checkout',
     },
     runner_readiness: runtimeRunnerReadiness(options),
+    runner_sources: runtimeRunnerSources(options),
     workspace_tools: runtimeWorkspaceTools(options),
     component_path_defaults: runtimeComponentPathDefaults(options),
+    provider_metadata: runtimeExecutorManifest().provider_metadata,
     provider_defaults: providerDefaultsContract(runtimeProviderDefaults()),
     provider_preflight: runtimeProviderPreflight(),
+    provider_credential_boundary: providerCredentialBoundary(),
+    provider_runtime_invocation: providerRuntimeInvocationContract(),
+    agent_fanout_adapter: wpCodeboxAgentFanoutAdapterContract(),
+    config_preflights: runtimeExecutorManifest().config_preflights,
     role_aliases: WP_CODEBOX_ROLE_ALIASES,
+    upstream_primitive_requirements: WP_CODEBOX_UPSTREAM_PRIMITIVE_REQUIREMENTS,
     status: 'active',
     integration_contract: 'homeboy-wordpress-agent-task/v1',
     runtime_gap_trackers: WP_CODEBOX_RUNTIME_GAP_TRACKERS,
@@ -162,6 +233,10 @@ function runtimeCommandInvocation(options = {}) {
 
 function runtimeProviderCapabilities() {
   return normalizeArray(runtimeExecutorManifest().capabilities);
+}
+
+function runtimeExecutionContracts() {
+  return firstObject(runtimeExecutorManifest().runtime_execution_contracts, runtimeExecutorManifest().execution_contracts) || {};
 }
 
 function runtimeWorkspaceTools(options = {}) {
@@ -188,6 +263,68 @@ function runtimeComponentDiscovery(options = {}) {
   return firstObject(options.componentDiscovery, runtimeComponentPathDefaults(options).discovery) || {};
 }
 
+function providerRuntimeInvocationContract() {
+  return wpCodeboxProviderRuntimeInvocationContract();
+}
+
+function providerRuntimeInvocationFromConfig(config = {}, inputs = {}, options = {}) {
+  const requested = firstDefined(
+    inputs.provider_runtime_invocation,
+    inputs.providerRuntimeInvocation,
+    inputs.runtime_invocation,
+    inputs.runtimeInvocation,
+    config.provider_runtime_invocation,
+    config.providerRuntimeInvocation,
+    config.runtime_invocation,
+    config.runtimeInvocation,
+    options.providerRuntimeInvocation,
+    options.provider_runtime_invocation,
+    options.runtimeInvocation,
+    options.runtime_invocation,
+  );
+  if (requested === undefined) {
+    return providerRuntimeInvocationContract();
+  }
+
+  const contract = providerRuntimeInvocationContract();
+  const operationEntries = providerRuntimeOperationEntries(requested);
+  if (operationEntries.length === 0) {
+    return contract;
+  }
+
+  return {
+    ...contract,
+    operations: Object.fromEntries(operationEntries),
+  };
+}
+
+function providerRuntimeOperationEntries(requested) {
+  if (Array.isArray(requested)) {
+    return requested
+      .map((operation) => providerRuntimeOperationEntry(operation))
+      .filter(Boolean);
+  }
+  if (!requested || typeof requested !== 'object') {
+    return [];
+  }
+  const operations = requested.operations || requested.provider_operations || requested.providerOperations || requested.tasks || requested.abilities || requested;
+  if (Array.isArray(operations)) {
+    return operations
+      .map((operation) => providerRuntimeOperationEntry(operation))
+      .filter(Boolean);
+  }
+  if (!operations || typeof operations !== 'object') {
+    return [];
+  }
+  return Object.entries(operations)
+    .map(([key, operation]) => providerRuntimeOperationEntry(operation, key))
+    .filter(Boolean);
+}
+
+function providerRuntimeOperationEntry(operation, fallbackKey = '') {
+  return wpCodeboxProviderRuntimeOperationEntry(operation, fallbackKey);
+}
+
 function runtimeProviderDefaults() {
   return firstObject(runtimeExecutorManifest().provider_defaults) || {};
 }
@@ -200,6 +337,10 @@ function runtimeRunnerReadiness(options = {}) {
   return normalizeArray(options.runnerReadiness || options.runner_readiness || runtimeExecutorManifest().runner_readiness);
 }
 
+function runtimeRunnerSources(options = {}) {
+  return normalizeArray(options.runnerSources || options.runner_sources || runtimeExecutorManifest().runner_sources);
+}
+
 function runtimeSecretEnvRequirements() {
   return normalizeArray(runtimeExecutorManifest().secret_env_requirements);
 }
@@ -207,32 +348,41 @@ function runtimeSecretEnvRequirements() {
 function codeboxTaskRequestFromAgentTaskRequest(request, options = {}) {
   assertAgentTaskRequest(request);
   const config = request.executor.config || {};
+  assertProviderCredentialBoundaryNamesOnly(request.executor || {});
+  assertProviderCredentialBoundaryNamesOnly(config);
+  assertProviderCredentialBoundaryNamesOnly(request.inputs || {});
   const runtimeOptions = runtimeOptionsFromExecutorConfig(config, options);
   const inputs = request.inputs || {};
+  const clientContext = agentTaskClientContext(request, config, inputs, runtimeOptions);
+  const clientInputs = firstObject(clientContext.inputs) || {};
   const defaults = defaultCodeboxRuntimeConfig(request, config, inputs, runtimeOptions);
   const workspaceMaterialization = defaultWorkspaceMaterialization(defaults.workspaceRoot, request, config, inputs, runtimeOptions);
   const target = defaultWorkspaceTargetPayload(inputs.target || request.workspace || {}, workspaceMaterialization);
   const agentBundle = agentBundleConfigFromAgentTaskRequest(request, config, inputs);
-  const recipe = recipeConfigFromAgentTaskRequest(request, config, inputs);
-  const mounts = agentBundleMounts(agentBundle, config.runtime_mounts || config.mounts || defaults.mounts || runtimeOptions.mounts || []);
-  const componentContracts = componentContractsFromAgentTaskRequest(request, config, runtimeOptions);
-  const components = runtimeComponentPaths(config, { ...defaults, ...runtimeOptions, componentContracts });
+  const recipe = recipeConfigFromAgentTaskRequest(request, config, inputs, runtimeOptions);
+  const runtimeRequirementsForMounts = firstObject(config.runtime_requirements, config.runtimeRequirements) || {};
+  const mounts = agentBundleMounts(agentBundle, config.runtime_mounts || config.mounts || runtimeRequirementsForMounts.runtime_mounts || runtimeRequirementsForMounts.mounts || defaults.mounts || runtimeOptions.mounts || []);
   const agentBundles = firstDefined(inputs.agent_bundles, inputs.agentBundles, config.agent_bundles, config.agentBundles, runtimeOptions.agentBundles, []);
+  const provider = config.provider || runtimeOptions.provider || defaults.provider || '';
+  const model = request.executor.model || config.model || runtimeOptions.model || defaults.model || '';
+  const runtimeTask = runtimeTaskWithExecutionDefaults(
+    inputs.runtime_task || config.runtime_task,
+    { provider, model, agentBundles, runtimePackage: runtimePackageDefaultFromProfile(config, runtimeOptions), workspaceTarget: defaults.workspaceRoot ? defaultWorkspaceTarget(defaults.workspaceRoot) : '', request, config, inputs }
+  );
+  let componentContracts = componentContractsFromAgentTaskRequest(request, config, runtimeOptions);
+  let components = runtimeComponentPaths(config, { ...defaults, ...runtimeOptions, componentContracts });
   const structuredArtifacts = firstDefined(inputs.structured_artifacts, inputs.structuredArtifacts, config.structured_artifacts, config.structuredArtifacts, runtimeOptions.structuredArtifacts, []);
-  const artifactDeclarations = artifactDeclarationsFromAgentTaskRequest(request, config, inputs, runtimeOptions);
+  const artifactDeclarations = codeboxTaskArtifactDeclarations(artifactDeclarationsFromAgentTaskRequest(request, config, inputs, runtimeOptions));
   const homeboyToolPolicy = homeboyAgentToolPolicy();
   const allowedTools = allowedToolsFromAgentTaskRequest(request, config, inputs, runtimeOptions, defaults);
   const sandboxToolPolicy = sandboxToolPolicyFromAgentTaskRequest(config, inputs, runtimeOptions, defaults, allowedTools, homeboyToolPolicy);
-  const sandboxAllowedTools = allowedToolsForSandboxPolicy(allowedTools, sandboxToolPolicy);
-  const provider = config.provider || runtimeOptions.provider || defaults.provider || '';
-  const model = request.executor.model || config.model || runtimeOptions.model || defaults.model || '';
+  const sandboxAllowedTools = allowedToolsForHomeboyToolPolicy(allowedTools, homeboyToolPolicy);
   const homeboySecretEnvPlan = homeboyAgentTaskSecretEnvPlan();
   const plannedSecretEnv = secretEnvNamesFromPlan(homeboySecretEnvPlan);
   const agent = firstValue(config.agent, runtimeOptions.agent, '');
-  const runtimeTask = runtimeTaskWithExecutionDefaults(
-    inputs.runtime_task || inputs.runtimeTask || config.runtime_task || config.runtimeTask || abilityRuntimeTaskFromAgentTaskRequest(request, config, inputs) || runtimeOptions.runtimeTask,
-    { provider, model, agentBundles }
-  );
+  const abilityRequirements = runtimeAbilityRequirements(runtimeTask, request, config, inputs, runtimeOptions);
+  const providerRuntimeInvocation = providerRuntimeInvocationFromConfig(config, inputs, runtimeOptions);
+  const codeboxFanoutRequest = codeboxFanoutRequestFromAgentTaskRequest(request, config, inputs, runtimeOptions);
   const explicitSecretEnv = [
     ...(plannedSecretEnv.length > 0 ? plannedSecretEnv : normalizeArray(request.executor?.secret_env)),
     ...normalizeArray(config.secret_env),
@@ -242,7 +392,19 @@ function codeboxTaskRequestFromAgentTaskRequest(request, options = {}) {
   const timeoutMs = request.limits?.timeout_ms || request.limits?.max_runtime_ms;
   const timeoutFromMs = timeoutMs ? Math.ceil(timeoutMs / 1000) : undefined;
   const runtimeOverlays = runtimeOverlaysFromConfig(config, runtimeOptions, defaults);
+  const runtimeRequirements = codeboxRuntimeRequirementsFromAgentTaskRequest(config, runtimeOptions, defaults, componentContracts, runtimeOverlays);
+  componentContracts = codeboxRuntimeComponentContracts({
+    componentContracts: [
+      ...componentContracts,
+      ...normalizeArray(runtimeRequirements.component_contracts),
+    ],
+  });
+  components = runtimeComponentPaths(config, { ...defaults, ...runtimeOptions, componentContracts });
+  const sandboxRuntimeTask = sandboxRuntimeTaskForNativeAgentRun(runtimeTask);
+  const runtimeTaskAbilityNormalization = runtimeTaskAbilityNormalizationEvidence(sandboxRuntimeTask);
   const context = {
+    ...clientContext,
+    ...(clientInputs.context || {}),
     ...(inputs.context || {}),
     agent_task_id: request.task_id,
     group_key: request.group_key,
@@ -254,17 +416,22 @@ function codeboxTaskRequestFromAgentTaskRequest(request, options = {}) {
 
   return {
     schema: WP_CODEBOX_TASK_REQUEST_SCHEMA,
-    goal: request.instructions,
+    goal: request.goal || request.instructions,
     target,
     workspace_materialization: workspaceMaterialization,
     allowed_tools: sandboxAllowedTools || [],
-    expected_artifacts: request.expected_artifacts || [],
+    expected_artifacts: expectedArtifactsForCodeboxTask(request, artifactDeclarations),
     artifact_declarations: artifactDeclarations,
     policy: request.policy || {},
     context,
     recipe,
     sandbox_tool_policy: sandboxToolPolicy,
-    runtime_task: runtimeTask,
+    ...(sandboxRuntimeTask ? { runtime_task: sandboxRuntimeTask } : {}),
+    ...(runtimeTaskAbilityNormalization ? { runtime_task_ability_normalization: runtimeTaskAbilityNormalization } : {}),
+    ability_requirements: abilityRequirements,
+    callback_data: firstDefined(inputs.callback_data, inputs.callbackData, config.callback_data, config.callbackData, runtimeOptions.callbackData),
+    provider_runtime_invocation: providerRuntimeInvocation,
+    ...(codeboxFanoutRequest ? { fanout_request: codeboxFanoutRequest } : {}),
     ability_tools: firstDefined(inputs.ability_tools, inputs.abilityTools, config.ability_tools, config.abilityTools, runtimeOptions.abilityTools, []),
     structured_artifacts: structuredArtifacts,
     sandbox_session_id: config.sandbox_session_id || request.task_id,
@@ -274,8 +441,8 @@ function codeboxTaskRequestFromAgentTaskRequest(request, options = {}) {
     provider,
     model,
     provider_plugin_paths: firstNonEmptyArray(
-      config.provider_plugin_paths,
       runtimeOptions.providerPluginPaths,
+      config.provider_plugin_paths,
       defaults.providerPluginPaths,
       []
     ),
@@ -283,14 +450,14 @@ function codeboxTaskRequestFromAgentTaskRequest(request, options = {}) {
     runtime_stack_mounts: config.runtime_stack_mounts || runtimeOptions.runtimeStackMounts || [],
     runtime_overlay_profiles: config.runtime_overlay_profiles || config.runtimeOverlayProfiles || runtimeOptions.runtimeOverlayProfiles || defaults.runtimeOverlayProfiles || [],
     runtime_overlays: runtimeOverlays,
-    runtime_env: {
-      ...firstDefined(config.runtime_env, config.runtimeEnv, config.wp_codebox_runtime_env, runtimeOptions.runtimeEnv, defaults.runtimeEnv, {}),
-      ...homeboyAgentToolContractEnv(),
-      ...datamachineHostToolPolicyEnv(),
-    },
+    runtime_requirements: runtimeRequirements,
+    runtime_env: runtimeEnvWithComponentPaths({
+      ...firstObject(config.runtime_env, config.runtimeEnv, config.wp_codebox_runtime_env, runtimeOptions.runtimeEnv, defaults.runtimeEnv, {}),
+      ...runtimeEnvAliasesFromSourceEnv(runtimeOptions.runtimeEnvAliases),
+    }, components),
     runtime_state_mounts: firstDefined(config.runtime_state_mounts, config.runtimeStateMounts, config.wp_codebox_runtime_state_mounts, runtimeOptions.runtimeStateMounts, defaults.runtimeStateMounts, []),
     runtime_config_mounts: firstDefined(config.runtime_config_mounts, config.runtimeConfigMounts, config.wp_codebox_runtime_config_mounts, runtimeOptions.runtimeConfigMounts, defaults.runtimeConfigMounts, []),
-    secret_env: explicitSecretEnv.length > 0 ? Array.from(new Set(explicitSecretEnv)) : defaults.secretEnv || [],
+    ...providerCredentialRequestFields({ secret_env: explicitSecretEnv.length > 0 ? explicitSecretEnv : defaults.secretEnv || [] }),
     // Post-agent verification gate (recipe workflow.after). Supplied as WP
     // Codebox recipe steps; a non-zero exit fails the run so the orchestrator
     // refuses to report success until the gates are green.
@@ -301,8 +468,15 @@ function codeboxTaskRequestFromAgentTaskRequest(request, options = {}) {
     component_contracts: componentContracts,
     homeboy_path: config.homeboy || config.homeboy_path || runtimeOptions.homeboy || '',
     homeboy_extensions_path: config.homeboy_extensions || config.homeboy_extensions_path || runtimeOptions.homeboyExtensions || '',
-    wp_codebox_bin: firstValue(config.runtime_bin, config.wp_codebox_bin, config.wpCodeboxBin, runtimeOptions.wpCodeboxBin, defaults.wpCodeboxBin, ''),
-    wp: config.runtime_wordpress_version || config.wp_codebox_wordpress_version || config.wpCodeboxWordpressVersion || config.wp || config.wordpress_version || runtimeOptions.wpCodeboxWordpressVersion || '',
+    wp_codebox_bin: wpCodeboxBin({
+      runtime_bin: config.runtime_bin,
+      wp_codebox_bin: config.wp_codebox_bin,
+      wpCodeboxBin: config.wpCodeboxBin || runtimeOptions.wpCodeboxBin || defaults.wpCodeboxBin,
+      env: process.env,
+      executable: '',
+      preferPackagedRuntime: Boolean(process.env.HOMEBOY_WP_CODEBOX_RUNTIME_COMPONENT || process.env.WP_CODEBOX_RUNTIME_COMPONENT),
+    }),
+    wp: config.runtime_wordpress_version || config.wordpress_runtime_version || config.wordpress_version || config.wp_codebox_wordpress_version || config.wpCodeboxWordpressVersion || config.wp || runtimeOptions.wpCodeboxWordpressVersion || '',
     artifacts_path: config.artifacts || config.artifacts_path || runtimeOptions.artifacts || '',
     max_turns: config.max_turns || runtimeOptions.maxTurns,
     task_timeout_seconds: config.task_timeout_seconds || timeoutSeconds || timeoutFromMs || runtimeOptions.taskTimeoutSeconds,
@@ -317,27 +491,174 @@ function codeboxTaskRequestFromAgentTaskRequest(request, options = {}) {
   };
 }
 
-function runtimeOptionsFromExecutorConfig(config = {}, options = {}) {
-  const directComponentPathDefaults = firstObject(config.component_path_defaults, config.componentPathDefaults);
-  const runtimeProfile = runtimeProfileFromExecutorConfig(config, options);
-  const runtimeRequirements = firstObject(config.runtime_requirements, config.runtimeRequirements) || {};
-  const componentPathDefaults = directComponentPathDefaults || firstObject(options.componentPathDefaults, options.component_path_defaults, runtimeRequirements.component_path_defaults, runtimeRequirements.componentPathDefaults, runtimeProfile.component_path_defaults, runtimeProfile.componentPathDefaults);
+function codeboxFanoutRequestFromAgentTaskRequest(request, config = {}, inputs = {}, runtimeOptions = {}) {
+  const source = firstObject(
+    inputs.codebox_fanout_request,
+    inputs.codeboxFanoutRequest,
+    inputs.fanout_request,
+    inputs.fanoutRequest,
+    config.codebox_fanout_request,
+    config.codeboxFanoutRequest,
+    config.fanout_request,
+    config.fanoutRequest,
+    runtimeOptions.codeboxFanoutRequest,
+    runtimeOptions.fanoutRequest
+  );
+  if (!source) {
+    return null;
+  }
+  const workers = normalizeArray(source.workers).map((worker, index) => {
+    const metadata = firstObject(worker.metadata) || {};
+    const runtimeTask = fanoutWorkerRuntimeTask(worker, request, config, runtimeOptions);
+    const sandboxRuntimeTask = sandboxRuntimeTaskForNativeAgentRun(runtimeTask);
+    const runtimeTaskAbilityNormalization = runtimeTaskAbilityNormalizationEvidence(sandboxRuntimeTask);
+    return withoutUndefinedValues({
+      ...worker,
+      id: firstValue(worker.id, worker.worker_id, `${request.task_id}-worker-${index + 1}`),
+      goal: firstValue(worker.goal, worker.task, request.instructions),
+      agent: firstValue(worker.agent, source.agent, config.agent, runtimeOptions.agent),
+      dependsOn: normalizeArray(firstValue(worker.dependsOn, worker.depends_on)),
+      artifactNamespace: firstValue(worker.artifactNamespace, worker.artifact_namespace, `${request.task_id}/${index + 1}`),
+      ...(sandboxRuntimeTask ? { runtime_task: sandboxRuntimeTask } : {}),
+      ...(runtimeTaskAbilityNormalization ? { runtime_task_ability_normalization: runtimeTaskAbilityNormalization } : {}),
+      ability_requirements: runtimeTask?.ability ? uniqueStrings([runtimeTask.ability, ...normalizeArray(worker.ability_requirements), ...normalizeArray(worker.abilityRequirements)]) : firstDefined(worker.ability_requirements, worker.abilityRequirements),
+      metadata: {
+        ...metadata,
+        homeboy_task_id: request.task_id,
+        parent_plan_id: request.parent_plan_id,
+        group_key: request.group_key,
+      },
+    });
+  });
+
+  return withoutUndefinedValues({
+    ...source,
+    schema: WP_CODEBOX_AGENT_FANOUT_REQUEST_SCHEMA,
+    workers,
+    agent: firstValue(source.agent, config.agent, runtimeOptions.agent),
+    orchestrator: {
+      ...(firstObject(source.orchestrator) || {}),
+      agent_task_id: request.task_id,
+      parent_plan_id: request.parent_plan_id,
+      group_key: request.group_key,
+      provider: firstValue(config.provider, runtimeOptions.provider),
+      model: firstValue(request.executor?.model, config.model, runtimeOptions.model),
+      secret_env_names: normalizeArray(request.executor?.secret_env),
+    },
+    metadata: {
+      ...(firstObject(source.metadata) || {}),
+      homeboy_agent_task: {
+        task_id: request.task_id,
+        parent_plan_id: request.parent_plan_id,
+        group_key: request.group_key,
+      },
+    },
+  });
+}
+
+function fanoutWorkerRuntimeTask(worker = {}, request = {}, config = {}, runtimeOptions = {}) {
+  const runtimeTask = firstObject(worker.runtime_task, worker.runtimeTask);
+  if (runtimeTask) {
+    return runtimeTaskWithExecutionDefaults(runtimeTask, fanoutWorkerRuntimeTaskDefaults(worker, request, config, runtimeOptions));
+  }
+
+  const abilityRequest = firstObject(worker.ability_request, worker.abilityRequest);
+  const ability = firstValue(
+    abilityRequest?.id,
+    abilityRequest?.name,
+    abilityRequest?.ability,
+    typeof worker.ability === 'string' ? worker.ability : '',
+    worker.ability_name,
+    worker.abilityName
+  );
+  if (!ability || typeof ability !== 'string') {
+    return null;
+  }
+
+  return runtimeTaskWithExecutionDefaults({
+    ability,
+    input: firstObject(abilityRequest?.input, abilityRequest?.args, worker.ability_input, worker.abilityInput, worker.input) || {},
+  }, fanoutWorkerRuntimeTaskDefaults(worker, request, config, runtimeOptions));
+}
+
+function fanoutWorkerRuntimeTaskDefaults(worker = {}, request = {}, config = {}, runtimeOptions = {}) {
   return {
-    ...options,
+    provider: firstValue(worker.provider, config.provider, runtimeOptions.provider),
+    model: firstValue(worker.model, request.executor?.model, config.model, runtimeOptions.model),
+    agentBundles: firstDefined(worker.agent_bundles, worker.agentBundles, runtimeOptions.agentBundles, []),
+    runtimePackage: firstValue(worker.runtime_package, worker.runtimePackage, runtimePackageDefaultFromProfile(config, runtimeOptions)),
+  };
+}
+
+function expectedArtifactsForCodeboxTask(request, artifactDeclarations = []) {
+  const declarationNames = artifactDeclarations
+    .filter((declaration) => declaration && declaration.required === true)
+    .map((declaration) => typedArtifactNameFromDeclaration(declaration))
+    .filter(Boolean);
+  if (declarationNames.length > 0) {
+    return Array.from(new Set(declarationNames));
+  }
+  return normalizeArray(request.expected_artifacts);
+}
+
+function runtimeAbilityRequirements(runtimeTask, request = {}, config = {}, inputs = {}, options = {}) {
+  return uniqueStrings([
+    runtimeTask?.ability,
+    runtimeTask?.runtime_task_ability,
+    ...normalizeArray(request.ability_requirements),
+    ...normalizeArray(request.abilityRequirements),
+    ...normalizeArray(inputs.ability_requirements),
+    ...normalizeArray(inputs.abilityRequirements),
+    ...normalizeArray(config.ability_requirements),
+    ...normalizeArray(config.abilityRequirements),
+    ...normalizeArray(options.abilityRequirements),
+    ...normalizeArray(options.ability_requirements),
+  ]);
+}
+
+function codeboxTaskArtifactDeclarations(artifactDeclarations = []) {
+  const declarations = normalizeArray(artifactDeclarations);
+  const taskSpecificDeclarations = declarations.filter((declaration) => {
+    const name = typedArtifactNameFromDeclaration(declaration);
+    return name && !WP_CODEBOX_BUILTIN_ARTIFACT_DECLARATION_NAMES.has(name);
+  });
+  return taskSpecificDeclarations.length > 0 ? taskSpecificDeclarations : declarations;
+}
+
+function runtimeOptionsFromExecutorConfig(config = {}, options = {}) {
+  const requestRuntimeOptions = firstObject(config.runtime_options, config.runtimeOptions) || {};
+  const mergedOptions = { ...options, ...requestRuntimeOptions };
+  const directComponentPathDefaults = firstObject(config.component_path_defaults, config.componentPathDefaults);
+  const runtimeProfile = runtimeProfileFromExecutorConfig(config, mergedOptions);
+  const runtimeRequirements = firstObject(config.runtime_requirements, config.runtimeRequirements) || {};
+  const componentPathDefaults = directComponentPathDefaults || firstObject(mergedOptions.componentPathDefaults, mergedOptions.component_path_defaults, runtimeRequirements.component_path_defaults, runtimeRequirements.componentPathDefaults, runtimeProfile.component_path_defaults, runtimeProfile.componentPathDefaults);
+  return {
+    ...mergedOptions,
     runtimeProfile,
-    workspaceTools: firstObject(options.workspaceTools, options.workspace_tools, config.workspace_tools, config.workspaceTools, runtimeRequirements.workspace_tools, runtimeRequirements.workspaceTools, runtimeProfile.workspace_tools, runtimeProfile.workspaceTools),
+    workspaceTools: firstObject(mergedOptions.workspaceTools, mergedOptions.workspace_tools, config.workspace_tools, config.workspaceTools, runtimeRequirements.workspace_tools, runtimeRequirements.workspaceTools, runtimeProfile.workspace_tools, runtimeProfile.workspaceTools),
     componentPathDefaults,
-    componentPathAliases: firstObject(options.componentPathAliases, options.component_path_aliases, config.component_path_aliases, config.componentPathAliases, componentPathDefaults?.path_aliases, runtimeRequirements.component_path_aliases, runtimeRequirements.componentPathAliases),
-    componentContractSlugMap: firstObject(options.componentContractSlugMap, options.component_contract_slug_map, config.component_contract_slug_map, config.componentContractSlugMap, componentPathDefaults?.contract_slug_map, runtimeRequirements.component_contract_slug_map, runtimeRequirements.componentContractSlugMap),
-    componentDiscovery: firstObject(options.componentDiscovery, options.component_discovery, config.component_discovery, config.componentDiscovery, componentPathDefaults?.discovery, runtimeRequirements.component_discovery, runtimeRequirements.componentDiscovery),
+    componentPathAliases: firstObject(mergedOptions.componentPathAliases, mergedOptions.component_path_aliases, config.component_path_aliases, config.componentPathAliases, componentPathDefaults?.path_aliases, runtimeRequirements.component_path_aliases, runtimeRequirements.componentPathAliases),
+    componentContractSlugMap: firstObject(mergedOptions.componentContractSlugMap, mergedOptions.component_contract_slug_map, config.component_contract_slug_map, config.componentContractSlugMap, componentPathDefaults?.contract_slug_map, runtimeRequirements.component_contract_slug_map, runtimeRequirements.componentContractSlugMap),
+    componentDiscovery: firstObject(mergedOptions.componentDiscovery, mergedOptions.component_discovery, config.component_discovery, config.componentDiscovery, componentPathDefaults?.discovery, runtimeRequirements.component_discovery, runtimeRequirements.componentDiscovery),
     abilityRequirements: uniqueStrings([
-      ...normalizeArray(options.abilityRequirements),
-      ...normalizeArray(options.ability_requirements),
+      ...normalizeArray(mergedOptions.abilityRequirements),
+      ...normalizeArray(mergedOptions.ability_requirements),
       ...normalizeArray(runtimeRequirements.ability_requirements),
       ...normalizeArray(runtimeRequirements.abilityRequirements),
       ...normalizeArray(runtimeProfile.ability_requirements),
       ...normalizeArray(runtimeProfile.abilityRequirements),
     ]),
+    providerPluginPaths: firstNonEmptyArray(
+      explicitProviderPluginPathsFromConfig(config, mergedOptions),
+      providerPluginPathsFromRuntimeProfile(runtimeRequirements, runtimeProfile, mergedOptions)
+    ),
+    runtimeOverlays: firstDefined(runtimeRequirements.runtime_overlays, runtimeProfile.runtime_overlays, mergedOptions.runtimeOverlays),
+    runtimeEnv: firstNonEmptyObject(runtimeRequirements.env, runtimeRequirements.runtime_env, runtimeProfile.env, runtimeProfile.runtime_env, mergedOptions.runtimeEnv, mergedOptions.runtime_env),
+    runtimeEnvAliases: firstObject(runtimeRequirements.runtime_env_aliases, runtimeRequirements.runtimeEnvAliases, runtimeProfile.runtime_env_aliases, runtimeProfile.runtimeEnvAliases, mergedOptions.runtimeEnvAliases, mergedOptions.runtime_env_aliases),
+    runtimeStateMounts: firstDefined(runtimeRequirements.runtime_state_mounts, runtimeProfile.runtime_state_mounts, mergedOptions.runtimeStateMounts, mergedOptions.runtime_state_mounts),
+    runtimeConfigMounts: firstDefined(runtimeRequirements.runtime_config_mounts, runtimeProfile.runtime_config_mounts, mergedOptions.runtimeConfigMounts, mergedOptions.runtime_config_mounts),
+    mounts: firstDefined(runtimeRequirements.runtime_mounts, runtimeRequirements.mounts, runtimeProfile.runtime_mounts, runtimeProfile.mounts, mergedOptions.mounts),
+    callbackData: firstDefined(runtimeRequirements.callback_data, runtimeRequirements.callbackData, runtimeProfile.callback_data, runtimeProfile.callbackData, mergedOptions.callbackData, mergedOptions.callback_data),
   };
 }
 
@@ -354,113 +675,49 @@ function runtimeProfileFromExecutorConfig(config = {}, options = {}) {
   return firstObject(namedProfile) || {};
 }
 
+function runtimePackageDefaultFromProfile(config = {}, runtimeOptions = {}) {
+  const runtimeProfile = firstObject(runtimeOptions.runtimeProfile) || {};
+  return firstValue(runtimeProfile.runtime_package, runtimeProfile.runtimePackage, runtimeProfile.package, config.runtime_profile, config.runtimeProfile, runtimeProfile.id);
+}
+
 function artifactDeclarationsFromAgentTaskRequest(request, config = {}, inputs = {}, options = {}) {
-  const declarations = firstNonEmptyArray(
-    request.artifact_declarations,
-    options.artifactDeclarations,
-    []
-  );
-  if (declarations.length > 0) {
-    return declarations
-      .map((declaration) => wpCodeboxArtifactDeclarationFromHomeboy(declaration))
-      .filter(Boolean);
-  }
-  return legacyArtifactDeclarationsFromAgentTaskRequest(request, config, inputs, options);
-}
-
-function legacyArtifactDeclarationsFromAgentTaskRequest(request, config = {}, inputs = {}, options = {}) {
-  const declarations = [
-    request.artifactDeclarations,
-    inputs.artifact_declarations,
-    inputs.artifactDeclarations,
-    config.artifact_declarations,
-    config.artifactDeclarations,
-    request.artifact_outputs,
-    request.artifactOutputs,
-    request.output_artifacts,
-    request.outputArtifacts,
-    request.artifacts?.outputs,
-    request.artifacts?.output_artifacts,
-    request.artifacts?.outputArtifacts,
-    request.outputs?.artifacts,
-    request.outputs?.artifact_outputs,
-    request.outputs?.artifactOutputs,
-    request.outputs?.typed_artifacts,
-    request.outputs?.typedArtifacts,
-    inputs.artifact_outputs,
-    inputs.artifactOutputs,
-    inputs.output_artifacts,
-    inputs.outputArtifacts,
-    inputs.artifacts?.outputs,
-    inputs.artifacts?.output_artifacts,
-    inputs.artifacts?.outputArtifacts,
-    inputs.outputs?.artifacts,
-    inputs.outputs?.artifact_outputs,
-    inputs.outputs?.artifactOutputs,
-    inputs.outputs?.typed_artifacts,
-    inputs.outputs?.typedArtifacts,
-    config.artifact_outputs,
-    config.artifactOutputs,
-    config.output_artifacts,
-    config.outputArtifacts,
-    config.artifacts?.outputs,
-    config.artifacts?.output_artifacts,
-    config.artifacts?.outputArtifacts,
-    options.artifactOutputs,
-    options.outputArtifacts,
-  ].flatMap(genericArtifactDeclarationEntries);
-  return declarations
-    .map(([name, declaration]) => wpCodeboxArtifactDeclarationFromLegacy(name, declaration))
+  const declarations = normalizeArray(request.artifact_declarations)
+    .map((declaration) => wpCodeboxArtifactDeclarationFromHomeboy(declaration))
     .filter(Boolean);
+  return uniqueArtifactDeclarations(declarations);
 }
 
-function genericArtifactDeclarationEntries(value) {
-  if (Array.isArray(value)) {
-    return value.map((declaration) => ['', declaration]);
-  }
-  if (!value || typeof value !== 'object') {
-    return [];
-  }
-  return Object.entries(value);
+function uniqueArtifactDeclarations(declarations) {
+  const seen = new Set();
+  return declarations.filter((declaration) => {
+    const name = typedArtifactNameFromDeclaration(declaration);
+    const schema = declaration?.artifact_schema || declaration?.artifactSchema || declaration?.schema || '';
+    const key = `${name}:${schema}`;
+    if (!name || seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
 }
 
 function wpCodeboxArtifactDeclarationFromHomeboy(declaration) {
-  return wpCodeboxArtifactDeclarationFromLegacy('', declaration);
-}
-
-function wpCodeboxArtifactDeclarationFromLegacy(defaultName, declaration) {
-  if (typeof declaration === 'string') {
-    return {
-      schema: 'wp-codebox/artifact-declaration/v1',
-      name: declaration,
-      required: true,
-    };
+  let normalizedDeclaration = declaration;
+  if (declaration && typeof declaration === 'object' && !Array.isArray(declaration)) {
+    normalizedDeclaration = { ...declaration };
+    if (!normalizedDeclaration.name && !normalizedDeclaration.id && normalizedDeclaration.artifact_id) {
+      normalizedDeclaration.name = normalizedDeclaration.artifact_id;
+    }
+    if (typeof normalizedDeclaration.kind === 'string' && normalizedDeclaration.kind.includes('/') && !normalizedDeclaration.artifact_schema && !normalizedDeclaration.artifactSchema) {
+      normalizedDeclaration.artifact_schema = normalizedDeclaration.kind;
+      if (!normalizedDeclaration.type && !normalizedDeclaration.artifact_type && !normalizedDeclaration.artifactType) {
+        delete normalizedDeclaration.kind;
+      }
+    }
   }
-  if (!declaration || typeof declaration !== 'object' || Array.isArray(declaration)) {
-    return null;
-  }
-  const name = declaration.name || declaration.id || declaration.output || declaration.artifact || defaultName;
-  if (!name || typeof name !== 'string') {
-    return null;
-  }
-  const artifactSchema = declaration.artifact_schema
-    || declaration.artifactSchema
-    || declaration.content_schema
-    || declaration.contentSchema
-    || (declaration.schema && ![
-      AGENT_TASK_ARTIFACT_DECLARATION_SCHEMA,
-      'wp-codebox/artifact-declaration/v1',
-    ].includes(declaration.schema) ? declaration.schema : undefined);
-  return Object.fromEntries(Object.entries({
-    schema: 'wp-codebox/artifact-declaration/v1',
-    name,
-    type: declaration.type || declaration.kind || declaration.artifact_type || declaration.artifactType,
-    artifact_schema: artifactSchema,
-    path: declaration.path,
-    required: declaration.required === undefined ? true : declaration.required === true,
-    description: declaration.description,
-    metadata: declaration.metadata,
-  }).filter(([, value]) => value !== undefined));
+  return normalizeCodeboxArtifactDeclaration('', normalizedDeclaration, {
+    ignoredSchemas: [AGENT_TASK_ARTIFACT_DECLARATION_SCHEMA],
+  });
 }
 
 class RuntimeOverlayConfigError extends Error {
@@ -474,6 +731,8 @@ class RuntimeOverlayConfigError extends Error {
 function runtimeOverlaysFromConfig(config, options = {}, defaults = {}) {
   return validateRuntimeOverlays(firstDefined(
     config.runtime_overlays,
+    config.runtime_requirements?.runtime_overlays,
+    options.runtimeProfile?.runtime_overlays,
     options.runtimeOverlays,
     defaults.runtimeOverlays,
     []
@@ -491,13 +750,6 @@ function validateRuntimeOverlays(value) {
       return;
     }
 
-    if (Object.hasOwn(overlay, 'type')) {
-      diagnostics.push(runtimeOverlayDiagnostic(index, `${pathPrefix}.type`, 'type', overlay.type, 'Runtime overlay config uses legacy field "type"; use canonical field "kind" instead.'));
-    }
-
-    if (typeof overlay.kind !== 'string' || overlay.kind.trim() === '') {
-      diagnostics.push(runtimeOverlayDiagnostic(index, `${pathPrefix}.kind`, 'kind', overlay.kind, 'Runtime overlay config requires canonical field "kind" as a non-empty string.'));
-    }
   });
 
   if (diagnostics.length > 0) {
@@ -522,20 +774,80 @@ function runtimeOverlayDiagnostic(index, field, offendingField, value, message) 
 }
 
 function componentContractsFromAgentTaskRequest(request, config, options = {}) {
-  return uniqueComponentContracts([
-    ...normalizeArray(request.component_contracts),
-    ...normalizeArray(config.component_contracts),
-    ...normalizeArray(options.componentContracts),
-  ]);
+  return codeboxRuntimeComponentContracts({
+    profile: options.runtimeProfile,
+    runtimeRequirements: firstObject(config.runtime_requirements, config.runtimeRequirements) || {},
+    componentContracts: [
+      ...normalizeArray(request.component_contracts),
+      ...normalizeArray(config.component_contracts),
+      ...normalizeArray(options.componentContracts),
+    ],
+  });
 }
 
-function uniqueComponentContracts(contracts) {
+function codeboxRuntimeRequirementsFromAgentTaskRequest(config, options = {}, defaults = {}, componentContracts = [], runtimeOverlays = []) {
+  const runtimeProfile = firstObject(options.runtimeProfile) || {};
+  const runtimeRequirements = mergeRuntimeRequirements(defaults.runtimeRequirements, firstObject(config.runtime_requirements, config.runtimeRequirements) || {});
+  const runtimeEnv = firstObject(config.runtime_env, config.runtimeEnv, config.wp_codebox_runtime_env, runtimeRequirements.env, runtimeRequirements.runtime_env, runtimeProfile.env, runtimeProfile.runtime_env, options.runtimeEnv, defaults.runtimeEnv) || {};
+  const explicitProviderPluginPaths = explicitProviderPluginPathsFromConfig(config, options);
+  const providerPluginPaths = firstNonEmptyArray(
+    explicitProviderPluginPaths,
+    providerPluginPathsFromRuntimeProfile(runtimeRequirements, runtimeProfile, options),
+    defaults.providerPluginPaths,
+    []
+  );
+  const runtimeProfilePayloadSource = explicitProviderPluginPaths.length > 0
+    ? {
+        runtimeRequirements: withoutProviderPlugins(runtimeRequirements),
+        runtimeProfile: withoutProviderPlugins(runtimeProfile),
+      }
+    : { runtimeRequirements, runtimeProfile };
+  return codeboxRuntimeProfilePayload({
+    id: config.runtime_profile || config.runtimeProfile,
+    profile: runtimeProfilePayloadSource.runtimeProfile,
+    runtimeRequirements: runtimeProfilePayloadSource.runtimeRequirements,
+    componentContracts,
+    runtimeOverlays,
+    runtimeEnv,
+    providerPluginPaths,
+    runtimeStateMounts: firstDefined(config.runtime_state_mounts, config.runtimeStateMounts, config.wp_codebox_runtime_state_mounts, runtimeRequirements.runtime_state_mounts, runtimeProfile.runtime_state_mounts, options.runtimeStateMounts, defaults.runtimeStateMounts),
+    runtimeConfigMounts: firstDefined(config.runtime_config_mounts, config.runtimeConfigMounts, config.wp_codebox_runtime_config_mounts, runtimeRequirements.runtime_config_mounts, runtimeProfile.runtime_config_mounts, options.runtimeConfigMounts, defaults.runtimeConfigMounts),
+    normalizeRuntimeProfile: options.normalizeRuntimeProfile,
+    normalizeRuntimeProfilePayload: options.normalizeRuntimeProfilePayload,
+  });
+}
+
+function mergeRuntimeRequirements(...requirements) {
+  const normalized = requirements.filter((requirement) => requirement && typeof requirement === 'object' && !Array.isArray(requirement));
+  if (normalized.length === 0) {
+    return {};
+  }
+  return withoutEmptyArrayValues({
+    ...Object.assign({}, ...normalized),
+    ability_requirements: uniqueStrings(normalized.flatMap((requirement) => normalizeArray(requirement.ability_requirements || requirement.abilityRequirements))),
+    component_contracts: uniqueRuntimeRequirementObjects(normalized.flatMap((requirement) => normalizeArray(requirement.component_contracts))),
+    extra_plugins: uniqueRuntimeRequirementObjects(normalized.flatMap((requirement) => normalizeArray(requirement.extra_plugins))),
+    components: uniqueRuntimeRequirementObjects(normalized.flatMap((requirement) => normalizeArray(requirement.components))),
+    mu_plugins: uniqueRuntimeRequirementObjects(normalized.flatMap((requirement) => normalizeArray(requirement.mu_plugins))),
+    plugins: uniqueRuntimeRequirementObjects(normalized.flatMap((requirement) => normalizeArray(requirement.plugins))),
+    runtime_overlays: uniqueRuntimeRequirementObjects(normalized.flatMap((requirement) => normalizeArray(requirement.runtime_overlays))),
+  });
+}
+
+function withoutEmptyArrayValues(value) {
+  return Object.fromEntries(Object.entries(value).filter(([, entry]) => !Array.isArray(entry) || entry.length > 0));
+}
+
+function uniqueRuntimeRequirementObjects(entries) {
   const seen = new Set();
-  return contracts.filter((contract) => {
-    if (!contract || typeof contract !== 'object' || Array.isArray(contract)) {
+  return normalizeArray(entries).filter((entry) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
       return false;
     }
-    const key = `${contract.slug || ''}:${contract.path || contract.source || ''}`;
+    const key = [entry.slug, entry.id, entry.path || entry.source || entry.target, entry.kind, entry.type].filter(Boolean).join(':');
+    if (!key) {
+      return true;
+    }
     if (seen.has(key)) {
       return false;
     }
@@ -544,58 +856,397 @@ function uniqueComponentContracts(contracts) {
   });
 }
 
-function abilityRuntimeTaskFromAgentTaskRequest(request, config, inputs) {
-  const genericAbilityTask = genericAbilityRuntimeTask(request, config, inputs);
-  if (genericAbilityTask) {
-    return genericAbilityTask;
-  }
-
-  const executionKind = firstValue(inputs.execution_kind, inputs.executionKind, config.execution_kind, config.executionKind);
-  if (!['wp_codebox_ability', 'wordpress_ability'].includes(executionKind)) {
-    return null;
-  }
-  const ability = firstValue(inputs.ability, inputs.ability_name, inputs.abilityName, config.ability, config.ability_name, config.abilityName);
-  if (!ability || typeof ability !== 'string') {
-    return null;
-  }
-  const input = runtimeTaskInputFromAgentTaskRequest(request, config, inputs);
-  return { ability, input };
+function providerPluginPathsFromRuntimeProfile(runtimeRequirements = {}, runtimeProfile = {}, options = {}) {
+  return normalizeProviderPluginPaths([
+    ...normalizeArray(options.providerPluginPaths),
+    ...normalizeArray(options.provider_plugin_paths),
+    ...providerPluginPathEntries(runtimeRequirements.provider_plugins),
+    ...providerPluginPathEntries(runtimeProfile.provider_plugins),
+  ]);
 }
 
-function genericAbilityRuntimeTask(request, config, inputs) {
-  const rawAbility = firstValue(inputs.ability, config.ability);
-  const abilityRequest = firstObject(
-    inputs.ability_request,
-    inputs.abilityRequest,
-    config.ability_request,
-    config.abilityRequest,
-  );
-  const declared = abilityRequest || firstObject(rawAbility);
-  const ability = typeof declared === 'string'
-    ? declared
-    : firstValue(declared?.id, declared?.name, declared?.ability, typeof rawAbility === 'string' ? rawAbility : '', inputs.ability_name, inputs.abilityName, config.ability_name, config.abilityName);
-  if (!ability || typeof ability !== 'string') {
+function explicitProviderPluginPathsFromConfig(config = {}, options = {}) {
+  return normalizeProviderPluginPaths(firstNonEmptyArray(
+    providerPluginPathsFromEnv(),
+    options.providerPluginPaths,
+    options.provider_plugin_paths,
+    config.runtime_options?.providerPluginPaths,
+    config.runtime_options?.provider_plugin_paths,
+    config.runtimeOptions?.providerPluginPaths,
+    config.runtimeOptions?.provider_plugin_paths,
+    config.provider_plugin_paths,
+    config.providerPluginPaths,
+    []
+  ));
+}
+
+function providerPluginPathsFromEnv(env = process.env) {
+  return wpCodeboxProviderPluginPathsFromEnv(env);
+}
+
+function withoutProviderPlugins(value = {}) {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || !Object.prototype.hasOwnProperty.call(value, 'provider_plugins')) {
+    return value;
+  }
+  const rest = { ...value };
+  delete rest.provider_plugins;
+  return rest;
+}
+
+function providerPluginPathEntries(value) {
+  return normalizeArray(value).flatMap((entry) => {
+    if (typeof entry === 'string') {
+      return [entry];
+    }
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      return [];
+    }
+    return [entry.path, entry.source].filter(Boolean);
+  });
+}
+
+function normalizeProviderPluginPaths(paths) {
+  return uniquePaths(normalizeArray(paths).map((entry) => {
+    if (typeof entry === 'string') {
+      return entry;
+    }
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      return '';
+    }
+    return firstValue(entry.path, entry.source, entry.target, '');
+  }));
+}
+
+function isNativeWpCodeboxAgentRunAbility(ability) {
+  return typeof ability === 'string' && WP_CODEBOX_NATIVE_AGENT_RUN_ABILITIES.has(ability.trim());
+}
+
+function isNativeWpCodeboxAgentRunRuntimeTask(runtimeTask) {
+  return Boolean(runtimeTask)
+    && typeof runtimeTask === 'object'
+    && !Array.isArray(runtimeTask)
+    && isNativeWpCodeboxAgentRunAbility(runtimeTask.ability);
+}
+
+function sandboxRuntimeTaskForNativeAgentRun(runtimeTask) {
+  return isNativeWpCodeboxAgentRunRuntimeTask(runtimeTask) ? undefined : runtimeTask;
+}
+
+function runtimePackageTaskInputForCodebox(input, options = {}) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    return input;
+  }
+  const normalized = { ...input, schema: WP_CODEBOX_RUNTIME_PACKAGE_TASK_SCHEMA };
+  const runtimeOptions = normalized.options && typeof normalized.options === 'object' && !Array.isArray(normalized.options) ? normalized.options : {};
+  for (const key of ['provider', 'model']) {
+    if (!firstValue(normalized[key]) && firstValue(runtimeOptions[key])) {
+      normalized[key] = runtimeOptions[key];
+    }
+  }
+  const packageDescriptor = normalized.runtime_package === undefined ? normalized.package : normalized.runtime_package;
+  const normalizedPackage = normalizeRuntimePackageTaskPackage(packageDescriptor, options);
+  if (normalizedPackage.package) {
+    normalized.package = normalizedPackage.package;
+  }
+  const artifactDeclarations = normalizeRuntimePackageTaskArtifactDeclarations(firstDefined(
+    normalized.artifact_declarations,
+    []
+  ));
+  normalized.artifact_declarations = artifactDeclarations;
+  const requiredArtifacts = runtimePackageRequiredArtifacts(normalized.required_artifacts, artifactDeclarations);
+  if (requiredArtifacts.length > 0 || normalized.required_artifacts !== undefined) {
+    normalized.required_artifacts = requiredArtifacts;
+  }
+  delete normalized.runtime_package;
+  delete normalized.agent;
+  delete normalized.agent_slug;
+  delete normalized.artifacts;
+  return normalized;
+}
+
+function normalizeRuntimePackageTaskPackage(packageDescriptor, options = {}) {
+  if (typeof packageDescriptor === 'string') {
+    return { package: runtimePackagePackageFromString(packageDescriptor, options) };
+  }
+  if (!packageDescriptor || typeof packageDescriptor !== 'object' || Array.isArray(packageDescriptor)) {
+    return { package: null };
+  }
+
+  const descriptor = runtimePackageDescriptorForCodebox(packageDescriptor, options);
+  const sourceKeys = ['source', 'path', 'bundle_path', 'bundlePath'];
+  const declaredSources = sourceKeys
+    .map((key) => descriptor[key])
+    .filter((value) => typeof value === 'string' && value !== '');
+  const uniqueSources = Array.from(new Set(declaredSources));
+  if (uniqueSources.length > 1) {
+    throw new Error(`WP Codebox runtime_package descriptor source fields cannot diverge: ${uniqueSources.join(', ')}`);
+  }
+
+  return { package: runtimePackagePackageFromDescriptor(descriptor, uniqueSources[0]) };
+}
+
+function runtimePackagePackageFromString(value, options = {}) {
+  const source = runtimePackageImportPath(value, options);
+  const slug = runtimePackageIdentifier(value);
+  return withoutUndefinedValues(relativeRuntimePackagePath(value) ? { slug, source } : { slug: source || slug });
+}
+
+function runtimePackagePackageFromDescriptor(descriptor, source = '') {
+  return withoutUndefinedValues({
+    ...descriptor,
+    slug: firstValue(descriptor.slug, descriptor.id, descriptor.name, runtimePackageIdentifier(source)),
+    ...(source ? { source } : {}),
+    path: undefined,
+    bundle_path: undefined,
+    bundlePath: undefined,
+    id: undefined,
+    name: undefined,
+  });
+}
+
+function runtimePackageIdentifier(value) {
+  if (typeof value === 'string') {
+    return path.basename(String(value).replace(/\/+$/, '')) || value;
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return '';
+  }
+  return firstValue(value.slug, value.id, value.name, value.source, '');
+}
+
+function runtimePackageImportPath(value, options = {}) {
+  if (typeof value === 'string') {
+    return runtimePackagePathForSandbox(value, options);
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return '';
+  }
+  const importPath = firstValue(value.source, value.path, value.bundle_path, value.bundlePath, '');
+  if (importPath) {
+    return runtimePackagePathForSandbox(importPath, options);
+  }
+  return firstValue(value.slug, value.id, value.name, '');
+}
+
+function runtimePackageDescriptorForCodebox(descriptor, options = {}) {
+  if (!descriptor || typeof descriptor !== 'object' || Array.isArray(descriptor)) {
+    return descriptor;
+  }
+  const normalized = { ...descriptor };
+  for (const key of ['source', 'path', 'bundle_path', 'bundlePath']) {
+    if (typeof normalized[key] === 'string' && normalized[key]) {
+      normalized[key] = runtimePackagePathForSandbox(normalized[key], options);
+    }
+  }
+  return normalized;
+}
+
+function runtimePackagePathForSandbox(value, options = {}) {
+  const raw = String(value || '');
+  if (!raw || !relativeRuntimePackagePath(raw)) {
+    return raw;
+  }
+  const workspaceTarget = String(options.workspaceTarget || '').replace(/\/+$/, '');
+  return workspaceTarget ? `${workspaceTarget}/${raw.replace(/^\.\//, '')}` : raw;
+}
+
+function relativeRuntimePackagePath(value) {
+  const raw = String(value || '');
+  return raw.includes('/')
+    && !raw.startsWith('/')
+    && !raw.startsWith('~/')
+    && !/^[A-Za-z]:[\\/]/.test(raw)
+    && !/^[a-z][a-z0-9+.-]*:/i.test(raw);
+}
+
+function agentBundleRuntimeTaskInputWithArtifactOutputs(input, request, config, inputs) {
+  input = runtimePackageInputWithInlineBundle(input, config, inputs);
+  const declarations = codeboxTaskArtifactDeclarations(artifactDeclarationsFromAgentTaskRequest(request, config, inputs))
+    .filter((declaration) => declaration && typeof declaration === 'object' && declaration.required === true && typedArtifactNameFromDeclaration(declaration));
+  if (declarations.length === 0) {
+    return {
+      ...input,
+      artifact_declarations: normalizeRuntimePackageTaskArtifactDeclarations(firstDefined(input.artifact_declarations, [])),
+    };
+  }
+
+  const artifactDeclarations = uniqueArtifactDeclarations([
+    ...normalizeRuntimePackageTaskArtifactDeclarations(firstDefined(input.artifact_declarations, [])),
+    ...declarations.map(runtimePackageArtifactDeclarationFromDeclaration).filter(Boolean),
+  ]);
+  const requiredArtifacts = runtimePackageRequiredArtifacts(input.required_artifacts, artifactDeclarations);
+
+  return {
+    ...input,
+    artifact_declarations: artifactDeclarations,
+    required_artifacts: requiredArtifacts,
+  };
+}
+
+function runtimePackageInputWithInlineBundle(input, config = {}, inputs = {}) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    return input;
+  }
+  const packageDescriptor = input.runtime_package === undefined ? input.package : input.runtime_package;
+  if (!packageDescriptor || typeof packageDescriptor !== 'object' || Array.isArray(packageDescriptor) || packageDescriptor.bundle) {
+    return input;
+  }
+  const inlineBundleSpec = matchingInlineAgentBundleSpec(packageDescriptor, firstDefined(
+    inputs.agent_bundles,
+    inputs.agentBundles,
+    config.agent_bundles,
+    config.agentBundles,
+    []
+  ));
+  if (!inlineBundleSpec) {
+    return input;
+  }
+  const packageWithBundle = { ...packageDescriptor, bundle: inlineBundleSpec.bundle };
+  return input.runtime_package === undefined
+    ? { ...input, package: packageWithBundle }
+    : { ...input, runtime_package: packageWithBundle };
+}
+
+function matchingInlineAgentBundleSpec(packageDescriptor, specs) {
+  const inlineSpecs = normalizeArray(specs)
+    .filter((spec) => spec && typeof spec === 'object' && !Array.isArray(spec) && spec.bundle && typeof spec.bundle === 'object' && !Array.isArray(spec.bundle));
+  if (inlineSpecs.length === 0) {
     return null;
   }
-  const input = runtimeTaskInputFromAgentTaskRequest(request, config, inputs, declared);
-  return { ability, input };
+  const packageSource = firstValue(packageDescriptor.source, packageDescriptor.path, packageDescriptor.bundle_path, packageDescriptor.bundlePath, '');
+  const packageSlug = firstValue(packageDescriptor.slug, packageDescriptor.id, packageDescriptor.name, '');
+  return inlineSpecs.find((spec) => {
+    const specSource = firstValue(spec.source, spec.path, spec.bundle_path, spec.bundlePath, '');
+    const specSlug = firstValue(spec.slug, spec.id, spec.name, spec.bundle?.bundle_slug, '');
+    return (packageSource && specSource && packageSource === specSource) || (packageSlug && specSlug && packageSlug === specSlug);
+  }) || inlineSpecs[0];
+}
+
+function normalizeRuntimePackageTaskArtifactDeclarations(declarations) {
+  return uniqueArtifactDeclarations(normalizeArray(declarations)
+    .map(runtimePackageArtifactDeclarationFromDeclaration)
+    .filter(Boolean));
+}
+
+function runtimePackageArtifactDeclarationFromDeclaration(declaration) {
+  return wpCodeboxArtifactDeclarationFromHomeboy(declaration);
+}
+
+function runtimePackageRequiredArtifacts(requiredArtifacts, artifactDeclarations = []) {
+  return Array.from(new Set([
+    ...normalizeArray(requiredArtifacts),
+    ...artifactDeclarations
+      .filter((declaration) => declaration && declaration.required === true)
+      .map((declaration) => typedArtifactNameFromDeclaration(declaration))
+      .filter(Boolean),
+  ]));
 }
 
 function runtimeTaskInputFromAgentTaskRequest(request, config, inputs, declared = {}) {
-  const workflowInputs = workflowInputsFromAgentTaskRequest(request, config, inputs);
+  const defaultInput = firstObject(
+    declared?.input_defaults,
+    declared?.inputDefaults,
+    inputs.ability_input_defaults,
+    inputs.abilityInputDefaults,
+    config.ability_input_defaults,
+    config.abilityInputDefaults,
+  ) || {};
+  const mappedInput = runtimeMappedInputFromAgentTaskRequest(request, config, inputs, declared);
   const explicitInput = firstObject(declared?.input, declared?.args, inputs.ability_input, inputs.abilityInput, inputs.input, config.ability_input, config.abilityInput, config.input) || {};
-  return { ...workflowInputs, ...explicitInput };
+  return { ...defaultInput, ...mappedInput, ...explicitInput };
 }
 
-function workflowInputsFromAgentTaskRequest(request, config, inputs) {
-  return firstObject(
-    inputs.client_context?.inputs,
-    inputs.clientContext?.inputs,
-    request.client_context?.inputs,
-    request.clientContext?.inputs,
-    config.client_context?.inputs,
-    config.clientContext?.inputs,
-  ) || {};
+function runtimeMappedInputFromAgentTaskRequest(request, config, inputs, declared = {}) {
+  const mappings = normalizeArray(firstDefined(
+    declared?.input_mapping,
+    declared?.inputMapping,
+    declared?.context_mapping,
+    declared?.contextMapping,
+    inputs.runtime_input_mapping,
+    inputs.runtimeInputMapping,
+    inputs.context_mapping,
+    inputs.contextMapping,
+    config.runtime_input_mapping,
+    config.runtimeInputMapping,
+    config.context_mapping,
+    config.contextMapping,
+  ));
+  if (mappings.length === 0) {
+    return {};
+  }
+  const sources = runtimeInputMappingSources(request, config, inputs);
+  return mappings.reduce((mapped, mapping) => {
+    const entry = runtimeInputMappingEntry(mapping);
+    if (!entry) {
+      return mapped;
+    }
+    const value = valueAtPath(sources, entry.from);
+    if (value === undefined) {
+      if (entry.default !== undefined) {
+        setValueAtPath(mapped, entry.to, entry.default);
+      }
+      return mapped;
+    }
+    setValueAtPath(mapped, entry.to, value);
+    return mapped;
+  }, {});
+}
+
+function runtimeInputMappingSources(request, config, inputs) {
+  return {
+    request,
+    inputs,
+    config,
+    client_context: agentTaskClientContext(request, config, inputs),
+    context: firstObject(inputs.context, request.context, config.context) || {},
+  };
+}
+
+function runtimeInputMappingEntry(mapping) {
+  if (typeof mapping === 'string' && mapping.trim()) {
+    return { from: mapping.trim(), to: pathLeaf(mapping.trim()) };
+  }
+  if (!mapping || typeof mapping !== 'object' || Array.isArray(mapping)) {
+    return null;
+  }
+  const from = firstValue(mapping.from, mapping.source, mapping.path);
+  const to = firstValue(mapping.to, mapping.target, mapping.name, mapping.input);
+  if (!from || !to) {
+    return null;
+  }
+  return { from, to, default: mapping.default };
+}
+
+function valueAtPath(source, fieldPath) {
+  if (!fieldPath || typeof fieldPath !== 'string') {
+    return undefined;
+  }
+  return fieldPath.split('.').filter(Boolean).reduce((value, segment) => {
+    if (value === undefined || value === null || typeof value !== 'object') {
+      return undefined;
+    }
+    return value[segment];
+  }, source);
+}
+
+function setValueAtPath(target, fieldPath, value) {
+  const segments = String(fieldPath || '').split('.').filter(Boolean);
+  if (segments.length === 0) {
+    return;
+  }
+  let cursor = target;
+  segments.slice(0, -1).forEach((segment) => {
+    if (!cursor[segment] || typeof cursor[segment] !== 'object' || Array.isArray(cursor[segment])) {
+      cursor[segment] = {};
+    }
+    cursor = cursor[segment];
+  });
+  cursor[segments[segments.length - 1]] = value;
+}
+
+function pathLeaf(fieldPath) {
+  const segments = String(fieldPath || '').split('.').filter(Boolean);
+  return segments[segments.length - 1] || fieldPath;
 }
 
 function allowedToolsFromAgentTaskRequest(request, config, inputs, options, defaults) {
@@ -634,8 +1285,7 @@ function sandboxToolPolicyFromAgentTaskRequest(config, inputs, options, defaults
   if (explicit !== undefined) {
     return explicit;
   }
-  const homeboySandboxPolicy = sandboxToolPolicyFromHomeboyAgentToolPolicy(homeboyToolPolicy);
-  return workspaceSandboxToolPolicyWithAllowedTools(homeboySandboxPolicy || defaults.sandboxToolPolicy, allowedTools);
+  return workspaceSandboxToolPolicyWithAllowedTools(defaults.sandboxToolPolicy, allowedToolsForHomeboyToolPolicy(allowedTools, homeboyToolPolicy));
 }
 
 function homeboyAgentToolPolicy() {
@@ -646,90 +1296,43 @@ function homeboyAgentToolPolicy() {
   return policy;
 }
 
-function homeboyAgentToolContractEnv() {
-  return Object.fromEntries([
-    'HOMEBOY_AGENT_TOOL_POLICY_JSON',
-    'HOMEBOY_AGENT_TOOL_REQUEST_SCHEMA',
-    'HOMEBOY_AGENT_TOOL_RESULT_SCHEMA',
-    'HOMEBOY_AGENT_TOOL_POLICY_SCHEMA',
-  ].map((name) => [name, process.env[name]]).filter(([, value]) => typeof value === 'string' && value !== ''));
-}
-
-function datamachineHostToolPolicyEnv() {
-  const policyJson = process.env.HOMEBOY_AGENT_TOOL_POLICY_JSON;
-  if (typeof policyJson !== 'string' || policyJson === '') {
+function runtimeEnvAliasesFromSourceEnv(aliases = {}) {
+  if (!aliases || typeof aliases !== 'object' || Array.isArray(aliases)) {
     return {};
   }
-  return {
-    DATAMACHINE_HOST_TOOL_POLICY_JSON: policyJson,
-  };
-}
-
-function sandboxToolPolicyFromHomeboyAgentToolPolicy(policy) {
-  const tools = Object.entries(policy?.tools || {})
-    .map(([toolId, rule]) => sandboxToolFromHomeboyToolPolicyRule(toolId, rule, policy))
-    .filter(Boolean);
-  if (tools.length === 0) {
-    return null;
+  const env = {};
+  for (const [sourceName, targetNames] of Object.entries(aliases)) {
+    const value = process.env[sourceName];
+    if (typeof value !== 'string' || value === '') {
+      continue;
+    }
+    for (const targetName of normalizeArray(targetNames)) {
+      if (typeof targetName === 'string' && targetName !== '') {
+        env[targetName] = value;
+      }
+    }
   }
-  return {
-    schema: 'wp-codebox/sandbox-tool-policy/v1',
-    version: 1,
-    tools,
-    metadata: {
-      source: 'homeboy_agent_tool_policy',
-      homeboy_policy_schema: policy.schema,
-      homeboy_default_location: policy.default_location || 'disabled',
-    },
-  };
-}
-
-function sandboxToolFromHomeboyToolPolicyRule(toolId, rule = {}, policy = {}) {
-  const id = typeof toolId === 'string' ? toolId.trim() : '';
-  if (!id) {
-    return null;
-  }
-  const location = rule.execution_location || policy.default_location || 'disabled';
-  const runnerOwned = location === 'runner';
-  const controlPlaneOwned = location === 'control_plane';
-  return {
-    id,
-    runtime_tool_id: runtimeToolIdFromHomeboyToolId(id),
-    execution_location: runnerOwned ? 'sandbox' : 'parent',
-    transport_visibility: runnerOwned ? 'sandbox' : controlPlaneOwned ? 'parent' : 'hidden',
-    allowed: runnerOwned,
-    runtime: {
-      environment: runnerOwned ? 'runtime_local' : 'control_plane',
-      capability_scope: runnerOwned ? 'runtime_local' : 'control_plane',
-    },
-    metadata: Object.fromEntries(Object.entries({
-      source: 'homeboy_agent_tool_policy',
-      homeboy_execution_location: location,
-      timeout_ms: rule.timeout_ms,
-      reason: rule.reason,
-    }).filter(([, value]) => value !== undefined && value !== '')),
-  };
+  return env;
 }
 
 function runtimeToolIdFromHomeboyToolId(toolId) {
   return String(toolId || '').replace(/[^A-Za-z0-9_]+/g, '_').replace(/^_+|_+$/g, '') || 'homeboy_tool';
 }
 
-function allowedToolsForSandboxPolicy(allowedTools, sandboxToolPolicy) {
-  if (!Array.isArray(allowedTools) || !sandboxToolPolicy || sandboxToolPolicy.metadata?.source !== 'homeboy_agent_tool_policy') {
+function allowedToolsForHomeboyToolPolicy(allowedTools, policy) {
+  if (!Array.isArray(allowedTools) || !policy || policy.schema !== 'homeboy/agent-tool-policy/v1') {
     return allowedTools;
   }
-  const explicitHomeboyTools = new Map((sandboxToolPolicy.tools || [])
-    .filter((tool) => tool?.metadata?.source === 'homeboy_agent_tool_policy')
-    .flatMap((tool) => [[tool.id, tool], [tool.runtime_tool_id, tool]]));
-  return allowedTools.filter((tool) => {
-    const policyTool = explicitHomeboyTools.get(tool) || explicitHomeboyTools.get(runtimeToolIdFromHomeboyToolId(tool));
-    if (!policyTool) {
-      return true;
+  const explicitHomeboyTools = new Map(Object.entries(policy.tools || {}).flatMap(([toolId, rule]) => {
+    const id = typeof toolId === 'string' ? toolId.trim() : '';
+    if (!id) {
+      return [];
     }
-    return policyTool.allowed === true
-      && policyTool.runtime?.environment === 'runtime_local'
-      && policyTool.runtime?.capability_scope === 'runtime_local';
+    return [[id, rule || {}], [runtimeToolIdFromHomeboyToolId(id), rule || {}]];
+  }));
+  return allowedTools.filter((tool) => {
+    const rule = explicitHomeboyTools.get(tool) || explicitHomeboyTools.get(runtimeToolIdFromHomeboyToolId(tool));
+    return !rule || (rule.execution_location || policy.default_location) === 'runner';
   });
 }
 
@@ -789,35 +1392,85 @@ function runtimeTaskWithExecutionDefaults(runtimeTask, defaults = {}) {
   if (!runtimeTask || typeof runtimeTask !== 'object' || Array.isArray(runtimeTask)) {
     return runtimeTask;
   }
-  if (!Array.isArray(defaults.agentBundles) || defaults.agentBundles.length === 0) {
-    return runtimeTask;
+  const normalizedRuntimeTask = { ...runtimeTask };
+  const requestedAbility = normalizedRuntimeTask.ability;
+  const normalizedAbility = requestedAbility === HOMEBOY_RUN_RUNTIME_PACKAGE_ABILITY ? WP_CODEBOX_RUN_RUNTIME_PACKAGE_ABILITY : requestedAbility;
+  normalizedRuntimeTask.ability = normalizedAbility;
+  const abilityNormalization = runtimeTask.ability_normalization || runtimeTaskAbilityNormalization({ requestedAbility, normalizedAbility });
+  if (abilityNormalization) {
+    normalizedRuntimeTask.ability_normalization = abilityNormalization;
+  }
+  if (normalizedRuntimeTask.ability === WP_CODEBOX_RUN_RUNTIME_PACKAGE_ABILITY) {
+    normalizedRuntimeTask.input = runtimePackageTaskInputForCodebox(runtimeTaskInputWithArtifactOutputs(normalizedRuntimeTask.input, defaults), defaults);
+  }
+  const applyExecutionDefaults = normalizedRuntimeTask.ability === WP_CODEBOX_RUN_RUNTIME_PACKAGE_ABILITY || (Array.isArray(defaults.agentBundles) && defaults.agentBundles.length > 0);
+  if (!applyExecutionDefaults) {
+    return normalizedRuntimeTask;
   }
 
-  const input = runtimeTask.input && typeof runtimeTask.input === 'object' && !Array.isArray(runtimeTask.input)
-    ? runtimeTask.input
+  const input = normalizedRuntimeTask.input && typeof normalizedRuntimeTask.input === 'object' && !Array.isArray(normalizedRuntimeTask.input)
+    ? normalizedRuntimeTask.input
     : {};
   const defaultInput = Object.fromEntries(Object.entries({
+    runtime_package: defaults.runtimePackage,
     provider: defaults.provider,
     model: defaults.model,
   }).filter(([, value]) => value !== '' && value !== undefined));
 
   if (Object.keys(defaultInput).length === 0) {
-    return runtimeTask;
+    return normalizedRuntimeTask;
   }
 
   return {
-    ...runtimeTask,
-    input: {
+    ...normalizedRuntimeTask,
+    input: normalizedRuntimeTask.ability === WP_CODEBOX_RUN_RUNTIME_PACKAGE_ABILITY ? runtimePackageTaskInputForCodebox(runtimeTaskInputWithArtifactOutputs({
+      ...defaultInput,
+      ...input,
+    }, defaults), defaults) : {
       ...defaultInput,
       ...input,
     },
   };
 }
 
+function runtimeTaskInputWithArtifactOutputs(input, defaults = {}) {
+  if (!defaults.request) {
+    return input;
+  }
+  return agentBundleRuntimeTaskInputWithArtifactOutputs(input, defaults.request, defaults.config || {}, defaults.inputs || {});
+}
+
+function runtimeTaskAbilityNormalization({ requestedAbility, normalizedAbility }) {
+  if (typeof normalizedAbility !== 'string') {
+    return null;
+  }
+  if (requestedAbility === normalizedAbility && normalizedAbility !== WP_CODEBOX_RUN_RUNTIME_PACKAGE_ABILITY) {
+    return null;
+  }
+  const runtimePackage = normalizedAbility === WP_CODEBOX_RUN_RUNTIME_PACKAGE_ABILITY;
+  return {
+    schema: 'wp-codebox/runtime-task-ability-normalization/v1',
+    requested_ability: requestedAbility || normalizedAbility,
+    normalized_codebox_ability: normalizedAbility,
+    bridge_ability: runtimePackage ? WP_CODEBOX_RUN_RUNTIME_PACKAGE_ABILITY : normalizedAbility,
+    runtime_ability: normalizedAbility,
+    owning_components: ['wp-codebox'],
+  };
+}
+
+function runtimeTaskAbilityNormalizationEvidence(runtimeTask = {}) {
+  const normalization = runtimeTask?.ability_normalization;
+  if (!normalization || typeof normalization !== 'object' || Array.isArray(normalization)) {
+    return null;
+  }
+  return normalization;
+}
+
 function runtimeComponentPaths(config, options = {}) {
-  const runtimeComponents = config.runtime_components && typeof config.runtime_components === 'object'
-    ? config.runtime_components
-    : {};
+  const runtimeComponents = {
+    ...(config.runtime_components && typeof config.runtime_components === 'object' ? config.runtime_components : {}),
+    ...(process.env.HOMEBOY_WP_CODEBOX_RUNTIME_COMPONENT ? { runtime: process.env.HOMEBOY_WP_CODEBOX_RUNTIME_COMPONENT } : {}),
+  };
   const explicit = config.runtime_component_paths && typeof config.runtime_component_paths === 'object'
     ? config.runtime_component_paths
     : {};
@@ -825,6 +1478,9 @@ function runtimeComponentPaths(config, options = {}) {
   const aliases = runtimeComponentPathAliases(options);
   const resolved = {
     ...contractPaths,
+    agents_api: contractPaths.agents_api || firstValue(process.env.WP_CODEBOX_AGENTS_API_PATH, process.env.HOMEBOY_WP_CODEBOX_AGENTS_API_PATH),
+    agent_runtime: contractPaths.agent_runtime || explicit.agent_runtime || config.agent_runtime || options.agentRuntime,
+    agent_runtime_tools: config.agent_runtime_tools || options.agentRuntimeTools,
     ...explicit,
     runtime: explicit.runtime || runtimeComponents.runtime,
   };
@@ -843,6 +1499,16 @@ function runtimeComponentPaths(config, options = {}) {
   }
 
   return Object.fromEntries(Object.entries(resolved).filter(([, value]) => value !== undefined && value !== ''));
+}
+
+function runtimeEnvWithComponentPaths(runtimeEnv = {}, components = {}) {
+  const env = { ...(runtimeEnv && typeof runtimeEnv === 'object' ? runtimeEnv : {}) };
+
+  if (components.agents_api) {
+    env.WP_CODEBOX_AGENTS_API_PATH = components.agents_api;
+  }
+
+  return env;
 }
 
 function componentPathCandidateValue(candidate, sources) {
@@ -892,17 +1558,7 @@ function runtimeComponentPathsFromContracts(contracts, options = {}) {
 
 function defaultCodeboxRuntimeConfig(request, config, inputs, options = {}) {
   const settings = firstObject(options.settings, parseJsonObject(process.env.HOMEBOY_SETTINGS_JSON)) || {};
-  const discovery = runtimeComponentDiscovery(options);
   const workspaceRoot = resolveWorkspaceRoot(request, config, inputs, settings, options);
-  const workspaceBase = workspaceRoot ? path.dirname(workspaceRoot) : process.cwd();
-  const dataMachinePath = firstExistingPath(
-    options.agentRuntime,
-    ...componentDiscoveryCandidates('agent_runtime', discovery, settings, workspaceBase),
-  );
-  const dataMachineCodePath = firstExistingPath(
-    options.agentRuntimeTools,
-    ...componentDiscoveryCandidates('agent_runtime_tools', discovery, settings, workspaceBase),
-  );
   const providerPluginPath = firstExistingPath(
     settings.wp_codebox_provider_plugin_path,
     process.env.HOMEBOY_WP_CODEBOX_PROVIDER_PLUGIN_PATH,
@@ -911,23 +1567,15 @@ function defaultCodeboxRuntimeConfig(request, config, inputs, options = {}) {
   const provider = config.provider || options.provider || defaultProvider(settings);
   const providerConfig = providerConfigFor(provider, settings, providerDefaults);
   const model = config.model || options.model || defaultModelForProvider(provider, settings, providerConfig);
-  const agentsApiPath = firstExistingPath(
-    options.agentsApi,
-    ...componentDiscoveryCandidates('agents_api', discovery, settings, workspaceBase, { agent_runtime: dataMachinePath }),
-  );
-  const phpAiClientPath = defaultPhpAiClientPath(settings, options);
-
   return {
-    agentsApi: agentsApiPath,
-    legacyRuntime: dataMachinePath,
-    legacyRuntimeTools: dataMachineCodePath,
     providerPluginPaths: defaultProviderPluginPaths(provider, config, options, settings, providerConfig, providerPluginPath),
     provider,
     model,
     secretEnv: defaultSecretEnv(config, options, settings, providerConfig),
-    wpCodeboxBin: firstValue(settings.wp_codebox_bin, settings.wpCodeboxBin, process.env.HOMEBOY_WP_CODEBOX_BIN, ''),
+    wpCodeboxBin: wpCodeboxBin({ settings, executable: '' }),
     runtimeOverlayProfiles: defaultRuntimeOverlayProfiles(settings),
-    runtimeOverlays: defaultRuntimeOverlays(settings, phpAiClientPath),
+    runtimeOverlays: defaultRuntimeOverlays(settings),
+    runtimeRequirements: {},
     runtimeEnv: defaultRuntimeEnv(settings),
     runtimeStateMounts: defaultRuntimeStateMounts(settings),
     runtimeConfigMounts: defaultRuntimeConfigMounts(settings),
@@ -940,9 +1588,12 @@ function defaultCodeboxRuntimeConfig(request, config, inputs, options = {}) {
 }
 
 function defaultProviderPluginPaths(provider, config, options, settings, providerConfig, fallbackProviderPluginPath) {
-  return uniquePaths(firstProviderPathArray(
-    config.provider_plugin_paths,
+  return normalizeProviderPluginPaths(firstProviderPathArray(
+    providerPluginPathsFromEnv(),
     options.providerPluginPaths,
+    options.provider_plugin_paths,
+    config.provider_plugin_paths,
+    config.providerPluginPaths,
     providerPathsFor(settings.wp_codebox_provider_plugin_paths, provider),
     providerPathsFor(settings.provider_plugin_paths, provider),
     providerConfig.provider_plugin_paths,
@@ -955,30 +1606,75 @@ function defaultRuntimeOverlayProfiles(settings) {
   return normalizeArray(settings.wp_codebox_runtime_overlay_profiles || settings.runtime_overlay_profiles);
 }
 
-function defaultRuntimeOverlays(settings, phpAiClientPath = '') {
+function defaultRuntimeOverlays(settings) {
   const explicit = normalizeArray(settings.wp_codebox_runtime_overlays || settings.runtime_overlays);
   if (explicit.length > 0) {
     return explicit;
   }
 
-  return phpAiClientPath ? [{
-    kind: 'bundled-library',
-    library: 'php-ai-client',
-    source: phpAiClientPath,
-    target: '/wordpress/wp-includes/php-ai-client',
-    strategy: 'wordpress-scoped-bundle',
-    metadata: { component: 'php-ai-client', source: 'homeboy-extensions-default' },
-  }] : [];
+  return [];
 }
 
-function defaultPhpAiClientPath(settings, options = {}) {
-  return firstExistingPath(
-    options.phpAiClient,
-    settings.wp_codebox_php_ai_client_path,
-    settings.php_ai_client_path,
-    process.env.HOMEBOY_WP_CODEBOX_PHP_AI_CLIENT_PATH,
-    process.env.PHP_AI_CLIENT_PATH,
-  );
+function defaultChatHandlerPluginContracts(settings = {}, options = {}, providerConfig = {}) {
+  return uniqueRuntimeRequirementObjects([
+    ...chatHandlerPluginEntries(options.chatHandlerPluginPaths || options.chat_handler_plugin_paths),
+    ...chatHandlerPluginEntries(settings.wp_codebox_chat_handler_plugin_paths || settings.chat_handler_plugin_paths),
+    ...chatHandlerPluginEntries(providerConfig.chat_handler_plugin_paths),
+    ...chatHandlerPluginEntries(envPathList(process.env.HOMEBOY_WP_CODEBOX_CHAT_HANDLER_PLUGIN_PATHS)),
+    ...chatHandlerPluginEntries(envPathList(process.env.WP_CODEBOX_CHAT_HANDLER_PLUGIN_PATHS)),
+  ]);
+}
+
+function chatHandlerPluginEntries(value) {
+  return normalizeArray(value).map((entry) => chatHandlerPluginContract(entry)).filter(Boolean);
+}
+
+function chatHandlerPluginContract(entry) {
+  const source = typeof entry === 'string'
+    ? entry
+    : entry?.path || entry?.source || entry?.target || '';
+  const slug = typeof entry === 'object' && entry
+    ? entry.slug || entry.id || slugFromRuntimePath(source)
+    : slugFromRuntimePath(source);
+  if (!source || !slug) {
+    return null;
+  }
+  const explicit = typeof entry === 'object' && entry ? entry : {};
+  return {
+    ...explicit,
+    slug,
+    path: explicit.path || explicit.source || source,
+    pluginFile: explicit.pluginFile || explicit.plugin_file || `${slug}/${slug}.php`,
+    loadAs: explicit.loadAs || explicit.load_as || 'plugin',
+    activate: explicit.activate === undefined ? true : explicit.activate,
+    metadata: {
+      ...(explicit.metadata || {}),
+      source: explicit.metadata?.source || 'homeboy-extensions-codebox-chat-handler-default',
+      registers: uniquePaths([
+        ...normalizeArray(explicit.metadata?.registers),
+        'wp_agent_chat_handler',
+      ]),
+    },
+  };
+}
+
+function slugFromRuntimePath(source = '') {
+  return source ? path.basename(String(source).replace(/\/+$/, '')) : '';
+}
+
+function envPathList(value) {
+  if (!value) {
+    return [];
+  }
+  try {
+    const parsed = JSON.parse(value);
+    if (Array.isArray(parsed)) {
+      return parsed;
+    }
+  } catch {
+    // Fall through to PATH-style lists for simple environment configuration.
+  }
+  return String(value).split(path.delimiter).map((entry) => entry.trim()).filter(Boolean);
 }
 
 function defaultRuntimeEnv(settings) {
@@ -997,6 +1693,18 @@ function firstDefined(...values) {
   return values.find((value) => value !== undefined);
 }
 
+function withoutEmptyObjectValues(value) {
+  return Object.fromEntries(Object.entries(value).filter(([, entry]) => {
+    if (Array.isArray(entry)) {
+      return entry.length > 0;
+    }
+    if (entry && typeof entry === 'object') {
+      return Object.keys(entry).length > 0;
+    }
+    return entry !== undefined && entry !== '';
+  }));
+}
+
 function parseJsonObject(value) {
   if (!value || typeof value !== 'string') {
     return null;
@@ -1009,16 +1717,43 @@ function parseJsonObject(value) {
   }
 }
 
+function agentTaskClientContext(request = {}, config = {}, inputs = {}, options = {}) {
+  return firstObject(
+    inputs.client_context,
+    inputs.clientContext,
+    request.client_context,
+    request.clientContext,
+    config.client_context,
+    config.clientContext,
+    options.clientContext,
+    parseJsonObject(inputs.client_context),
+    parseJsonObject(inputs.clientContext),
+    parseJsonObject(request.client_context),
+    parseJsonObject(request.clientContext),
+    parseJsonObject(request.dispatch?.client_context),
+    parseJsonObject(request.dispatch?.clientContext),
+    parseJsonObject(config.client_context),
+    parseJsonObject(config.clientContext),
+  ) || {};
+}
+
 function homeboyAgentTaskSecretEnvPlan() {
   return parseJsonObject(process.env.HOMEBOY_AGENT_TASK_SECRET_ENV_PLAN_JSON);
 }
 
 function secretEnvNamesFromPlan(plan) {
-  if (!plan || plan.schema !== 'homeboy/secret-env-plan/v1') {
+  if (!plan || plan.schema !== SECRET_ENV_PLAN_SCHEMA) {
     return [];
   }
+  // Mirror core's authoritative SecretEnvPlan::secret_env_names() aggregation
+  // (homeboy src/core/secret_env_plan.rs): fold direct names, requirement-derived
+  // names, provider-credential names, and mapped env names so every declared
+  // secret is forwarded into the sandbox. Re-deriving only secret_env_names +
+  // env_name_mapping silently dropped requirement and provider-credential names.
   return uniquePaths([
     ...normalizeArray(plan.secret_env_names),
+    ...normalizeArray(plan.requirements).map((requirement) => requirement && requirement.name),
+    ...Object.values(plan.provider_credentials || {}).flatMap((mapping) => normalizeArray(mapping && mapping.secret_env)),
     ...Object.values(plan.env_name_mapping || {}).flatMap(normalizeArray),
   ]);
 }
@@ -1314,7 +2049,12 @@ function defaultWorkspaceMounts(workspaceRoot, request, config, inputs, options)
       source: workspaceRoot,
       target: workspaceTarget,
       mode: workspaceMode(request, config, inputs),
-      metadata: { kind: 'homeboy-dmc-workspace', workspace_slug: workspaceSlug(workspaceRoot) },
+      metadata: {
+        kind: WP_CODEBOX_WORKSPACE_MOUNT_KIND,
+        workspace_slug: workspaceSlug(workspaceRoot),
+        workspaceRef: path.basename(workspaceRoot),
+        artifactExcludePaths: [...RUNNER_MATERIALIZATION_EXCLUDE_PATHS],
+      },
     },
   ];
 }
@@ -1362,11 +2102,19 @@ function firstObject(...candidates) {
   return candidates.find((candidate) => candidate && typeof candidate === 'object' && !Array.isArray(candidate)) || null;
 }
 
+function firstNonEmptyObject(...candidates) {
+  return candidates.find((candidate) => candidate && typeof candidate === 'object' && !Array.isArray(candidate) && Object.keys(candidate).length > 0) || null;
+}
+
 function firstValue(...candidates) {
   return candidates.find((candidate) => candidate !== undefined && candidate !== null && candidate !== '');
 }
 
-function recipeConfigFromAgentTaskRequest(request, config, inputs) {
+function withoutUndefinedValues(value) {
+  return Object.fromEntries(Object.entries(value).filter(([, entry]) => entry !== undefined));
+}
+
+function recipeConfigFromAgentTaskRequest(request, config, inputs, runtimeOptions = {}) {
   const explicit = firstObject(
     inputs.recipe,
     inputs.recipe_pack,
@@ -1397,7 +2145,7 @@ function recipeConfigFromAgentTaskRequest(request, config, inputs) {
     target_repo: explicit.target_repo || explicit.targetRepo || firstValue(inputs.target_repo, inputs.targetRepo, config.target_repo, config.targetRepo, sourceRef.repo),
     target_pr: explicit.target_pr || explicit.targetPr || firstValue(inputs.target_pr, inputs.targetPr, config.target_pr, config.targetPr, sourceRef.pr, sourceRef.number),
     target_branch: explicit.target_branch || explicit.targetBranch || firstValue(inputs.target_branch, inputs.targetBranch, config.target_branch, config.targetBranch),
-    inputs: explicit.inputs || inputs.recipe_inputs || inputs.recipeInputs || config.recipe_inputs || config.recipeInputs,
+    inputs: recipeInputsFromAgentTaskRequest(config, inputs, explicit, runtimeOptions),
     secret_env: explicit.secret_env || explicit.secretEnv || inputs.recipe_secret_env || inputs.recipeSecretEnv || config.recipe_secret_env || config.recipeSecretEnv,
     metadata: explicit.metadata,
   }).filter(([, value]) => value !== undefined && value !== '' && !(Array.isArray(value) && value.length === 0)));
@@ -1405,14 +2153,134 @@ function recipeConfigFromAgentTaskRequest(request, config, inputs) {
   return recipe.pack || recipe.name || recipe.path || recipe.repository || recipe.target_ref ? recipe : {};
 }
 
+function recipeInputsFromAgentTaskRequest(config = {}, inputs = {}, explicit = {}, runtimeOptions = {}) {
+  const recipeInputs = firstObject(explicit.inputs, inputs.recipe_inputs, inputs.recipeInputs, config.recipe_inputs, config.recipeInputs) || {};
+  const matrixInputs = roleCapabilityMatrixRecipeInputs(config, inputs, runtimeOptions);
+  if (!matrixInputs.fixtureUsers && !matrixInputs.userSessions) {
+    return Object.keys(recipeInputs).length > 0 ? recipeInputs : undefined;
+  }
+  return {
+    ...recipeInputs,
+    fixtureUsers: mergeRecipeEntriesByName(recipeInputs.fixtureUsers, matrixInputs.fixtureUsers),
+    userSessions: mergeRecipeEntriesByName(recipeInputs.userSessions, matrixInputs.userSessions),
+  };
+}
+
+function roleCapabilityMatrixRecipeInputs(config = {}, inputs = {}, runtimeOptions = {}) {
+  const runtimeRequirements = firstObject(config.runtime_requirements, config.runtimeRequirements) || {};
+  const runtimeProfile = firstObject(runtimeOptions.runtimeProfile) || {};
+  const matrix = firstDefined(
+    inputs.role_matrix,
+    inputs.roleMatrix,
+    inputs.capability_matrix,
+    inputs.capabilityMatrix,
+    config.role_matrix,
+    config.roleMatrix,
+    config.capability_matrix,
+    config.capabilityMatrix,
+    runtimeRequirements.role_matrix,
+    runtimeRequirements.roleMatrix,
+    runtimeRequirements.capability_matrix,
+    runtimeRequirements.capabilityMatrix,
+    runtimeProfile.role_matrix,
+    runtimeProfile.roleMatrix,
+    runtimeProfile.capability_matrix,
+    runtimeProfile.capabilityMatrix
+  );
+  const entries = roleCapabilityMatrixEntries(matrix);
+  if (entries.length === 0) {
+    return {};
+  }
+  return {
+    fixtureUsers: entries.map((entry) => roleMatrixFixtureUser(entry)),
+    userSessions: entries.map((entry) => roleMatrixUserSession(entry)),
+  };
+}
+
+function roleCapabilityMatrixEntries(matrix) {
+  if (Array.isArray(matrix)) {
+    return matrix.map((entry) => normalizeRoleCapabilityMatrixEntry(entry)).filter(Boolean);
+  }
+  if (!matrix || typeof matrix !== 'object') {
+    return [];
+  }
+  return Object.entries(matrix).map(([role, value]) => normalizeRoleCapabilityMatrixEntry({ role, value })).filter(Boolean);
+}
+
+function normalizeRoleCapabilityMatrixEntry(entry) {
+  if (typeof entry === 'string') {
+    return { role: entry, name: sanitizeRecipeName(entry), capabilities: [] };
+  }
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+    return null;
+  }
+  const value = entry.value && typeof entry.value === 'object' && !Array.isArray(entry.value) ? entry.value : {};
+  const role = firstValue(entry.role, value.role, entry.name, value.name);
+  const name = sanitizeRecipeName(firstValue(entry.name, value.name, role));
+  if (!role || !name) {
+    return null;
+  }
+  return {
+    name,
+    role: String(role),
+    username: firstValue(entry.username, value.username),
+    email: firstValue(entry.email, value.email),
+    displayName: firstValue(entry.displayName, entry.display_name, value.displayName, value.display_name),
+    password: firstValue(entry.password, value.password),
+    capabilities: normalizeArray(firstDefined(entry.capabilities, entry.capability, value.capabilities, value.capability, Array.isArray(entry.value) ? entry.value : [])).map(String),
+    sessionName: sanitizeRecipeName(firstValue(entry.session, entry.sessionName, entry.session_name, value.session, value.sessionName, value.session_name, `${name}-session`)),
+  };
+}
+
+function roleMatrixFixtureUser(entry) {
+  return withoutEmptyObjectValues({
+    name: entry.name,
+    username: entry.username || `fixture-${entry.name}`,
+    email: entry.email,
+    role: entry.role,
+    displayName: entry.displayName,
+    password: entry.password,
+    metadata: withoutEmptyObjectValues({ capabilities: entry.capabilities }),
+  });
+}
+
+function roleMatrixUserSession(entry) {
+  return withoutEmptyObjectValues({
+    name: entry.sessionName,
+    user: entry.name,
+    metadata: withoutEmptyObjectValues({ role: entry.role, capabilities: entry.capabilities }),
+  });
+}
+
+function mergeRecipeEntriesByName(explicitEntries, generatedEntries) {
+  const entries = [];
+  const seen = new Set();
+  for (const entry of [...normalizeArray(explicitEntries), ...normalizeArray(generatedEntries)]) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      continue;
+    }
+    const name = entry.name ? String(entry.name) : '';
+    if (name && seen.has(name)) {
+      continue;
+    }
+    if (name) {
+      seen.add(name);
+    }
+    entries.push(entry);
+  }
+  return entries.length > 0 ? entries : undefined;
+}
+
+function sanitizeRecipeName(value) {
+  return String(value || '').trim().replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
+}
+
 function agentBundleConfigFromAgentTaskRequest(request, config, inputs) {
   const explicitBundleSources = [
     inputs.agent_bundle,
     inputs.agentBundle,
-    ...LEGACY_BUNDLE_KEYS.map((key) => inputs[key]),
     config.agent_bundle,
     config.agentBundle,
-    ...LEGACY_BUNDLE_KEYS.map((key) => config[key]),
   ].filter((value) => value && typeof value === 'object');
   const requestedBundle = config.execution_kind === 'agent_bundle'
     || inputs.execution_kind === 'agent_bundle'
@@ -1447,10 +2315,11 @@ function agentBundleConfigFromAgentTaskRequest(request, config, inputs) {
 }
 
 function normalizeStatus(result, exitStatus = 0) {
+  const publicEnvelope = codeboxPublicResultEnvelope(result);
   if (recipeRunFailedPhase(recipeRunFromResult(result))) {
     return 'failed';
   }
-  if (result?.outputs && typeof result.outputs === 'object' && result.outputs.success === false) {
+  if (publicEnvelope?.outputs && typeof publicEnvelope.outputs === 'object' && publicEnvelope.outputs.success === false) {
     return 'failed';
   }
   if (agentRuntimeFailure(result)) {
@@ -1477,66 +2346,47 @@ function normalizeStatus(result, exitStatus = 0) {
   if (result?.status === 'completed') {
     return result?.success === true ? 'succeeded' : 'failed';
   }
-  const agentResult = result?.run?.agentResult || result?.agentResult || result?.agent_result || result?.metadata?.recipe_run?.agentResult || result?.metadata?.recipe_run?.run?.agentResult;
-  const changedFileCount = agentResult?.changedFiles?.count;
-  const patchBytes = agentResult?.patch?.bytes;
-  if (result?.success === true && agentResult?.noOpReason && changedFileCount === 0 && patchBytes === 0) {
+  if (publicEnvelope?.success === true && publicEnvelope?.metadata?.no_op_reason) {
     return 'no_op';
   }
   if (result?.outcome === 'no_op' || result?.no_op) {
     return 'no_op';
   }
-  return result?.success === true ? 'succeeded' : 'failed';
+  if (agentRuntimeSucceeded(result)) {
+    return 'succeeded';
+  }
+  return (publicEnvelope?.success ?? result?.success) === true ? 'succeeded' : 'failed';
 }
 
 function agentRuntimeResultCandidates(result) {
-  const workload = agentRuntimeWorkload(result) || {};
-  const scenarios = Array.isArray(workload.scenarios) ? workload.scenarios : [];
+  const publicEnvelope = codeboxPublicResultEnvelope(result);
   return [
-    result?.outputs?.agent_runtime?.result,
-    result?.outputs?.agent_runtime?.workload,
-    result?.outputs?.agent_runtime,
-    result?.raw?.agent_runtime,
-    result?.raw?.agent_runtime?.result,
-    result?.raw?.agent_runtime?.workload,
-    result?.metadata?.agent_runtime,
-    result?.metadata?.agent_runtime?.result,
-    result?.metadata?.agent_runtime?.workload,
-    result?.run?.agentResult,
-    result?.agentResult,
-    result?.agent_result,
-    result?.outputs,
-    workload,
-    workload.outputs,
-    ...scenarios,
-    ...scenarios.map((scenario) => scenario?.metadata),
-    ...scenarios.map((scenario) => scenario?.outputs),
+    publicEnvelope,
+    publicEnvelope?.outputs,
+    ...(Array.isArray(publicEnvelope?.diagnostics) ? publicEnvelope.diagnostics : []),
   ].filter((candidate) => candidate && typeof candidate === 'object' && !Array.isArray(candidate));
-}
-
-function agentRuntimeWorkload(result) {
-  return firstObject(
-    result?.outputs?.agent_runtime?.result,
-    result?.outputs?.agent_runtime?.workload,
-    result?.raw?.agent_runtime?.result,
-    result?.raw?.agent_runtime?.workload,
-    result?.metadata?.agent_runtime?.result,
-    result?.metadata?.agent_runtime?.workload,
-    result?.run?.agentResult,
-    result?.agentResult,
-    result?.agent_result,
-  );
 }
 
 function agentRuntimeFailure(result) {
   return agentRuntimeResultCandidates(result).find(agentRuntimeCandidateFailed) || null;
 }
 
+function agentRuntimeSucceeded(result) {
+  return agentRuntimeResultCandidates(result).some(agentRuntimeCandidateSucceeded);
+}
+
+function agentRuntimeCandidateSucceeded(candidate) {
+  const runtime = candidate.agent_runtime || candidate.agentRuntime;
+  return runtime && typeof runtime === 'object' && !Array.isArray(runtime) && runtime.success === true;
+}
+
 function agentRuntimeCandidateFailed(candidate) {
+  const runtime = candidate.agent_runtime || candidate.agentRuntime;
   const terminalStatus = String(candidate.terminal_status || candidate.terminalStatus || '').toLowerCase();
   const status = String(candidate.status || candidate.outcome || '').toLowerCase();
   const completionStatus = String(candidate.completion_outcome?.status || candidate.completionOutcome?.status || '').toLowerCase();
   return candidate.success === false
+    || runtime?.success === false
     || candidate.completion_outcome?.success === false
     || candidate.completionOutcome?.success === false
     || terminalStatus === 'failed'
@@ -1607,83 +2457,6 @@ function appendUniqueEvidenceRef(refs, ref) {
   refs.push(ref);
 }
 
-function artifactPath(root, relativePath) {
-  if (!root || !relativePath) {
-    return '';
-  }
-  return `${String(root).replace(/\/$/, '')}/${String(relativePath).replace(/^\//, '')}`;
-}
-
-function codeboxBundleArtifacts(result) {
-  const artifacts = [];
-  const artifactRefs = Array.isArray(result.run?.artifactRefs) ? result.run.artifactRefs : [];
-  for (const ref of artifactRefs) {
-    appendUniqueArtifact(artifacts, {
-      id: ref.id || ref.digest?.value,
-      kind: ref.kind || 'codebox-artifact-bundle',
-      path: ref.directory,
-      sha256: ref.digest?.value,
-      metadata: { digest: ref.digest },
-    });
-  }
-
-  const completionOutcome = result.completionOutcome || result.completion_outcome || {};
-  const bundleDirectory = result.run?.agentResult?.artifacts?.directory || result.agent_result?.artifacts?.directory || completionOutcome?.provenance?.artifactDirectory || result.session?.artifacts?.path;
-  const artifactBundleId = completionOutcome?.provenance?.artifactBundleId || result.session?.artifacts?.bundle_id || result.artifacts?.id;
-  appendUniqueArtifact(artifacts, {
-    id: artifactBundleId,
-    kind: 'codebox-artifact-bundle',
-    path: bundleDirectory,
-    metadata: {
-      runtime_id: result.run?.runtime?.id,
-      runtime_status: result.run?.runtime?.status,
-    },
-  });
-
-  const agentResult = result.run?.agentResult || result.agentResult || result.agent_result || result.metadata?.recipe_run?.agentResult || {};
-  const changedFilesPath = artifactPath(bundleDirectory, agentResult.changedFiles?.artifact || '');
-  appendUniqueArtifact(artifacts, {
-    id: changedFilesPath ? 'codebox-changed-files' : '',
-    kind: 'codebox-changed-files',
-    path: changedFilesPath,
-    metadata: agentResult.changedFiles || {},
-  });
-
-  const patchPath = artifactPath(bundleDirectory, agentResult.patch?.artifact || '');
-  appendUniqueArtifact(artifacts, {
-    id: patchPath ? 'codebox-patch' : '',
-    kind: 'codebox-patch',
-    path: patchPath,
-    sha256: agentResult.patch?.sha256,
-    size_bytes: agentResult.patch?.bytes,
-    metadata: agentResult.patch || {},
-  });
-
-  const transcriptPath = artifactPath(bundleDirectory, agentResult.transcript?.artifact || '');
-  appendUniqueArtifact(artifacts, {
-    id: transcriptPath ? 'codebox-transcript' : '',
-    kind: 'codebox-transcript',
-    path: transcriptPath,
-    metadata: agentResult.transcript || {},
-  });
-
-  const runtimeLogPath = result.artifacts?.runtimeLogPath;
-  appendUniqueArtifact(artifacts, {
-    id: runtimeLogPath ? 'codebox-runtime-log' : '',
-    kind: 'codebox-runtime-log',
-    path: runtimeLogPath,
-  });
-
-  const commandsLogPath = result.artifacts?.commandsLogPath;
-  appendUniqueArtifact(artifacts, {
-    id: commandsLogPath ? 'codebox-command-log' : '',
-    kind: 'codebox-command-log',
-    path: commandsLogPath,
-  });
-
-  return artifacts;
-}
-
 function recipeRunFromResult(result) {
   return firstObject(
     result?.recipe_run,
@@ -1740,70 +2513,6 @@ function recipeRunFailureDiagnostic(recipeRun) {
   };
 }
 
-function appendRecipeArtifact(artifacts, artifact, fallbackKind, index) {
-  if (!artifact) {
-    return;
-  }
-  if (typeof artifact === 'string') {
-    appendUniqueArtifact(artifacts, {
-      id: artifact,
-      kind: fallbackKind,
-      path: artifact,
-    });
-    return;
-  }
-  appendUniqueArtifact(artifacts, {
-    id: artifact.id || artifact.name || artifact.path || artifact.url || `${fallbackKind}-${index + 1}`,
-    kind: artifact.kind || artifact.type || fallbackKind,
-    name: artifact.name,
-    path: artifact.path || artifact.file || artifact.directory,
-    url: artifact.url,
-    mime: artifact.mime,
-    size_bytes: artifact.size_bytes || artifact.sizeBytes,
-    sha256: artifact.sha256,
-    metadata: artifact.metadata || {},
-  });
-}
-
-function recipeRunArtifacts(result) {
-  const recipeRun = recipeRunFromResult(result);
-  if (!recipeRun || Object.keys(recipeRun).length === 0) {
-    return [];
-  }
-
-  const artifacts = [];
-  const startupLogs = [recipeRun.startup_log, recipeRun.startupLog, recipeRun.startup?.log, recipeRun.startup?.log_path, recipeRun.startup?.logPath].filter(Boolean);
-  startupLogs.forEach((artifact, index) => appendRecipeArtifact(artifacts, artifact, 'codebox-recipe-startup-log', index));
-
-  const probeJson = [recipeRun.probe_json, recipeRun.probeJson, recipeRun.probe_results, recipeRun.probeResults, recipeRun.probe?.artifact, recipeRun.probe?.path].filter(Boolean);
-  probeJson.forEach((artifact, index) => appendRecipeArtifact(artifacts, artifact, 'codebox-recipe-probe-json', index));
-
-  const probes = Array.isArray(recipeRun.probes) ? recipeRun.probes : [];
-  probes.forEach((probe, index) => {
-    appendRecipeArtifact(artifacts, probe.artifact || probe.path || probe.result_path || probe.resultPath, 'codebox-recipe-probe-json', index);
-    appendRecipeArtifact(artifacts, probe.screenshot || probe.screenshot_path || probe.screenshotPath, 'codebox-recipe-screenshot', index);
-  });
-
-  const screenshots = [
-    ...(Array.isArray(recipeRun.screenshots) ? recipeRun.screenshots : []),
-    ...(Array.isArray(recipeRun.browser_screenshots) ? recipeRun.browser_screenshots : []),
-    ...(Array.isArray(recipeRun.browserScreenshots) ? recipeRun.browserScreenshots : []),
-  ];
-  screenshots.forEach((artifact, index) => appendRecipeArtifact(artifacts, artifact, 'codebox-recipe-screenshot', index));
-
-  const sideEffects = [recipeRun.fake_side_effects, recipeRun.fakeSideEffects, recipeRun.side_effects, recipeRun.sideEffects].filter(Boolean);
-  sideEffects.forEach((artifact, index) => appendRecipeArtifact(artifacts, artifact, 'codebox-recipe-fake-side-effects', index));
-
-  const declaredArtifacts = [
-    ...(Array.isArray(recipeRun.artifacts) ? recipeRun.artifacts : []),
-    ...(Array.isArray(recipeRun.declared_artifacts) ? recipeRun.declared_artifacts : []),
-    ...(Array.isArray(recipeRun.declaredArtifacts) ? recipeRun.declaredArtifacts : []),
-  ];
-  declaredArtifacts.forEach((artifact, index) => appendRecipeArtifact(artifacts, artifact, 'codebox-recipe-artifact', index));
-
-  return artifacts;
-}
-
 function homeboyFailureClassification(classification, status) {
   return providerFailureClassification(classification, status);
 }
@@ -1824,128 +2533,54 @@ function sanitizePublicMetadata(value) {
   }));
 }
 
-function normalizeTypedArtifactEntry(name, artifact) {
-  if (!artifact || typeof artifact !== 'object' || Array.isArray(artifact)) {
-    return null;
-  }
-  const artifactName = artifact.name || name;
-  if (!artifactName) {
-    return null;
-  }
-  const fileRefs = typedArtifactOutputFileRefs(artifact);
-  return sanitizePublicMetadata(Object.fromEntries(Object.entries({
-    schema: 'homeboy/agent-task-typed-artifact/v1',
-    name: artifactName,
-    type: artifact.type || artifact.kind || artifact.artifact_type || artifact.artifactType,
-    artifact_schema: artifact.artifact_schema || artifact.artifactSchema || artifact.schema,
-    payload: artifact.payload !== undefined ? artifact.payload : artifact.data,
-    provenance: artifact.provenance && typeof artifact.provenance === 'object' && !Array.isArray(artifact.provenance) ? artifact.provenance : {},
-    file_refs: fileRefs,
-    metadata: artifact.metadata && typeof artifact.metadata === 'object' && !Array.isArray(artifact.metadata) ? artifact.metadata : {},
-  }).filter(([, value]) => value !== undefined && value !== '' && !(Array.isArray(value) && value.length === 0))));
-}
-
-function typedArtifactOutputFileRefs(artifact) {
-  if (Array.isArray(artifact.file_refs)) {
-    return artifact.file_refs;
-  }
-  if (Array.isArray(artifact.fileRefs)) {
-    return artifact.fileRefs;
-  }
-  return [];
-}
-
 function normalizeTypedArtifacts(value) {
-  if (Array.isArray(value)) {
-    return Object.fromEntries(value
-      .map((artifact, index) => normalizeTypedArtifactEntry(artifact?.name || artifact?.id || `artifact_${index + 1}`, artifact))
-      .filter(Boolean)
-      .map((artifact) => [artifact.name, artifact]));
-  }
-  if (!value || typeof value !== 'object') {
-    return {};
-  }
-  return Object.fromEntries(Object.entries(value)
-    .map(([name, artifact]) => normalizeTypedArtifactEntry(name, artifact))
-    .filter(Boolean)
-    .map((artifact) => [artifact.name, artifact]));
+  return normalizeCodeboxTypedArtifacts(value, { sanitize: sanitizePublicMetadata });
 }
 
-function typedArtifactsFromResult(result) {
-  const workload = agentRuntimeWorkload(result) || {};
-  const scenarios = Array.isArray(workload.scenarios) ? workload.scenarios : [];
-  const candidates = [
-    result.outputs?.typed_artifacts,
-    result.outputs?.typedArtifacts,
-    result.run?.agentResult?.typed_artifacts,
-    result.run?.agentResult?.typedArtifacts,
-    result.run?.agentResult?.outputs?.typed_artifacts,
-    result.run?.agentResult?.outputs?.typedArtifacts,
-    result.agentResult?.outputs?.typed_artifacts,
-    result.agentResult?.outputs?.typedArtifacts,
-    result.agent_result?.outputs?.typed_artifacts,
-    result.agent_result?.outputs?.typedArtifacts,
-    result.metadata?.agent_runtime?.result?.typed_artifacts,
-    result.metadata?.agent_runtime?.result?.typedArtifacts,
-    result.metadata?.agent_runtime?.result?.outputs?.typed_artifacts,
-    result.metadata?.agent_runtime?.result?.outputs?.typedArtifacts,
-    result.metadata?.agent_runtime?.result?.outputs?.outputs?.typed_artifacts,
-    result.metadata?.agent_runtime?.result?.outputs?.outputs?.typedArtifacts,
-    workload.typed_artifacts,
-    workload.typedArtifacts,
-    workload.outputs?.typed_artifacts,
-    workload.outputs?.typedArtifacts,
-    workload.outputs?.outputs?.typed_artifacts,
-    workload.outputs?.outputs?.typedArtifacts,
-    ...scenarios.map((scenario) => scenario?.typed_artifacts),
-    ...scenarios.map((scenario) => scenario?.typedArtifacts),
-    ...scenarios.map((scenario) => scenario?.outputs?.typed_artifacts),
-    ...scenarios.map((scenario) => scenario?.outputs?.typedArtifacts),
-    ...scenarios.map((scenario) => scenario?.metadata?.outputs?.typed_artifacts),
-    ...scenarios.map((scenario) => scenario?.metadata?.outputs?.typedArtifacts),
-    ...scenarios.map((scenario) => scenario?.metadata?.typed_artifacts),
-    ...scenarios.map((scenario) => scenario?.metadata?.typedArtifacts),
-  ];
-  return Object.assign({}, ...candidates.map(normalizeTypedArtifacts));
+function typedArtifactsFromResult(result, options = {}) {
+  return typedArtifactsFromCodeboxResult(result, { sanitize: sanitizePublicMetadata, ...options });
 }
 
-function typedArtifactProjectionFromOutputPath(outputPath, value, typedArtifacts) {
-  const match = String(outputPath || '').match(/(?:^|\.)typed_?artifacts\.([^.]+)\.payload$/i);
-  if (!match) {
-    return null;
-  }
-  const artifactName = match[1];
-  const existing = typedArtifacts[artifactName] || {};
-  return normalizeTypedArtifactEntry(artifactName, {
-    ...existing,
-    name: existing.name || artifactName,
-    payload: value,
-  });
+function codeboxAgentResultFromResult(result) {
+  return codeboxPublicResultEnvelope(result)?.metadata || {};
 }
 
-function typedArtifactFileRefs(typedArtifact) {
-  const refs = Array.isArray(typedArtifact.file_refs) ? typedArtifact.file_refs : [];
-  const directRefs = [typedArtifact.path, typedArtifact.url, typedArtifact.file, typedArtifact.directory].filter(Boolean);
-  return [
-    ...directRefs.map((ref) => ({ path: ref })),
-    ...refs,
-  ];
+function codeboxBundleDirectoryFromResult(result) {
+  const artifactBundle = codeboxPublicResultEnvelope(result)?.artifact_result?.artifactBundle;
+  return artifactBundle?.path || artifactBundle?.uri || '';
 }
 
 function typedArtifactNameFromDeclaration(declaration) {
-  if (typeof declaration === 'string') {
-    return declaration;
-  }
-  if (!declaration || typeof declaration !== 'object' || Array.isArray(declaration)) {
-    return '';
-  }
-  return declaration.name || declaration.id || '';
+  return artifactNameFromDeclaration(declaration);
 }
 
 function requiredArtifactDeclarationsFromRequest(request) {
   const config = request.executor?.config || {};
-  return artifactDeclarationsFromAgentTaskRequest(request, config, request.inputs || {})
+  return codeboxTaskArtifactDeclarations(artifactDeclarationsFromAgentTaskRequest(request, config, request.inputs || {}))
     .filter((declaration) => declaration && typeof declaration === 'object' && declaration.required === true && typedArtifactNameFromDeclaration(declaration));
+}
+
+function requiredArtifactDeclarationsFromResultTaskInput(result) {
+  const taskInput = result?.task_input || result?.taskInput || {};
+  return normalizeArray(taskInput.artifact_declarations || taskInput.artifactDeclarations)
+    .map((declaration) => wpCodeboxArtifactDeclarationFromHomeboy(declaration))
+    .filter((declaration) => declaration && typeof declaration === 'object' && declaration.required === true && typedArtifactNameFromDeclaration(declaration));
+}
+
+function requiredArtifactDeclarationsForResult(request, result) {
+  const declarations = [
+    ...requiredArtifactDeclarationsFromResultTaskInput(result),
+    ...requiredArtifactDeclarationsFromRequest(request),
+  ];
+  const seen = new Set();
+  return declarations.filter((declaration) => {
+    const key = `${typedArtifactNameFromDeclaration(declaration)}:${declaration.artifact_schema || declaration.artifactSchema || declaration.schema || ''}`;
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
 }
 
 function artifactDeclarationsMetadataFromRequest(request) {
@@ -1978,32 +2613,33 @@ function missingRequiredTypedArtifactDiagnostic(request, outputs) {
   };
 }
 
-function typedBundleOutputArtifacts(result) {
-  return Object.values(typedArtifactsFromResult(result)).flatMap((typedArtifact) => typedArtifactFileRefs(typedArtifact).map((ref, index) => {
-    const fileRef = typeof ref === 'string' ? { path: ref } : ref;
-    if (!fileRef || typeof fileRef !== 'object') {
-      return null;
-    }
-    return {
-      id: fileRef.id || `${typedArtifact.name}-${index + 1}`,
-      kind: 'typed-bundle-output',
-      name: typedArtifact.name,
-      path: fileRef.path || fileRef.file || fileRef.directory,
-      url: fileRef.url,
-      mime: fileRef.mime,
-      sha256: fileRef.sha256,
-      metadata: {
-        type: typedArtifact.type,
-        artifact_schema: typedArtifact.artifact_schema,
-        provenance: typedArtifact.provenance,
-        file_ref: fileRef,
-      },
-    };
-  }).filter(Boolean));
+function invalidRequiredTypedArtifactDiagnostic(request, outputs) {
+  const typedArtifacts = outputs?.typed_artifacts && typeof outputs.typed_artifacts === 'object' && !Array.isArray(outputs.typed_artifacts)
+    ? outputs.typed_artifacts
+    : {};
+  const invalid = requiredArtifactDeclarationsFromRequest(request)
+    .map((declaration) => typedArtifactNameFromDeclaration(declaration))
+    .filter((name) => name && unexecutedWorkspaceToolCallArtifact(typedArtifacts[name]));
+  if (invalid.length === 0) {
+    return null;
+  }
+  return {
+    class: 'codebox.required_typed_artifacts_invalid',
+    message: `WP Codebox agent task produced invalid required typed artifacts: ${invalid.join(', ')}.`,
+    data: { reason: 'invalid_required_typed_artifacts', invalid },
+  };
+}
+
+function unexecutedWorkspaceToolCallArtifact(artifact) {
+  if (!artifact || typeof artifact !== 'object') {
+    return false;
+  }
+  const content = String(artifact.payload?.content || '').trim();
+  return /^<workspace_[a-z0-9_:-]+(?:\s[^>]*)?\/>$/i.test(content);
 }
 
 function artifactFromCodeboxArtifact(artifact, index) {
-  return agentTaskArtifactFromRef(
+  const normalized = agentTaskArtifactFromRef(
     {
       ...artifact,
       id: artifact.id || artifact.sha256 || artifact.path || artifact.url || `codebox-artifact-${index + 1}`,
@@ -2012,15 +2648,33 @@ function artifactFromCodeboxArtifact(artifact, index) {
     index,
     sanitizePublicMetadata
   );
+  return normalizeCodeboxArtifactOutcome(normalized, artifact);
+}
+
+function normalizeCodeboxArtifactOutcome(artifact, rawArtifact = {}) {
+  return normalizeCodeboxArtifactOutcomeContract(artifact, rawArtifact, {
+    roleAliases: WP_CODEBOX_ROLE_ALIASES,
+    sanitize: sanitizePublicMetadata,
+  });
 }
 
 function pathValue(source, dottedPath) {
   return String(dottedPath || '').split('.').filter(Boolean).reduce((value, key) => (value && typeof value === 'object' ? value[key] : undefined), source);
 }
 
-function normalizeOutputs(result) {
-  const workload = agentRuntimeWorkload(result) || {};
-  const typedArtifacts = typedArtifactsFromResult(result);
+function firstPlainObject(...candidates) {
+  return candidates.find((candidate) => candidate && typeof candidate === 'object' && !Array.isArray(candidate));
+}
+
+function normalizeOutputs(result, request = null, options = {}) {
+  const publicEnvelope = codeboxPublicResultEnvelope(result, options) || {};
+  const publicOutputs = publicEnvelope.outputs && typeof publicEnvelope.outputs === 'object' && !Array.isArray(publicEnvelope.outputs)
+    ? publicEnvelope.outputs
+    : {};
+  const typedArtifacts = typedArtifactsFromResult(result, options);
+  for (const [name, artifact] of Object.entries(typedArtifacts)) {
+    typedArtifacts[name] = controllerVisibleTypedArtifact(artifact);
+  }
   const appendTypedArtifacts = (outputs) => Object.keys(typedArtifacts).length > 0
     ? {
         ...outputs,
@@ -2031,30 +2685,25 @@ function normalizeOutputs(result) {
       }
     : outputs;
 
-  const bundle = result.metadata?.agent_runtime?.bundle || result.task_input?.agent_bundle || {};
-  const configuredOutputs = bundle.engine_data_outputs && typeof bundle.engine_data_outputs === 'object' ? bundle.engine_data_outputs : {};
-  if (Object.keys(configuredOutputs).length === 0 && workload.outputs && typeof workload.outputs === 'object' && !Array.isArray(workload.outputs)) {
-    return sanitizePublicMetadata(appendTypedArtifacts(workload.outputs));
+  const bundle = result.task_input?.agent_bundle || {};
+  const runtimeTaskInput = result.task_input?.runtime_task?.input || result.taskInput?.runtimeTask?.input || {};
+  const configuredOutputs = firstPlainObject(
+    runtimeTaskInput.runtime_output_projections,
+    runtimeTaskInput.runtimeOutputProjections,
+    runtimeTaskInput.engine_data_outputs,
+    runtimeTaskInput.engineDataOutputs,
+    bundle.runtime_output_projections,
+    bundle.runtimeOutputProjections,
+    bundle.engine_data_outputs,
+    bundle.engineDataOutputs
+  ) || {};
+  if (Object.keys(configuredOutputs).length === 0) {
+    return sanitizePublicMetadata(appendTypedArtifacts(publicOutputs));
   }
-  if (Object.keys(configuredOutputs).length === 0 && result.outputs && typeof result.outputs === 'object' && !Array.isArray(result.outputs)) {
-    return sanitizePublicMetadata(appendTypedArtifacts(result.outputs));
-  }
-  const scenarios = Array.isArray(workload.scenarios) ? workload.scenarios : [];
   const configuredOutputSources = [
-    ...scenarios,
-    ...scenarios.map((scenario) => scenario?.metadata),
-    ...scenarios.map((scenario) => scenario?.outputs),
-    result.run?.agentResult,
-    result.agentResult,
-    result.agent_result,
-    result.metadata?.agent_runtime?.result,
-    result.outputs,
-    result.run?.agentResult?.outputs,
-    result.agentResult?.outputs,
-    result.agent_result?.outputs,
-    result.metadata?.agent_runtime?.result?.outputs,
-    workload,
-    workload.outputs,
+    publicEnvelope,
+    publicOutputs,
+    publicEnvelope.artifact_result?.result,
   ].filter((source) => source && typeof source === 'object' && !Array.isArray(source));
   const outputSources = configuredOutputSources.flatMap((source) => [source, { metadata: source }]);
   const outputs = {};
@@ -2063,18 +2712,11 @@ function normalizeOutputs(result) {
       const value = pathValue(source, outputPath);
       if (value !== undefined && value !== null && value !== '') {
         outputs[name] = value;
-        const typedArtifact = typedArtifactProjectionFromOutputPath(outputPath, value, typedArtifacts);
-        if (typedArtifact) {
-          typedArtifacts[typedArtifact.name] = typedArtifact;
-        }
         break;
       }
     }
   }
-  const fallbackOutputs = workload.outputs && typeof workload.outputs === 'object' && !Array.isArray(workload.outputs)
-    ? workload.outputs
-    : result.outputs || {};
-  return sanitizePublicMetadata(appendTypedArtifacts(Object.keys(outputs).length > 0 ? outputs : fallbackOutputs));
+  return sanitizePublicMetadata(appendTypedArtifacts(Object.keys(outputs).length > 0 ? outputs : publicOutputs));
 }
 
 function outputEvidenceRefs(outputs) {
@@ -2092,14 +2734,32 @@ function codeboxRunSummary(result, options = {}) {
     return null;
   }
   try {
-    return enrichFailedCodeboxRunSummary(
+    return reconcileRunSummaryWithPublicEnvelope(enrichFailedCodeboxRunSummary(
       options.normalizeAgentTaskRunResult(result, { exitStatus: options.exitStatus ?? 0 }),
       result,
       options,
-    );
+    ), result, options);
   } catch {
     return null;
   }
+}
+
+function reconcileRunSummaryWithPublicEnvelope(runSummary, result = {}, options = {}) {
+  const publicEnvelope = codeboxPublicResultEnvelope(result, options);
+  if (!runSummary || typeof runSummary !== 'object' || Array.isArray(runSummary) || publicEnvelope?.success !== true || runSummary.status !== 'failed') {
+    return runSummary;
+  }
+  return {
+    ...runSummary,
+    status: 'succeeded',
+    success: true,
+    failure_classification: undefined,
+    metadata: {
+      ...(runSummary.metadata && typeof runSummary.metadata === 'object' && !Array.isArray(runSummary.metadata) ? runSummary.metadata : {}),
+      public_envelope_status: publicEnvelope.status,
+      public_envelope_success: true,
+    },
+  };
 }
 
 function enrichFailedCodeboxRunSummary(runSummary, result = {}, options = {}) {
@@ -2166,191 +2826,59 @@ function codeboxRecipeRunSummary(result, options = {}) {
   }
 }
 
-function normalizeArtifacts(result, runSummary = null, recipeSummary = null) {
+function normalizeArtifacts(result, runSummary = null, recipeSummary = null, options = {}) {
   const normalizedArtifacts = Array.isArray(runSummary?.artifacts)
     ? runSummary.artifacts.map(artifactFromCodeboxArtifact)
     : [];
+  const artifactResult = artifactResultEnvelopeFromCodeboxResult(result, options);
+  for (const artifact of artifactResult?.artifactRefs || []) {
+    appendUniqueArtifact(normalizedArtifacts, artifactFromCodeboxArtifact(artifact));
+  }
   if (Array.isArray(recipeSummary?.artifacts)) {
     recipeSummary.artifacts.map(artifactFromCodeboxArtifact).forEach((artifact) => appendUniqueArtifact(normalizedArtifacts, artifact));
   }
 
-  if (result?.schema === 'wp-codebox/agent-task-run/v1') {
-    const artifacts = [...normalizedArtifacts];
-    if (typeof result.artifacts === 'string' && result.artifacts) {
-      artifacts.push({
-        id: result.session?.artifacts?.bundle_id || 'wp-codebox-artifacts',
-        kind: 'codebox-artifact-directory',
-        path: result.artifacts,
-        metadata: {
-          session_id: result.session?.id,
-          preview_url: result.session?.artifacts?.preview_url,
-        },
-      });
-    }
-    if (result.session?.artifacts && typeof result.session.artifacts === 'object') {
-      artifacts.push({
-        id: result.session.artifacts.bundle_id || `wp-codebox-session-artifacts-${artifacts.length + 1}`,
-        kind: 'codebox-session-artifacts',
-        url: result.session.artifacts.preview_url,
-        metadata: result.session.artifacts,
-      });
-    }
-    if (Array.isArray(result.artifacts)) {
-      result.artifacts.map(artifactFromCodeboxArtifact).forEach((artifact) => appendUniqueArtifact(artifacts, artifact));
-    }
-    for (const artifact of codeboxBundleArtifacts(result)) {
-      appendUniqueArtifact(artifacts, artifact);
-    }
-    for (const artifact of agentRuntimeBundleArtifacts(result)) {
-      appendUniqueArtifact(artifacts, artifact);
-    }
-    for (const artifact of typedBundleOutputArtifacts(result)) {
-      appendUniqueArtifact(artifacts, artifact);
-    }
-    if (!recipeSummary) {
-      for (const artifact of recipeRunArtifacts(result)) {
-        appendUniqueArtifact(artifacts, artifact);
-      }
-    }
-    return artifacts.map(artifactFromCodeboxArtifact);
-  }
-  const artifacts = Array.isArray(result?.artifacts)
-    ? result.artifacts
-    : Object.values(result?.artifacts || {}).filter((value) => value && typeof value === 'object');
-  const mappedArtifacts = [...normalizedArtifacts];
-  artifacts.map(artifactFromCodeboxArtifact).forEach((artifact) => appendUniqueArtifact(mappedArtifacts, artifact));
-  return mappedArtifacts;
+  return normalizedArtifacts;
 }
 
-function normalizeEvidenceRefs(result, runSummary = null, recipeSummary = null) {
-  if (result?.schema === 'wp-codebox/agent-task-run/v1') {
-    const refs = [
-      result.session?.artifacts?.preview_url ? {
-        kind: 'codebox-preview',
-        uri: result.session.artifacts.preview_url,
-        label: 'WP Codebox preview',
-      } : null,
-      typeof result.artifacts === 'string' && result.artifacts ? {
-        kind: 'codebox-artifact-directory',
-        uri: result.artifacts,
-        label: 'WP Codebox artifacts',
-      } : null,
-    ].filter(Boolean);
-    for (const artifact of codeboxBundleArtifacts(result)) {
-      appendUniqueEvidenceRef(refs, {
-        kind: artifact.kind,
-        uri: artifact.path || artifact.url,
-        label: artifact.kind.replace(/^codebox-/, 'WP Codebox ').replace(/-/g, ' '),
-      });
-    }
-    for (const artifact of agentRuntimeBundleArtifacts(result)) {
-      appendUniqueEvidenceRef(refs, {
-        kind: artifact.kind,
-        uri: artifact.path || artifact.url,
-        label: artifact.kind.replace(/^agent-runtime-/, 'Agent runtime ').replace(/-/g, ' '),
-      });
-    }
-    for (const artifact of typedBundleOutputArtifacts(result)) {
-      appendUniqueEvidenceRef(refs, {
-        kind: artifact.kind,
-        uri: artifact.path || artifact.url,
-        label: `Typed bundle output ${artifact.name || ''}`.trim(),
-      });
-    }
-    if (!recipeSummary) {
-      for (const artifact of recipeRunArtifacts(result)) {
-        appendUniqueEvidenceRef(refs, {
-          kind: artifact.kind,
-          uri: artifact.path || artifact.url,
-          label: artifact.kind.replace(/^codebox-recipe-/, 'WP Codebox recipe ').replace(/-/g, ' '),
-        });
-      }
-    }
-    for (const artifact of runSummary?.artifacts || []) {
-      appendUniqueEvidenceRef(refs, {
-        kind: artifact.kind,
-        uri: artifact.path || artifact.url,
-        label: artifact.kind.replace(/^codebox-/, 'WP Codebox ').replace(/-/g, ' '),
-      });
-    }
-    for (const artifact of recipeSummary?.artifacts || []) {
-      appendUniqueEvidenceRef(refs, {
-        kind: artifact.kind,
-        uri: artifact.path || artifact.url,
-        label: artifact.kind.replace(/^codebox-/, 'WP Codebox ').replace(/-/g, ' '),
-      });
-    }
-    for (const ref of outputEvidenceRefs(normalizeOutputs(result))) {
-      appendUniqueEvidenceRef(refs, ref);
-    }
-    for (const ref of result?.evidence_refs || result?.evidence || []) {
-      appendUniqueEvidenceRef(refs, agentTaskEvidenceRefFromRef(ref, 'codebox_evidence'));
-    }
-    return refs;
-  }
-  const evidenceRefs = result?.evidence_refs || result?.evidence || [];
+function normalizeEvidenceRefs(result, runSummary = null, recipeSummary = null, options = {}) {
+  const artifactResult = artifactResultEnvelopeFromCodeboxResult(result, options);
+  const evidenceRefs = [
+    ...(artifactResult?.artifactRefs || []).map((artifact) => ({
+      kind: artifact.kind,
+      uri: artifact.uri || artifact.path || artifact.url,
+      label: artifact.name || artifact.kind,
+    })),
+    ...(artifactResult?.evidenceRefs || []).map((ref) => ({
+      kind: ref.kind,
+      uri: ref.uri || ref.path || ref.url,
+      label: ref.name || ref.kind,
+    })),
+    ...(runSummary?.artifacts || []).map((artifact) => ({
+      kind: artifact.kind,
+      uri: artifact.path || artifact.url,
+      label: artifact.name || artifact.kind,
+    })),
+    ...(recipeSummary?.artifacts || []).map((artifact) => ({
+      kind: artifact.kind,
+      uri: artifact.path || artifact.url,
+      label: artifact.name || artifact.kind,
+    })),
+  ];
   return evidenceRefs.map((ref) => agentTaskEvidenceRefFromRef(ref, 'codebox_evidence')).filter((ref) => ref.uri);
 }
 
-function agentRuntimeBundleArtifacts(result) {
-  const artifacts = [];
-  const workload = agentRuntimeWorkload(result) || {};
-  const scenarios = Array.isArray(workload.scenarios) ? workload.scenarios : [];
-  for (const scenario of scenarios) {
-    const metadata = scenario?.metadata || {};
-    const transcript = metadata.transcript_artifacts || {};
-    appendUniqueArtifact(artifacts, {
-      id: transcript.json ? 'agent-runtime-transcript-json' : '',
-      kind: 'agent-runtime-transcript',
-      path: transcript.json,
-      metadata: { scenario_id: scenario.id, format: 'json' },
-    });
-    appendUniqueArtifact(artifacts, {
-      id: transcript.summary ? 'agent-runtime-transcript-summary' : '',
-      kind: 'agent-runtime-transcript-summary',
-      path: transcript.summary,
-      metadata: { scenario_id: scenario.id, format: 'markdown' },
-    });
-    const replayBundlePath = metadata.replay_bundle_path || metadata.replay_bundle?.path;
-    appendUniqueArtifact(artifacts, {
-      id: replayBundlePath ? 'agent-runtime-replay-bundle' : '',
-      kind: 'agent-runtime-replay-bundle',
-      path: replayBundlePath,
-      metadata: { scenario_id: scenario.id },
-    });
-    const exports = Array.isArray(metadata.job_artifact_exports) ? metadata.job_artifact_exports : [];
-    for (const [index, exported] of exports.entries()) {
-      appendUniqueArtifact(artifacts, {
-        id: exported.id || exported.path || `agent-runtime-job-artifact-${index + 1}`,
-        kind: exported.kind || 'agent-runtime-job-artifact',
-        path: exported.path,
-        url: exported.url,
-        metadata: { ...exported, scenario_id: scenario.id },
-      });
-    }
-    const runnerPublicationUrl = Array.isArray(metadata.engine_data?.runner_publications)
-      ? metadata.engine_data.runner_publications.find((publication) => publication?.url)?.url
-      : '';
-    const pullRequestUrl = metadata.runner_workspace_publication?.url || metadata.runner_workspace_publication?.html_url || metadata.runner_workspace_publication?.result?.url || metadata.runner_workspace_publication?.result?.html_url || runnerPublicationUrl || metadata.engine_data?.pull_request?.url || metadata.engine_data?.static_site_agent?.pr_url;
-    appendUniqueArtifact(artifacts, {
-      id: pullRequestUrl ? 'agent-runtime-pull-request' : '',
-      kind: 'agent-runtime-pull-request',
-      url: pullRequestUrl,
-      metadata: { scenario_id: scenario.id },
-    });
-  }
-  return artifacts;
-}
-
-function codeboxDecisionEvidence(result, runSummary = null, recipeSummary = null) {
-  const agentResult = result.run?.agentResult || result.agentResult || result.agent_result || result.metadata?.recipe_run?.agentResult || result.metadata?.recipe_run?.run?.agentResult || {};
+function codeboxDecisionEvidence(result, runSummary = null, recipeSummary = null, options = {}) {
+  const artifactResult = artifactResultEnvelopeFromCodeboxResult(result, options);
+  const publicEnvelope = codeboxPublicResultEnvelope(result, options) || {};
+  const publicMetadata = publicEnvelope.metadata || {};
   const completionOutcome = result.completionOutcome || result.completion_outcome || result.metadata?.recipe_run?.completionOutcome || {};
   const runtime = result.run?.runtime || result.metadata?.recipe_run?.run?.runtime || {};
   const run = result.run || result.metadata?.recipe_run?.run || {};
   const recipeRun = recipeRunFromResult(result);
   const recipeFailedPhase = recipeSummary?.failed_phase || recipeSummary?.metadata?.failure_phase || recipeRunFailedPhase(recipeRun);
   return Object.fromEntries(Object.entries({
-    selected_backend: 'codebox',
+    selected_backend: WP_CODEBOX_BACKEND,
     selected_executor: 'wordpress.codebox-agent-task-executor',
     capabilities_used: PROVIDER_CAPABILITIES,
     runtime_gap_trackers: WP_CODEBOX_RUNTIME_GAP_TRACKERS,
@@ -2360,10 +2888,10 @@ function codeboxDecisionEvidence(result, runSummary = null, recipeSummary = null
     runtime_status: runSummary?.metadata?.runtime_status || runtime.status,
     heartbeat_at: run.heartbeatAt,
     cleanup_observed: (runSummary?.metadata?.runtime_status || runtime.status) === 'destroyed' ? 'runtime_destroyed' : '',
-    changed_files_count: runSummary?.metadata?.changed_files_count ?? agentResult.changedFiles?.count,
-    patch_bytes: runSummary?.metadata?.patch_bytes ?? agentResult.patch?.bytes,
-    patch_sha256: runSummary?.metadata?.patch_sha256 || agentResult.patch?.sha256,
-    no_op_reason: runSummary?.metadata?.no_op_reason || agentResult.noOpReason,
+    changed_files_count: runSummary?.metadata?.changed_files_count ?? publicMetadata.changed_files_count,
+    patch_bytes: runSummary?.metadata?.patch_bytes ?? publicMetadata.patch_bytes,
+    patch_sha256: runSummary?.metadata?.patch_sha256 || publicMetadata.patch_sha256,
+    no_op_reason: runSummary?.metadata?.no_op_reason || publicMetadata.no_op_reason,
     completion_status: runSummary?.metadata?.completion_status || completionOutcome.status,
     completion_next_action: runSummary?.metadata?.completion_next_action || completionOutcome.nextAction,
     confidence: runSummary?.metadata?.confidence || completionOutcome.confidence,
@@ -2373,6 +2901,8 @@ function codeboxDecisionEvidence(result, runSummary = null, recipeSummary = null
     recipe_target_ref: recipeRun.target_ref || recipeRun.targetRef,
     recipe_failed_phase: recipeFailedPhase,
     agent_runtime_failure_reason: agentRuntimeFailureReason(agentRuntimeFailure(result)),
+    artifact_result_operation: artifactResult?.operation,
+    artifact_result_status: artifactResult?.status,
   }).filter(([, value]) => value !== undefined && value !== ''));
 }
 
@@ -2425,10 +2955,239 @@ function providerNotRegisteredDiagnostic(request, result = {}) {
   };
 }
 
+function normalizeCodeboxAgentTaskEvents(request, result = {}, options = {}) {
+  assertAgentTaskRequest(request);
+  const diagnostics = [];
+  const sourceEvents = [];
+  const addEvents = (events, source) => {
+    for (const event of normalizeArray(events)) {
+      if (event && typeof event === 'object' && !Array.isArray(event)) {
+        sourceEvents.push({ event, source, index: sourceEvents.length });
+      }
+    }
+  };
+
+  for (const source of codeboxEventSources(result, options)) {
+    if (source.kind === 'events') {
+      addEvents(source.events, source.source);
+      continue;
+    }
+    if (source.kind === 'json') {
+      const parsed = parseEventJsonPayload(source.contents);
+      if (parsed) {
+        addEvents(eventsFromPayload(parsed), source.source);
+      }
+      continue;
+    }
+    if (source.kind === 'file') {
+      const payload = readEventPayloadFile(source.path, diagnostics);
+      if (payload) {
+        addEvents(eventsFromPayload(payload), `file:${source.path}`);
+      }
+    }
+  }
+
+  const sorted = sourceEvents.sort((left, right) => compareCodeboxEventEntries(left, right));
+  const events = sorted.map((entry, index) => normalizeCodeboxAgentTaskEvent(request, entry.event, index + 1, entry.source));
+  return { events, diagnostics };
+}
+
+function codeboxEventSources(result = {}, options = {}) {
+  const publicEnvelope = options.publicResultEnvelope || codeboxPublicResultEnvelope(result, options) || {};
+  const sources = [
+    { kind: 'events', source: 'options.events', events: options.events },
+    { kind: 'events', source: 'result.events', events: result.events },
+    { kind: 'events', source: 'result.normalized_events', events: result.normalized_events || result.normalizedEvents },
+    { kind: 'events', source: 'result.agent_task_events', events: result.agent_task_events || result.agentTaskEvents },
+    { kind: 'events', source: 'result.callback_events', events: result.callback_events || result.callbackEvents },
+    { kind: 'events', source: 'result.outputs.callback_events', events: result.outputs?.callback_events || result.outputs?.callbackEvents },
+    { kind: 'events', source: 'result.metadata.callback_events', events: result.metadata?.callback_events || result.metadata?.callbackEvents },
+    { kind: 'events', source: 'public.outputs.callback_events', events: publicEnvelope.outputs?.callback_events || publicEnvelope.outputs?.callbackEvents },
+    { kind: 'events', source: 'public.metadata.callback_events', events: publicEnvelope.metadata?.callback_events || publicEnvelope.metadata?.callbackEvents },
+    { kind: 'json', source: 'options.stdout', contents: options.stdout },
+    { kind: 'json', source: 'result.stdout', contents: result.stdout },
+  ];
+  for (const execution of resultExecutionsFromPayload(result)) {
+    sources.push({ kind: 'json', source: 'execution.stdout', contents: execution.stdout });
+  }
+  for (const filePath of codeboxEventFileCandidates(result, options)) {
+    sources.push({ kind: 'file', path: filePath });
+  }
+  return sources;
+}
+
+function codeboxEventFileCandidates(result = {}, options = {}) {
+  const configured = [
+    options.eventsFile,
+    options.events_file,
+    options.eventFile,
+    options.event_file,
+    options.resultFile,
+    options.result_file,
+    result.events_file,
+    result.eventsFile,
+    result.events_path,
+    result.eventsPath,
+    result.event_file,
+    result.eventFile,
+    result.event_path,
+    result.eventPath,
+    result.result_file,
+    result.resultFile,
+    result.result_path,
+    result.resultPath,
+    result.metadata?.events_file,
+    result.metadata?.eventsFile,
+    result.metadata?.events_path,
+    result.metadata?.eventsPath,
+    result.metadata?.result_file,
+    result.metadata?.resultFile,
+  ];
+  const refs = [
+    ...normalizeArray(result.artifacts),
+    ...normalizeArray(result.evidence_refs),
+    ...normalizeArray(result.evidenceRefs),
+    ...normalizeArray(result.artifact_result?.artifact_refs),
+    ...normalizeArray(result.artifact_result?.artifactRefs),
+    ...normalizeArray(result.artifact_result?.evidence_refs),
+    ...normalizeArray(result.artifact_result?.evidenceRefs),
+  ];
+  for (const ref of refs) {
+    const candidate = ref?.path || ref?.file || ref?.uri;
+    if (candidate && /(?:event|result).+\.json$|\.events\.json$|events\.json$|result\.json$/i.test(String(candidate))) {
+      configured.push(candidate);
+    }
+  }
+  return uniqueStrings(configured.filter((candidate) => typeof candidate === 'string' && candidate !== ''));
+}
+
+function readEventPayloadFile(filePath, diagnostics) {
+  if (!fs.existsSync(filePath)) {
+    diagnostics.push({
+      class: 'codebox.events_file_missing',
+      message: `WP Codebox event/result file was not found: ${filePath}.`,
+      data: { path: filePath },
+    });
+    return null;
+  }
+  try {
+    const parsed = readJsonFile(filePath);
+    if (parsed !== null) {
+      return parsed;
+    }
+  } catch {
+  }
+  diagnostics.push({
+    class: 'codebox.events_file_invalid_json',
+    message: `WP Codebox event/result file did not contain valid JSON: ${filePath}.`,
+    data: { path: filePath },
+  });
+  return null;
+}
+
+function eventsFromPayload(payload) {
+  if (Array.isArray(payload)) {
+    return payload;
+  }
+  if (!payload || typeof payload !== 'object') {
+    return [];
+  }
+  return [
+    ...normalizeArray(payload.events),
+    ...normalizeArray(payload.normalized_events || payload.normalizedEvents),
+    ...normalizeArray(payload.agent_task_events || payload.agentTaskEvents),
+    ...normalizeArray(payload.callback_events || payload.callbackEvents),
+    ...normalizeArray(payload.outputs?.callback_events || payload.outputs?.callbackEvents),
+    ...normalizeArray(payload.metadata?.callback_events || payload.metadata?.callbackEvents),
+    ...resultExecutionsFromPayload(payload).flatMap((execution) => eventsFromPayload(parseEventJsonPayload(execution.stdout) || {})),
+  ];
+}
+
+function parseEventJsonPayload(value) {
+  if (!value || typeof value !== 'string') {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function resultExecutionsFromPayload(payload = {}) {
+  return [
+    ...normalizeArray(payload.executions),
+    ...normalizeArray(payload.run?.executions),
+  ].filter((execution) => execution && typeof execution === 'object' && !Array.isArray(execution));
+}
+
+function compareCodeboxEventEntries(left, right) {
+  const leftTime = Date.parse(left.event.created_at || left.event.createdAt || left.event.timestamp || left.event.time || '');
+  const rightTime = Date.parse(right.event.created_at || right.event.createdAt || right.event.timestamp || right.event.time || '');
+  if (Number.isFinite(leftTime) && Number.isFinite(rightTime) && leftTime !== rightTime) {
+    return leftTime - rightTime;
+  }
+  if (Number.isFinite(leftTime) !== Number.isFinite(rightTime)) {
+    return Number.isFinite(leftTime) ? -1 : 1;
+  }
+  const leftSequence = Number.parseInt(left.event.sequence ?? left.event.seq ?? left.event.order ?? '', 10);
+  const rightSequence = Number.parseInt(right.event.sequence ?? right.event.seq ?? right.event.order ?? '', 10);
+  if (Number.isFinite(leftSequence) && Number.isFinite(rightSequence) && leftSequence !== rightSequence) {
+    return leftSequence - rightSequence;
+  }
+  const leftWorker = String(left.event.worker_id || left.event.workerId || left.event.worker || left.event.metadata?.worker_id || '');
+  const rightWorker = String(right.event.worker_id || right.event.workerId || right.event.worker || right.event.metadata?.worker_id || '');
+  if (leftWorker !== rightWorker) {
+    return leftWorker.localeCompare(rightWorker);
+  }
+  return left.index - right.index;
+}
+
+function normalizeCodeboxAgentTaskEvent(request, event, sequence, source) {
+  const metadata = sanitizePublicMetadata({
+    ...(event.metadata && typeof event.metadata === 'object' && !Array.isArray(event.metadata) ? event.metadata : {}),
+    source,
+    source_schema: event.schema,
+    source_sequence: event.sequence ?? event.seq ?? event.order,
+  });
+  const artifactRefs = normalizeArray(event.artifact_refs || event.artifactRefs);
+  const artifacts = [
+    ...normalizeArray(event.artifacts),
+    ...artifactRefs,
+  ];
+  return withoutEmptyObjectValues({
+    schema: AGENT_TASK_EVENT_SCHEMA,
+    event_id: event.event_id || event.eventId || event.id || `${request.task_id}:${sequence}`,
+    task_id: event.task_id || event.taskId || request.task_id,
+    parent_task_id: event.parent_task_id || event.parentTaskId || request.parent_task_id,
+    sequence,
+    type: event.type || event.name || event.event || event.action || event.status || 'codebox.event',
+    name: event.name,
+    status: event.status,
+    message: event.message || event.summary,
+    created_at: event.created_at || event.createdAt || event.timestamp || event.time || new Date(0).toISOString(),
+    worker_id: event.worker_id || event.workerId || event.worker || event.metadata?.worker_id,
+    group_key: event.group_key || event.groupKey || request.group_key,
+    artifacts: artifacts.map((artifact, index) => artifactFromCodeboxArtifact(artifact, index)).filter(Boolean),
+    evidence_refs: normalizeArray(event.evidence_refs || event.evidenceRefs).map((ref) => agentTaskEvidenceRefFromRef(ref, 'codebox_event_evidence')).filter((ref) => ref.uri),
+    diagnostics: normalizeArray(event.diagnostics).map((diagnostic) => ({
+      class: diagnostic.class || diagnostic.kind || diagnostic.code || 'codebox.event',
+      message: diagnostic.message || String(diagnostic),
+      data: sanitizePublicMetadata(diagnostic.data || {}),
+    })),
+    metadata,
+  });
+}
+
 function agentTaskOutcomeFromCodeboxResult(request, result = {}, options = {}) {
   assertAgentTaskRequest(request);
-  const runSummary = codeboxRunSummary(result, options);
-  const recipeSummary = codeboxRecipeRunSummary(result, options);
+  const publicResultEnvelope = codeboxPublicResultEnvelope(result, options);
+  const envelopeOptions = { ...options, publicResultEnvelope };
+  const dispatchIdentity = agentTaskDispatchIdentityPassthrough(request, result);
+  const normalizedEventEnvelope = normalizeCodeboxAgentTaskEvents(request, result, envelopeOptions);
+  const runSummary = codeboxRunSummary(result, envelopeOptions);
+  const recipeSummary = codeboxRecipeRunSummary(result, envelopeOptions);
   const localStatus = normalizeStatus(result, options.exitStatus ?? 0);
   let status = runSummary?.status || recipeSummary?.status || localStatus;
   if (recipeSummary?.status && recipeSummary.status !== 'succeeded') {
@@ -2437,27 +3196,40 @@ function agentTaskOutcomeFromCodeboxResult(request, result = {}, options = {}) {
     status = localStatus;
   }
   const failureClassification = homeboyFailureClassification(result.failure_classification || recipeSummary?.metadata?.failure_classification || runSummary?.failure_classification, status);
-  const outputs = normalizeOutputs(result);
+  const outputs = normalizeOutputs(result, request, envelopeOptions);
   const missingRequiredTypedArtifacts = missingRequiredTypedArtifactDiagnostic(request, outputs);
+  const invalidRequiredTypedArtifacts = invalidRequiredTypedArtifactDiagnostic(request, outputs);
+  const runtimeFailureDiagnostic = agentRuntimeFailureDiagnostic(result);
+  const envelopeBoundaryDiagnostic = publicEnvelopeBoundaryDiagnostic(result, envelopeOptions);
   if (status === 'succeeded' && missingRequiredTypedArtifacts) {
+    status = 'failed';
+  }
+  if (status === 'succeeded' && invalidRequiredTypedArtifacts) {
+    status = 'failed';
+  }
+  if (status === 'succeeded' && runtimeFailureDiagnostic) {
+    status = 'failed';
+  }
+  if (envelopeBoundaryDiagnostic) {
     status = 'failed';
   }
   const recipeRun = recipeRunFromResult(result);
   const fallbackRecipeSummary = recipeRunFailureSummary(recipeRun);
   const recipeFailedPhase = recipeSummary?.failed_phase || recipeSummary?.metadata?.failure_phase || recipeRunFailedPhase(recipeRun);
-  const runtimeFailureDiagnostic = agentRuntimeFailureDiagnostic(result);
   const providerDiagnostic = providerNotRegisteredDiagnostic(request, result);
+  const runtimeContext = homeboyRuntimeContext(result, runSummary, recipeSummary);
+  const replayCommand = homeboyReplayCommand(request, result, runSummary, recipeSummary, runtimeContext);
   const outcome = normalizeAgentTaskOutcome(request, result, {
     schema: AGENT_TASK_OUTCOME_SCHEMA,
     provider: 'wordpress.codebox-agent-task-executor',
     providerLabel: 'WP Codebox agent',
-    integrationContract: 'wp-codebox-cli/agent-task-run',
+    integrationContract: WP_CODEBOX_RUN_AGENT_TASK_REQUEST_SCHEMA,
     status,
-    summary: missingRequiredTypedArtifacts?.message || runtimeFailureDiagnostic?.message || recipeSummary?.failure_summary || fallbackRecipeSummary || runSummary?.summary || result.summary || result.message || (status === 'succeeded' ? 'WP Codebox agent task succeeded.' : 'WP Codebox agent task failed.'),
-    artifacts: normalizeArtifacts(result, runSummary, recipeSummary),
-    evidenceRefs: normalizeEvidenceRefs(result, runSummary, recipeSummary),
+    summary: envelopeBoundaryDiagnostic?.message || missingRequiredTypedArtifacts?.message || invalidRequiredTypedArtifacts?.message || runtimeFailureDiagnostic?.message || recipeSummary?.failure_summary || fallbackRecipeSummary || runSummary?.summary || result.summary || result.message || (status === 'succeeded' ? 'WP Codebox agent task succeeded.' : 'WP Codebox agent task failed.'),
+    artifacts: normalizeArtifacts(result, runSummary, recipeSummary, envelopeOptions),
+    evidenceRefs: normalizeEvidenceRefs(result, runSummary, recipeSummary, envelopeOptions),
     outputs,
-    diagnostics: [providerDiagnostic, missingRequiredTypedArtifacts, runtimeFailureDiagnostic, recipeSummary ? null : recipeRunFailureDiagnostic(recipeRun), ...(recipeSummary?.diagnostics || []), ...(runSummary?.diagnostics || []), ...(result.diagnostics || [])].filter(Boolean).map((diagnostic) => ({
+    diagnostics: [providerDiagnostic, envelopeBoundaryDiagnostic, missingRequiredTypedArtifacts, invalidRequiredTypedArtifacts, runtimeFailureDiagnostic, recipeSummary ? null : recipeRunFailureDiagnostic(recipeRun), ...normalizedEventEnvelope.diagnostics, ...(recipeSummary?.diagnostics || []), ...(runSummary?.diagnostics || []), ...(result.diagnostics || [])].filter(Boolean).map((diagnostic) => ({
       class: diagnostic.class || diagnostic.kind || 'codebox',
       message: diagnostic.message || String(diagnostic),
       data: sanitizePublicMetadata(diagnostic.data || {}),
@@ -2466,23 +3238,163 @@ function agentTaskOutcomeFromCodeboxResult(request, result = {}, options = {}) {
       codebox: sanitizePublicMetadata(result.metadata || result),
       codebox_run_result: runSummary ? sanitizePublicMetadata(runSummary) : undefined,
       codebox_recipe_run_summary: recipeSummary ? sanitizePublicMetadata(recipeSummary) : undefined,
-      decision_evidence: sanitizePublicMetadata(codeboxDecisionEvidence(result, runSummary, recipeSummary)),
+      decision_evidence: sanitizePublicMetadata(codeboxDecisionEvidence(result, runSummary, recipeSummary, envelopeOptions)),
       artifact_declarations: sanitizePublicMetadata(artifactDeclarationsMetadataFromRequest(request)),
       typed_artifacts: sanitizePublicMetadata(outputs.typed_artifacts || {}),
+      dispatch_identity: dispatchIdentity ? sanitizePublicMetadata(dispatchIdentity) : undefined,
+      normalized_events: sanitizePublicMetadata(normalizedEventEnvelope.events),
       sandbox_policy: sanitizePublicMetadata({
         policy: result.task_input?.policy,
         sandbox_tool_policy: result.task_input?.sandbox_tool_policy,
       }),
       recipe_failed_phase: recipeFailedPhase || undefined,
+      runtime_context: runtimeContext,
+      replay_command: replayCommand,
     },
     failureClassification,
   });
   if (failureClassification) {
     outcome.failure_classification = failureClassification;
-  } else if (missingRequiredTypedArtifacts) {
+  } else if (envelopeBoundaryDiagnostic || missingRequiredTypedArtifacts || invalidRequiredTypedArtifacts) {
     outcome.failure_classification = 'execution_failed';
   }
-  return outcome;
+  return outcomeWithOutputTypedArtifacts(outcomeWithNormalizedEvents(outcome, normalizedEventEnvelope.events), outputs);
+}
+
+function homeboyRuntimeContext(result = {}, runSummary = {}, recipeSummary = {}) {
+  const metadata = firstObject(result.metadata, result.codebox, runSummary?.metadata, recipeSummary?.metadata) || {};
+  const scoped = firstObject(metadata.codebox, result.codebox, runSummary?.codebox, recipeSummary?.codebox, metadata) || {};
+  const capabilities = uniqueStrings(
+    scoped.supported_recipe_commands,
+    scoped.recipe_commands,
+    scoped.supported_commands,
+    scoped.capabilities,
+    metadata.supported_recipe_commands,
+    metadata.capabilities,
+  ).slice(0, 40);
+  const context = withoutUndefinedValues({
+    schema: 'homeboy/provider-runtime-context/v1',
+    provider: 'wp-codebox',
+    binary_path: firstValue(scoped.binary_path, scoped.executable_path, scoped.path, metadata.codebox_binary_path, metadata.wp_codebox_binary_path),
+    version: firstValue(scoped.version, metadata.codebox_version, metadata.wp_codebox_version),
+    commit: firstValue(scoped.commit, scoped.git_commit, scoped.revision, metadata.codebox_commit, metadata.wp_codebox_commit),
+    fingerprint: firstValue(scoped.fingerprint, metadata.codebox_fingerprint, metadata.wp_codebox_fingerprint),
+    capabilities: capabilities.length > 0 ? capabilities : undefined,
+  });
+  return Object.keys(context).length > 2 ? sanitizePublicMetadata(context) : undefined;
+}
+
+function homeboyReplayCommand(request = {}, result = {}, runSummary = {}, recipeSummary = {}, runtimeContext = {}) {
+  const recipePath = firstValue(
+    result.generated_recipe_path,
+    result.recipe_path,
+    result.recipe_file,
+    result.recipe,
+    result.metadata?.generated_recipe_path,
+    result.metadata?.recipe_path,
+    runSummary?.generated_recipe_path,
+    runSummary?.metadata?.generated_recipe_path,
+    recipeSummary?.generated_recipe_path,
+    recipeSummary?.metadata?.generated_recipe_path,
+  );
+  if (!recipePath || typeof recipePath !== 'string') {
+    return undefined;
+  }
+  const binary = runtimeContext?.binary_path || result.metadata?.codebox_binary_path || 'wp-codebox';
+  const replayId = safeShellPathSegment(firstValue(request.task_id, runSummary?.run_id, result.run_id, 'failed-task'));
+  return `${shellQuote(binary)} recipe-run --recipe ${shellQuote(recipePath)} --artifacts ${shellQuote(`/tmp/homeboy-codebox-replay/${replayId}`)} --json`;
+}
+
+function uniqueStrings(...values) {
+  const out = [];
+  for (const value of values.flat(Infinity)) {
+    const candidate = typeof value === 'string' ? value : firstValue(value?.id, value?.name, value?.command);
+    if (candidate && typeof candidate === 'string' && !out.includes(candidate)) {
+      out.push(candidate);
+    }
+  }
+  return out;
+}
+
+function safeShellPathSegment(value) {
+  return String(value).replace(/[^A-Za-z0-9_.-]/g, '-');
+}
+
+function shellQuote(value) {
+  const text = String(value);
+  return /^[A-Za-z0-9/._:=-]+$/.test(text) ? text : `'${text.replace(/'/g, `'\\''`)}'`;
+}
+
+function agentTaskDispatchIdentityPassthrough(request = {}, result = {}) {
+  return firstObject(
+    request.dispatch_identity,
+    request.dispatchIdentity,
+    request.inputs?.dispatch_identity,
+    request.inputs?.dispatchIdentity,
+    request.inputs?.input?.dispatch_identity,
+    request.inputs?.input?.dispatchIdentity,
+    request.inputs?.input?.metadata?.dispatch_identity,
+    request.inputs?.input?.metadata?.dispatchIdentity,
+    request.executor?.config?.runtime_task?.input?.dispatch_identity,
+    request.executor?.config?.runtime_task?.input?.dispatchIdentity,
+    request.executor?.config?.runtime_task?.input?.metadata?.dispatch_identity,
+    request.executor?.config?.runtime_task?.input?.metadata?.dispatchIdentity,
+    result.dispatch_identity,
+    result.dispatchIdentity,
+    result.metadata?.dispatch_identity,
+    result.metadata?.dispatchIdentity,
+    result.task_input?.dispatch_identity,
+    result.task_input?.dispatchIdentity,
+    result.task_input?.runtime_task?.input?.dispatch_identity,
+    result.task_input?.runtime_task?.input?.dispatchIdentity,
+    result.task_input?.runtime_task?.input?.metadata?.dispatch_identity,
+    result.task_input?.runtime_task?.input?.metadata?.dispatchIdentity,
+  );
+}
+
+function outcomeWithNormalizedEvents(outcome, events) {
+  if (!Array.isArray(events) || events.length === 0) {
+    return outcome;
+  }
+  return {
+    ...outcome,
+    events,
+  };
+}
+
+function outcomeWithOutputTypedArtifacts(outcome, outputs) {
+  const typedArtifacts = outputs?.typed_artifacts && typeof outputs.typed_artifacts === 'object' && !Array.isArray(outputs.typed_artifacts)
+    ? Object.values(outputs.typed_artifacts).filter((artifact) => artifact && typeof artifact === 'object').map(controllerVisibleTypedArtifact)
+    : [];
+  if (typedArtifacts.length === 0) {
+    return outcome;
+  }
+  const existing = Array.isArray(outcome.typed_artifacts) ? outcome.typed_artifacts : [];
+  const seen = new Set(existing.map((artifact) => artifact?.name).filter(Boolean));
+  const merged = [
+    ...existing,
+    ...typedArtifacts.filter((artifact) => {
+      if (!artifact.name || seen.has(artifact.name)) {
+        return false;
+      }
+      seen.add(artifact.name);
+      return true;
+    }),
+  ];
+  return {
+    ...outcome,
+    typed_artifacts: merged,
+  };
+}
+
+function controllerVisibleTypedArtifact(artifact) {
+  const artifactId = artifact.artifact_id || artifact.artifactId || artifact.name || artifact.id;
+  const kind = artifact.kind || artifact.artifact_schema || artifact.artifactSchema || artifact.type;
+  return {
+    ...artifact,
+    ...(artifactId ? { artifact_id: artifactId } : {}),
+    ...(kind ? { kind } : {}),
+  };
 }
 
 module.exports = {
@@ -2494,7 +3406,22 @@ module.exports = {
   AGENT_TASK_FAILURE_CLASSIFICATIONS,
   AGENT_TASK_REDACTED_METADATA_KEYS,
   WP_CODEBOX_BACKEND,
+  WP_CODEBOX_PROVIDER_RUNTIME_ABILITY_NAMES,
+  WP_CODEBOX_PROVIDER_RUNTIME_INVOCATION_CONTRACT_SCHEMA,
+  WP_CODEBOX_PROVIDER_RUNTIME_RESULT_SCHEMAS,
+  WP_CODEBOX_PROVIDER_RUNTIME_TASK_NAMES,
+  WP_CODEBOX_RUN_AGENT_TASK_REQUEST_SCHEMA,
+  RUNTIME_EXECUTION_DESCRIPTOR_SCHEMA,
+  AGENT_TASK_EVENT_SCHEMA,
   providerContract,
+  providerRuntimeInvocationContract,
+  wpCodeboxAgentFanoutAdapterContract,
   codeboxTaskRequestFromAgentTaskRequest,
+  codeboxFanoutRequestFromAgentTaskRequest,
+  normalizeProviderPluginPaths,
+  normalizeRuntimePackageTaskPackage,
+  runtimePackageTaskInputForCodebox,
+  reconcileRunSummaryWithPublicEnvelope,
+  normalizeCodeboxAgentTaskEvents,
   agentTaskOutcomeFromCodeboxResult,
 };

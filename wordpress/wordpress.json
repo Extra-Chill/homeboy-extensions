@@ -1,12 +1,15 @@
 {
   "name": "WordPress",
-  "version": "3.6.1",
+  "version": "3.23.32",
   "icon": "w.circle.fill",
   "description": "WordPress project type with WP-CLI integration",
   "author": "Extra Chill",
+  "env_provider": {
+    "script": "scripts/env-provider.js"
+  },
   "provides": {
     "file_extensions": ["php", "css", "ts", "tsx", "js", "jsx", "json"],
-    "capabilities": ["fingerprint", "refactor", "crossref", "validate"]
+    "capabilities": ["fingerprint", "refactor", "crossref", "validate", "fuzz"]
   },
   "structured_sidecars": {
     "lint.findings": true,
@@ -18,6 +21,109 @@
     "trace.results": true,
     "annotations": false
   },
+  "contract_producers": [
+    {
+      "id": "wordpress.live-surface-discovery",
+      "phase": "discovery",
+      "invocation": {
+        "script": "scripts/runtime/wordpress-live-surface-discovery.php",
+        "output_schema": "homeboy/wordpress-live-surface-discovery-raw/v1"
+      },
+      "produces": [
+        {
+          "kind": "capability",
+          "name": "wordpress-live-surface-discovery",
+          "schema": "homeboy/wordpress-live-surface-discovery-raw/v1"
+        }
+      ]
+    },
+    {
+      "id": "wordpress.runtime-task-plan",
+      "phase": "planning",
+      "invocation": {
+        "script": "scripts/agent/homeboy-wordpress-runtime-task-plan.cjs",
+        "output_schema": "homeboy/agent-task-plan/v1"
+      },
+      "produces": [
+        {
+          "kind": "execution_plan",
+          "name": "agent-task-plan",
+          "schema": "homeboy/agent-task-plan/v1"
+        }
+      ]
+    },
+    {
+      "id": "wordpress.generic-fanout-reconcile-plan",
+      "phase": "planning",
+      "invocation": {
+        "script": "../runtime-agent-ci/scripts/homeboy-generic-fanout-reconcile.cjs",
+        "output_schema": "homeboy/fanout-reconcile-plan/v1"
+      },
+      "produces": [
+        {
+          "kind": "execution_plan",
+          "name": "fanout-reconcile-plan",
+          "schema": "homeboy/fanout-reconcile-plan/v1"
+        }
+      ]
+    },
+    {
+      "id": "wordpress.generic-fanout-reconcile-result",
+      "phase": "result",
+      "invocation": {
+        "script": "../runtime-agent-ci/scripts/homeboy-generic-fanout-reconcile.cjs",
+        "output_schema": "homeboy/generic-fanout-reconcile-result/v1"
+      },
+      "produces": [
+        {
+          "kind": "status",
+          "name": "generic-fanout-reconcile-result",
+          "schema": "homeboy/generic-fanout-reconcile-result/v1"
+        }
+      ]
+    },
+    {
+      "id": "wordpress.lint-results",
+      "phase": "result",
+      "invocation": { "script": "scripts/lint/lint-runner.sh" },
+      "produces": [
+        { "kind": "artifact", "name": "lint.findings" },
+        { "kind": "artifact", "name": "lint.producers" }
+      ]
+    },
+    {
+      "id": "wordpress.test-results",
+      "phase": "result",
+      "invocation": { "script": "scripts/test/test-runner.sh" },
+      "produces": [
+        { "kind": "artifact", "name": "test.results" },
+        { "kind": "artifact", "name": "test.failures" }
+      ]
+    },
+    {
+      "id": "wordpress.bench-results",
+      "phase": "result",
+      "invocation": {
+        "script": "scripts/bench/bench-runner.sh",
+        "output_schema": "homeboy/bench-results/v1"
+      },
+      "produces": [
+        {
+          "kind": "artifact",
+          "name": "bench.results",
+          "schema": "homeboy/bench-results/v1"
+        }
+      ]
+    },
+    {
+      "id": "wordpress.trace-results",
+      "phase": "result",
+      "invocation": { "script": "scripts/trace/trace-runner.sh" },
+      "produces": [
+        { "kind": "artifact", "name": "trace.results" }
+      ]
+    }
+  ],
   "agent_task": {
     "runtime_requirements": {
       "required_capabilities": [
@@ -32,6 +138,69 @@
       ],
       "integration_contract": "homeboy-wordpress-agent-task/v1"
     }
+  },
+  "dependency_materialization_recipes": {
+    "schema": "homeboy-extension-wordpress/dependency-materialization-recipes/v1",
+    "recipes": [
+      {
+        "id": "wordpress-php-package-dependencies",
+        "kind": "php-package-dependency-materialization",
+        "ecosystem": "php",
+        "package_manager": "composer",
+        "declaration": {
+          "manifest": "composer.json",
+          "lockfile": "composer.lock"
+        },
+        "materializes": [
+          { "kind": "directory", "path": "vendor" }
+        ],
+        "required_outputs": [
+          { "id": "composer-vendor-directory", "kind": "directory", "path": "vendor" }
+        ]
+      },
+      {
+        "id": "wordpress-js-asset-dependencies",
+        "kind": "js-asset-dependency-materialization",
+        "ecosystem": "javascript",
+        "package_manager": "npm",
+        "declaration": {
+          "manifest": "package.json",
+          "lockfile": "package-lock.json"
+        },
+        "materializes": [
+          { "kind": "directory", "path": "node_modules" }
+        ],
+        "required_outputs": [
+          { "id": "npm-node-modules-directory", "kind": "directory", "path": "node_modules" }
+        ]
+      }
+    ]
+  },
+  "required_output_declarations": {
+    "schema": "homeboy-extension-wordpress/required-output-declarations/v1",
+    "declaration_shape": {
+      "id": "string",
+      "kind": "file|directory|glob",
+      "path": "component-relative path or glob",
+      "producer": "dependency-materialization|build|runtime-prepare",
+      "required": "boolean"
+    },
+    "examples": [
+      {
+        "id": "built-php-autoloader",
+        "kind": "file",
+        "path": "vendor/autoload.php",
+        "producer": "dependency-materialization",
+        "required": true
+      },
+      {
+        "id": "built-js-assets",
+        "kind": "glob",
+        "path": "build/**/*",
+        "producer": "build",
+        "required": true
+      }
+    ]
   },
   "scripts": {
     "fingerprint": "scripts/fingerprint.sh",
@@ -750,7 +919,7 @@
       "examples": [
         "homeboy wp my-site plugin list",
         "homeboy wp my-site option get blogname",
-        "homeboy wp extra-chill:events datamachine pipelines list"
+        "homeboy wp example-site:staging sample-plugin health-check"
       ]
     }
   },
@@ -822,6 +991,22 @@
         "legacy_field": "wp_codebox",
         "env_keys": ["HOMEBOY_WP_CODEBOX_BIN", "HOMEBOY_SETTINGS_WP_CODEBOX_BIN"]
       }
+    ]
+  },
+  "fuzz": {
+    "extension_script": "scripts/fuzz/fuzz-runner.cjs",
+    "capabilities": ["wordpress-fuzz-runner", "wp-codebox-fuzz-suite", "wp-codebox-fuzz-run", "wordpress-fuzz-coverage-aggregate"],
+    "env": [
+      "HOMEBOY_FUZZ_WORKLOAD_PATH",
+      "HOMEBOY_FUZZ_WORKLOAD_ID",
+      "HOMEBOY_FUZZ_RUN_ID",
+      "HOMEBOY_FUZZ_SEED",
+      "HOMEBOY_FUZZ_MAX_DURATION",
+      "HOMEBOY_SETTINGS_JSON",
+      "HOMEBOY_SETTINGS_WP_CODEBOX_BIN",
+      "HOMEBOY_WP_CODEBOX_BIN",
+      "WP_CODEBOX_BIN",
+      "WP_CODEBOX_FUZZ_WORKLOAD_ROOT"
     ]
   },
   "testing": {
@@ -936,6 +1121,13 @@
       "description": "Map of CONSTANT_NAME => value appended to the WP Codebox wp-tests-config.php as additional define() statements. Lets a component declare wp-config-level constants (mode flags, debug toggles, custom paths) without shipping a custom drop-in. Values preserve PHP type via var_export() — booleans, integers, and nulls round-trip cleanly. Reserved canonical names (DB_NAME, ABSPATH, etc.) cannot be overridden."
     },
     {
+      "id": "build_nested_packages",
+      "label": "Build nested package.json directories",
+      "type": "boolean",
+      "default": true,
+      "description": "Whether the WordPress package builder should recursively run build scripts in nested package.json directories after the root frontend build. Disable for components whose root build already produces all required nested frontend assets. Can be overridden with HOMEBOY_BUILD_NESTED_PACKAGES=0."
+    },
+    {
       "id": "bench_env",
       "label": "Bench env passthrough",
       "type": "object",
@@ -957,11 +1149,25 @@
       "description": "How the WP Codebox PHPUnit backend treats successful WordPress install/activation when discovery finds zero PHPUnit files. Use 'skipped' for components that intentionally test through smoke scripts, or 'failed' when the component expects PHPUnit coverage. Components with phpunit.xml(.dist) still fail on zero discovery."
     },
     {
+      "id": "npm_test_script",
+      "label": "npm test fallback script",
+      "type": "string",
+      "default": "",
+      "description": "package.json script to run after WP Codebox plugin install/activation succeeds but PHPUnit discovery finds no PHPUnit files. Composer scripts.test remains the first fallback when present."
+    },
+    {
+      "id": "wordpress_runtime_blueprint",
+      "label": "WordPress runtime blueprint",
+      "type": "object",
+      "default": {},
+      "description": "Backend-neutral WordPress runtime blueprint merged into the selected runtime adapter recipe. Empty object means stock WordPress. Runtime adapters normalize this canonical setting to backend-specific fields."
+    },
+    {
       "id": "wp_codebox_blueprint",
       "label": "WP Codebox blueprint",
       "type": "object",
       "default": {},
-      "description": "Runtime blueprint merged into the generated WP Codebox bench recipe. Empty object means stock WordPress."
+      "description": "Legacy compatibility alias for wordpress_runtime_blueprint. Prefer wordpress_runtime_blueprint for new configuration."
     },
     {
       "id": "wp_codebox_extra_plugins",
@@ -971,11 +1177,46 @@
       "description": "Additional WP Codebox extra plugin entries for bench recipes. Use for runtime prerequisites that must be installed or activated but should not be treated as Homeboy validation dependencies."
     },
     {
+      "id": "wordpress_runtime_workloads",
+      "label": "WordPress runtime workloads",
+      "type": "array",
+      "default": [],
+      "description": "Backend-neutral WordPress workload declarations passed to the selected runtime adapter after dependency mounts and component load. Each workload declares an id, optional label, run steps ({type: 'php', code|file}, {type: 'ability', ability|name, input}, or {type: 'wp-cli', command}), and optional metrics/artifacts/metadata."
+    },
+    {
+      "id": "wordpress_runtime_prepare_steps",
+      "label": "WordPress runtime prepare steps",
+      "type": "array",
+      "default": [],
+      "description": "Backend-neutral recipe steps to run before the measured WordPress runtime bench step. Each step is a runtime command object with command, args, and optional allowFailure/advisory flags. Use for generic pre-bench runtime evidence or setup that belongs outside measured workloads."
+    },
+    {
+      "id": "wordpress_runtime_post_steps",
+      "label": "WordPress runtime post steps",
+      "type": "array",
+      "default": [],
+      "description": "Backend-neutral recipe steps to run after the measured WordPress runtime bench step in the same disposable runtime. Use for generic post-bench browser probes, browser actions, or reviewer-facing evidence capture after workloads mutate WordPress state."
+    },
+    {
       "id": "wp_codebox_workloads",
       "label": "Bench workloads",
       "type": "array",
       "default": [],
-      "description": "Config-declared WordPress bench workloads passed to wordpress.bench through the generated WP Codebox recipe after dependency mounts and component load. Each workload declares an id, optional label, run steps ({type: 'php', code|file}, {type: 'ability', ability|name, input}, or {type: 'wp-cli', command}), and optional metrics/artifacts/metadata. Step returns use the same {metrics, artifacts, metadata} shape as Node.js bench workloads."
+      "description": "Legacy compatibility alias for wordpress_runtime_workloads. Prefer wordpress_runtime_workloads for new configuration."
+    },
+    {
+      "id": "wp_codebox_recipe_prepare_steps",
+      "label": "WP Codebox recipe prepare steps",
+      "type": "array",
+      "default": [],
+      "description": "Legacy compatibility alias for wordpress_runtime_prepare_steps. Prefer wordpress_runtime_prepare_steps for new configuration."
+    },
+    {
+      "id": "wp_codebox_recipe_post_steps",
+      "label": "WP Codebox recipe post steps",
+      "type": "array",
+      "default": [],
+      "description": "Legacy compatibility alias for wordpress_runtime_post_steps. Prefer wordpress_runtime_post_steps for new configuration."
     },
     {
       "id": "wp_codebox_bootstrap_files",
@@ -997,6 +1238,41 @@
       "type": "string",
       "default": "",
       "description": "Optional component-relative PHPUnit bootstrap path for wp_codebox_phpunit_bootstrap_mode=project. When empty, the runner reads the bootstrap attribute from phpunit.xml or phpunit.xml.dist."
+    },
+    {
+      "id": "wp_codebox_phpunit_test_root",
+      "label": "WP Codebox PHPUnit test root",
+      "type": "string",
+      "default": "",
+      "description": "Optional sandbox path containing PHPUnit test files for wordpress.phpunit discovery. Leave empty for the mounted component tests directory. Use with wp_codebox_phpunit_mounts when the suite lives outside the component mount."
+    },
+    {
+      "id": "wp_codebox_phpunit_config",
+      "label": "WP Codebox PHPUnit config",
+      "type": "string",
+      "default": "",
+      "description": "Optional sandbox path to phpunit.xml or phpunit.xml.dist for wordpress.phpunit discovery. Leave empty for the mounted component phpunit.xml.dist."
+    },
+    {
+      "id": "wp_codebox_phpunit_cwd",
+      "label": "WP Codebox PHPUnit cwd",
+      "type": "string",
+      "default": "",
+      "description": "Optional sandbox working directory for the wordpress.phpunit process. Leave empty for the mounted component directory."
+    },
+    {
+      "id": "wp_codebox_phpunit_preload_files",
+      "label": "WP Codebox PHPUnit preload files",
+      "type": "array",
+      "default": [],
+      "description": "Absolute WP Codebox sandbox PHP files to require during managed wordpress.phpunit bootstrap. Use for runtime files that are mounted into the sandbox but are not component-root relative."
+    },
+    {
+      "id": "wp_codebox_phpunit_mounts",
+      "label": "WP Codebox PHPUnit mounts",
+      "type": "array",
+      "default": [],
+      "description": "Additional host-to-sandbox mounts for wordpress.phpunit. Each entry is {source,target,mode?}; source must be an absolute existing host path and target an absolute sandbox path. Defaults to readonly mode."
     },
     {
       "id": "wp_codebox_bootstrap_steps",
@@ -1027,6 +1303,13 @@
       "description": "Component-relative path under wp_codebox_source_root used as the plugin source for WP Codebox bench prep, workload discovery, file mounts, and plugin loading. Leave empty only when HOMEBOY_COMPONENT_PATH is already under wp_codebox_source_root and the runner can derive the relative path."
     },
     {
+      "id": "wp_codebox_bin",
+      "label": "WP Codebox binary",
+      "type": "string",
+      "default": "",
+      "description": "Optional WP Codebox CLI binary path for WP Codebox-backed WordPress runtime execution. Use this to pin bench runs to a runner-local WP Codebox build with required runtime primitives. Leave empty to use HOMEBOY_WP_CODEBOX_BIN or the extension default."
+    },
+    {
       "id": "wp_codebox_scenario_manifests",
       "label": "WP Codebox scenario manifests",
       "type": "array",
@@ -1041,11 +1324,11 @@
       "description": "Optional browser bench target descriptor. Set {\"enabled\": true} to write HOMEBOY_BENCH_SHARED_STATE/browser-target.json. Include baseUrl/adminUrl for an already-running site; otherwise the file is metadata-only because the WP Codebox bench command exits after workloads complete. Login supports method plus username/password or password_env; raw target files are handoff artifacts and must not be published in reports."
     },
     {
-      "id": "wp_codebox_wordpress_version",
+      "id": "wordpress_runtime_version",
       "label": "WordPress runtime version",
       "type": "string",
       "default": "",
-      "description": "Optional WordPress core version passed to WP Codebox test and bench runners. Leave empty for the runner default. Use this when a component needs classes or behavior from a newer WordPress core build."
+      "description": "Optional WordPress core version passed to WordPress test and bench runtime providers. Leave empty for the runner default. Use this when a component needs classes or behavior from a newer WordPress core build."
     },
     {
       "id": "wp_codebox_php_memory_limit",
@@ -1060,6 +1343,13 @@
       "type": "array",
       "default": [],
       "description": "Component-relative glob patterns for intentional package ZIP artifacts that should be included in the production build even though arbitrary *.zip files are excluded by default. Each declared pattern must match at least one file."
+    },
+    {
+      "id": "local_workspace_dependencies",
+      "label": "Local workspace dependency overrides",
+      "type": "array",
+      "default": [],
+      "description": "Declared local (unpublished) workspace package dependencies to build from source, pack, and install into the consumer as a self-contained built tarball before the consumer build runs. Installing a built tarball (not a file: symlink) lets peer dependencies such as React dedupe to the consumer's single copy. Each entry is an object: name (required package name), path (required source path relative to the component, may reference sibling repos), and optional package_dir (monorepo subpackage to pack), build (explicit build command run in path; defaults to install + run build script), and package_manager (npm|pnpm|yarn, auto-detected by default)."
     }
   ],
   "release_preflights": [
@@ -1099,6 +1389,16 @@
       "payload": {
         "release": "{{payload.release}}",
         "config": "{{payload.config}}"
+      }
+    },
+    {
+      "id": "release.update_dependency",
+      "label": "Repin Composer custom-package to a released upstream",
+      "type": "command",
+      "command": "bash \"{{extension_path}}/scripts/release/update-dependency.sh\"",
+      "payload": {
+        "release": "{{payload.release}}",
+        "dependency": "{{payload.dependency}}"
       }
     }
   ]

@@ -46,10 +46,8 @@ if ( ! function_exists('homeboy_bench_write_json_artifact') ) {
 		}
 
 		return array(
-			'path'      => $relative_path,
-			'kind'      => 'json',
-			'label'     => $name,
-			'mime_type' => 'application/json',
+			'path' => '/bench-shared-state/' . $relative_path,
+			'kind' => 'json',
 		);
 	}
 }

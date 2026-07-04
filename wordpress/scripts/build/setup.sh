@@ -35,6 +35,52 @@ install_wp_codebox() {
         return 0
     }
 
+    first_non_empty_env() {
+        local name
+        for name in "$@"; do
+            if [ -n "${!name:-}" ]; then
+                printf '%s' "${!name}"
+                return 0
+            fi
+        done
+        return 1
+    }
+
+    configure_explicit_overrides() {
+        local explicit_bin=""
+        local explicit_core_module=""
+        local configured_bin=0
+        local configured_core_module=0
+
+        explicit_bin="$(first_non_empty_env HOMEBOY_WP_CODEBOX_CLI WP_CODEBOX_CLI WP_CODEBOX_BIN || true)"
+        if [ -n "${explicit_bin}" ]; then
+            if [ ! -x "${explicit_bin}" ]; then
+                echo "Explicit WP Codebox CLI override is not executable: ${explicit_bin}" >&2
+                exit 1
+            fi
+            export HOMEBOY_WP_CODEBOX_BIN="${explicit_bin}"
+            write_github_env "HOMEBOY_WP_CODEBOX_BIN" "${explicit_bin}"
+            echo "WP Codebox CLI override configured: ${explicit_bin}"
+            configured_bin=1
+        fi
+
+        explicit_core_module="$(first_non_empty_env WP_CODEBOX_CORE_MODULE HOMEBOY_WP_CODEBOX_CORE_MODULE || true)"
+        if [ -n "${explicit_core_module}" ]; then
+            configure_core_module "${explicit_core_module}" || {
+                echo "Explicit WP Codebox core module override is not a file: ${explicit_core_module}" >&2
+                exit 1
+            }
+            configured_core_module=1
+        fi
+
+        if [ "${configured_bin}" -eq 1 ] && { [ "${configured_core_module}" -eq 1 ] || resolve_core_module_from_known_locations; }; then
+            node "${EXTENSION_PATH}/scripts/build/persist-wp-codebox-overrides.mjs" "${EXTENSION_PATH}/wordpress.json"
+            return 0
+        fi
+
+        return 1
+    }
+
     # Re-derive the core runtime module from the deterministic install
     # locations on disk. The CLI binary is persisted across GitHub Actions
     # steps via GITHUB_ENV, but HOMEBOY_WP_CODEBOX_CORE_MODULE does not always
@@ -46,10 +92,9 @@ install_wp_codebox() {
         local probe_root="${HOMEBOY_WP_CODEBOX_INSTALL_DIR:-${HOME}/.cache/homeboy/wp-codebox}"
         local candidate
         for candidate in \
+            "${WP_CODEBOX_CORE_MODULE:-}" \
             "${HOMEBOY_WP_CODEBOX_CORE_MODULE:-}" \
-            "${probe_root}/source/packages/runtime-core/dist/index.js" \
             "${probe_root}/source/node_modules/@automattic/wp-codebox-core/dist/index.js" \
-            "${probe_root}/release/wp-codebox-cli/packages/runtime-core/dist/index.js" \
             "${probe_root}/release/wp-codebox-cli/node_modules/@automattic/wp-codebox-core/dist/index.js"; do
             if [ -n "${candidate}" ] && configure_core_module "${candidate}"; then
                 return 0
@@ -58,7 +103,17 @@ install_wp_codebox() {
         return 1
     }
 
-    if [ -n "${HOMEBOY_WP_CODEBOX_BIN:-}" ] && [ -x "${HOMEBOY_WP_CODEBOX_BIN}" ]; then
+    if configure_explicit_overrides; then
+        return 0
+    fi
+
+    local source_install_requested=0
+    if [ -n "${HOMEBOY_WP_CODEBOX_SOURCE:-}" ] || [ -n "${HOMEBOY_WP_CODEBOX_REF:-}" ] || [ "${HOMEBOY_WP_CODEBOX_INSTALL_MODE:-}" = "source" ]; then
+        source_install_requested=1
+        export HOMEBOY_WP_CODEBOX_INSTALL_MODE="source"
+    fi
+
+    if [ "${source_install_requested}" -eq 0 ] && [ -n "${HOMEBOY_WP_CODEBOX_BIN:-}" ] && [ -x "${HOMEBOY_WP_CODEBOX_BIN}" ]; then
         echo "WP Codebox already configured: ${HOMEBOY_WP_CODEBOX_BIN}"
         if resolve_core_module_from_known_locations; then
             return 0
@@ -66,7 +121,7 @@ install_wp_codebox() {
         echo "WP Codebox CLI is configured without a runtime core module; (re)installing source module" >&2
     fi
 
-    if command -v wp-codebox >/dev/null 2>&1; then
+    if [ "${source_install_requested}" -eq 0 ] && command -v wp-codebox >/dev/null 2>&1; then
         local detected_bin
         detected_bin="$(command -v wp-codebox)"
         echo "WP Codebox already available: ${detected_bin}"
@@ -124,8 +179,7 @@ EOF
             write_github_env "PATH" "${bin_dir}:${PATH}"
 
             echo "WP Codebox installed: ${bin_path}"
-            if configure_core_module "${extract_dir}/wp-codebox-cli/packages/runtime-core/dist/index.js" || \
-                configure_core_module "${extract_dir}/wp-codebox-cli/node_modules/@automattic/wp-codebox-core/dist/index.js"; then
+            if configure_core_module "${extract_dir}/wp-codebox-cli/node_modules/@automattic/wp-codebox-core/dist/index.js"; then
                 return 0
             fi
 
@@ -156,16 +210,19 @@ EOF
     npm --prefix "${repo_dir}" install --quiet --no-fund --no-audit --omit=optional
     npm --prefix "${repo_dir}" run build --silent
 
-    configure_core_module "${repo_dir}/packages/runtime-core/dist/index.js" || {
-        echo "Built WP Codebox source did not contain packages/runtime-core/dist/index.js" >&2
+    configure_core_module "${repo_dir}/node_modules/@automattic/wp-codebox-core/dist/index.js" || {
+        echo "Built WP Codebox source did not contain the @automattic/wp-codebox-core package entrypoint" >&2
         exit 1
     }
 
-    cat > "${bin_path}" <<EOF
-#!/usr/bin/env bash
-exec node "${repo_dir}/packages/cli/dist/index.js" "\$@"
-EOF
-    chmod +x "${bin_path}"
+    local source_bin_path
+    source_bin_path="${repo_dir}/packages/cli/dist/index.js"
+    if [ ! -x "${source_bin_path}" ]; then
+        echo "Built WP Codebox source did not contain an executable CLI at ${source_bin_path}" >&2
+        exit 1
+    fi
+
+    bin_path="${source_bin_path}"
 
     write_github_env "HOMEBOY_WP_CODEBOX_BIN" "${bin_path}"
     write_github_env "PATH" "${bin_dir}:${PATH}"
@@ -179,7 +236,7 @@ echo "Setting up WordPress extension..."
 # and the extension's own self-tests, not for running component tests).
 if [ -f "composer.json" ]; then
     echo "Installing PHP dependencies..."
-    composer install --quiet --no-interaction
+    composer install --quiet --no-interaction --prefer-dist
 
     if [ -x "vendor/bin/phpcs" ]; then
         echo "Registering PHPCS standards..."

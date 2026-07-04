@@ -10,24 +10,50 @@ const path = require('node:path');
 const {
 	fixtureRecipeStep,
 	installWordPressFixturePlugins,
+	normalizeFixtureProfileSiteSeeds,
 	normalizeFixtureList,
 	normalizeFixturePluginList,
 	restoreWordPressFixturePlugins,
 	runWordPressFixtureSetup,
 	withWordPressFixturePlugins,
 } = require('../lib/fixture-setup');
+const { wpCodeboxPluginStateStep } = require('../lib/wp-codebox-recipe-helper');
 
 const fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'homeboy-wp-fixtures-'));
 
 async function main() {
 	try {
 		assert.deepEqual(
-			normalizeFixtureList([{ path: 'fixtures/seed.php' }]).map((step) => ({ type: step.type, label: step.label })),
-			[{ type: 'wp-eval-file', label: 'wp-eval-file:1' }]
+			normalizeFixtureList([{ path: 'fixtures/seed.php' }]).map((step) => ({ schema: step.schema, type: step.type, label: step.label })),
+			[{ schema: 'homeboy/wordpress-fixture-step/v1', type: 'wp-eval-file', label: 'wp-eval-file:1' }]
 		);
 		assert.deepEqual(
-			normalizeFixturePluginList(['/tmp/example-plugin']).map((plugin) => ({ slug: plugin.slug, plugin: plugin.plugin, activate: plugin.activate })),
-			[{ slug: 'example-plugin', plugin: 'example-plugin', activate: true }]
+			normalizeFixturePluginList(['/tmp/example-plugin']).map((plugin) => ({ schema: plugin.schema, slug: plugin.slug, plugin: plugin.plugin, activate: plugin.activate })),
+			[{ schema: 'homeboy/wordpress-fixture-plugin/v1', slug: 'example-plugin', plugin: 'example-plugin', activate: true }]
+		);
+		assert.deepEqual(
+			normalizeFixtureProfileSiteSeeds({
+				id: 'editorial-shape',
+				posts: { postTypes: ['page'], maxRecords: 2 },
+				options: { names: ['blogname'] },
+				activeTheme: true,
+			}),
+			[{
+				schema: 'homeboy/wordpress-fixture-site-seed/v1',
+				type: 'parent_site',
+				name: 'editorial-shape',
+				scopes: {
+					posts: { postTypes: ['page'], maxRecords: 2 },
+					options: { names: ['blogname'] },
+					activeTheme: true,
+				},
+			}]
+		);
+		assert.deepEqual(
+			normalizeFixtureProfileSiteSeeds({
+				siteSeeds: [{ type: 'fixture', name: 'demo-content', source: 'fixtures/content.json', scopes: { posts: { slugs: ['home'] } } }],
+			}),
+			[{ schema: 'homeboy/wordpress-fixture-site-seed/v1', type: 'fixture', name: 'demo-content', source: 'fixtures/content.json', scopes: { posts: { slugs: ['home'] } } }]
 		);
 
 		const calls = [];
@@ -69,6 +95,13 @@ async function main() {
 		assert.deepEqual(
 			fixtureRecipeStep({ type: 'wp-eval-file', path: 'fixtures/seed.php' }),
 			{ command: 'wordpress.run-php', args: ['code-file=fixtures/seed.php'] }
+		);
+		assert.deepEqual(
+			wpCodeboxPluginStateStep({ activate: ['source-plugin/source-plugin.php'], deactivate: [{ slug: 'old-plugin' }] }),
+			{
+				command: 'wordpress.plugin-state',
+				args: ['plugin-state-json={"activate":[{"plugin":"source-plugin/source-plugin.php"}],"deactivate":[{"slug":"old-plugin","plugin":"old-plugin"}],"report":true}'],
+			}
 		);
 
 		const recipeSteps = [];
@@ -129,6 +162,28 @@ async function main() {
 		assert.equal(fs.existsSync(path.join(pluginsDir, 'copy-source-plugin', 'copy-source-plugin.php')), true);
 		assert.deepEqual(activationCalls, [{ command: 'plugin activate source-plugin/source-plugin.php', slug: 'source-plugin', timeoutMs: 12345 }]);
 
+		const codeboxActivationCalls = [];
+		const codeboxInstalledPlugins = await installWordPressFixturePlugins({
+			sitePath,
+			fixtureExecutionRoute: 'wp-codebox',
+			plugins: [{ path: sourceDir, plugin: 'source-plugin/source-plugin.php' }],
+			runRecipeStep: async (recipeStep, context) => {
+				codeboxActivationCalls.push({ recipeStep, slug: context.plugin.slug, timeoutMs: context.timeoutMs });
+				return { exitCode: 0, stdout: 'activated', stderr: '' };
+			},
+			activateTimeoutMs: 23456,
+		});
+		assert.equal(codeboxActivationCalls.length, 1);
+		assert.equal(codeboxActivationCalls[0].recipeStep.command, 'wordpress.plugin-state');
+		assert.deepEqual(JSON.parse(codeboxActivationCalls[0].recipeStep.args[0].replace(/^plugin-state-json=/, '')), {
+			activate: [{ plugin: 'source-plugin/source-plugin.php', slug: 'source-plugin' }],
+			deactivate: [],
+			report: true,
+		});
+		assert.equal(codeboxActivationCalls[0].timeoutMs, 23456);
+		assert.equal(codeboxInstalledPlugins[0].activation.recipeStep.command, 'wordpress.plugin-state');
+		await restoreWordPressFixturePlugins(codeboxInstalledPlugins);
+
 		await restoreWordPressFixturePlugins(installedPlugins);
 		assert.equal(fs.readFileSync(path.join(existingDir, 'existing.txt'), 'utf8'), 'existing plugin');
 		assert.equal(fs.existsSync(path.join(pluginsDir, 'copy-source-plugin')), false);
@@ -173,6 +228,11 @@ async function main() {
 				assert.equal(error.fixtureSummary.status, 'failed');
 				return true;
 			}
+		);
+
+		assert.throws(
+			() => normalizeFixtureProfileSiteSeeds({ id: 'missing-scopes' }),
+			/requires scopes/
 		);
 
 		console.log('WordPress fixture setup smoke passed.');

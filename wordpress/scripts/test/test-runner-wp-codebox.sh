@@ -19,7 +19,7 @@ PHPUNIT_RECIPE_BUILDER="${HOMEBOY_WP_CODEBOX_PHPUNIT_RECIPE_BUILDER:-${SCRIPT_DI
 # shellcheck source=/dev/null
 source "$RESOLVE_CONTEXT_HELPER"
 homeboy_resolve_context --component-alias PLUGIN_PATH
-# shellcheck source=../lib/runner-steps.sh
+# shellcheck source=/dev/null
 if [ -f "$RUNNER_STEPS_HELPER" ]; then
     source "$RUNNER_STEPS_HELPER"
 fi
@@ -53,6 +53,82 @@ else
     PLUGIN_SLUG="$(basename "$PLUGIN_PATH")"
 fi
 
+settings_json="${HOMEBOY_SETTINGS_JSON:-}"
+[ -n "$settings_json" ] || settings_json="{}"
+
+PHPUNIT_NO_TESTS="skipped"
+PHPUNIT_NO_TESTS_CONFIGURED=0
+WP_CODEBOX_PHPUNIT_TEST_ROOT=""
+WP_CODEBOX_PHPUNIT_CONFIG=""
+if [ "$settings_json" != "{}" ]; then
+    extracted=$(printf '%s' "$settings_json" | jq -r '.phpunit_no_tests // empty' 2>/dev/null || true)
+    if [ -n "$extracted" ] && [ "$extracted" != "null" ]; then
+        PHPUNIT_NO_TESTS="$extracted"
+        PHPUNIT_NO_TESTS_CONFIGURED=1
+    fi
+
+    extracted=$(printf '%s' "$settings_json" | jq -r '.wp_codebox_phpunit_test_root // empty' 2>/dev/null || true)
+    [ -n "$extracted" ] && [ "$extracted" != "null" ] && WP_CODEBOX_PHPUNIT_TEST_ROOT="$extracted"
+
+    extracted=$(printf '%s' "$settings_json" | jq -r '.wp_codebox_phpunit_config // empty' 2>/dev/null || true)
+    [ -n "$extracted" ] && [ "$extracted" != "null" ] && WP_CODEBOX_PHPUNIT_CONFIG="$extracted"
+fi
+
+phpunit_no_tests_is_failure_policy() {
+    [ "$PHPUNIT_NO_TESTS" = "failed" ] || [ "$PHPUNIT_NO_TESTS" = "fail" ]
+}
+
+phpunit_no_tests_allows_skip() {
+    [ "$PHPUNIT_NO_TESTS_CONFIGURED" -eq 1 ] || return 1
+    [ "$PHPUNIT_NO_TESTS" = "skipped" ] || [ "$PHPUNIT_NO_TESTS" = "skip" ]
+}
+
+phpunit_has_explicit_scope_request() {
+    [ -n "$WP_CODEBOX_PHPUNIT_TEST_ROOT" ] || [ -n "$WP_CODEBOX_PHPUNIT_CONFIG" ]
+}
+
+WP_CODEBOX_SOURCE_ROOT=""
+WP_CODEBOX_SOURCE_SUBPATH=""
+WP_CODEBOX_PLUGIN_SOURCE_PATH="$PLUGIN_PATH"
+if [ "$settings_json" != "{}" ]; then
+    WP_CODEBOX_SOURCE_ROOT=$(printf '%s' "$settings_json" | jq -r '.wp_codebox_source_root // empty' 2>/dev/null || true)
+    WP_CODEBOX_SOURCE_SUBPATH=$(printf '%s' "$settings_json" | jq -r '.wp_codebox_source_subpath // empty' 2>/dev/null || true)
+fi
+if [ -z "$WP_CODEBOX_SOURCE_ROOT" ] && [ -n "${HOMEBOY_SETTINGS_WP_CODEBOX_SOURCE_ROOT:-}" ]; then
+    WP_CODEBOX_SOURCE_ROOT="$HOMEBOY_SETTINGS_WP_CODEBOX_SOURCE_ROOT"
+fi
+if [ -z "$WP_CODEBOX_SOURCE_SUBPATH" ] && [ -n "${HOMEBOY_SETTINGS_WP_CODEBOX_SOURCE_SUBPATH:-}" ]; then
+    WP_CODEBOX_SOURCE_SUBPATH="$HOMEBOY_SETTINGS_WP_CODEBOX_SOURCE_SUBPATH"
+fi
+if [ -n "$WP_CODEBOX_SOURCE_ROOT" ]; then
+    if [[ "$WP_CODEBOX_SOURCE_ROOT" != /* ]] || [ ! -d "$WP_CODEBOX_SOURCE_ROOT" ]; then
+        echo "Error: wp_codebox_source_root must be an absolute existing directory." >&2
+        FAILED_STEP="WP Codebox source root setup"
+        exit 1
+    fi
+    if [ -z "$WP_CODEBOX_SOURCE_SUBPATH" ]; then
+        if [[ "$PLUGIN_PATH" = "$WP_CODEBOX_SOURCE_ROOT"/* ]]; then
+            WP_CODEBOX_SOURCE_SUBPATH="${PLUGIN_PATH#"$WP_CODEBOX_SOURCE_ROOT/"}"
+        else
+            echo "Error: wp_codebox_source_subpath is required when wp_codebox_source_root is not an ancestor of HOMEBOY_COMPONENT_PATH." >&2
+            FAILED_STEP="WP Codebox source root setup"
+            exit 1
+        fi
+    fi
+    if [[ "$WP_CODEBOX_SOURCE_SUBPATH" = /* ]] || [[ "$WP_CODEBOX_SOURCE_SUBPATH" == *..* ]]; then
+        echo "Error: wp_codebox_source_subpath must be a relative path under wp_codebox_source_root." >&2
+        FAILED_STEP="WP Codebox source root setup"
+        exit 1
+    fi
+    WP_CODEBOX_PLUGIN_SOURCE_PATH="${WP_CODEBOX_SOURCE_ROOT%/}/${WP_CODEBOX_SOURCE_SUBPATH}"
+    if [ ! -d "$WP_CODEBOX_PLUGIN_SOURCE_PATH" ]; then
+        echo "Error: wp_codebox_source_root/wp_codebox_source_subpath does not exist: $WP_CODEBOX_PLUGIN_SOURCE_PATH" >&2
+        FAILED_STEP="WP Codebox source root setup"
+        exit 1
+    fi
+    PLUGIN_PATH="$WP_CODEBOX_PLUGIN_SOURCE_PATH"
+fi
+
 detect_network_plugin_header() {
     local main_file
     for main_file in "${PLUGIN_PATH}"/*.php; do
@@ -73,6 +149,31 @@ component_has_composer_test_script() {
     ' "${PLUGIN_PATH}/composer.json" 2>/dev/null
 }
 
+component_npm_test_script() {
+    [ -f "${PLUGIN_PATH}/package.json" ] || return 1
+
+    NPM_TEST_SCRIPT="$(php -r '
+        $settings = json_decode(getenv("HOMEBOY_SETTINGS_JSON") ?: "{}", true);
+        $package = json_decode(file_get_contents($argv[1]), true);
+        if (!is_array($settings)) {
+            $settings = [];
+        }
+        if (!is_array($package) || !isset($package["scripts"]) || !is_array($package["scripts"])) {
+            exit(1);
+        }
+        $script = $settings["npm_test_script"] ?? $settings["node_test_script"] ?? $settings["test_npm_script"] ?? null;
+        if ($script === null && isset($package["scripts"]["test"])) {
+            $script = "test";
+        }
+        if (!is_string($script) || $script === "" || !isset($package["scripts"][$script])) {
+            exit(1);
+        }
+        echo $script;
+    ' "${PLUGIN_PATH}/package.json" 2>/dev/null)" || return 1
+
+    [ -n "$NPM_TEST_SCRIPT" ]
+}
+
 run_composer_test_script() {
     echo ""
     echo "Running Composer test script..."
@@ -89,6 +190,26 @@ run_composer_test_script() {
         ( cd "${PLUGIN_PATH}" && composer test -- "${PASSTHROUGH_ARGS[@]}" )
     else
         ( cd "${PLUGIN_PATH}" && composer test )
+    fi
+}
+
+run_npm_test_script() {
+    echo ""
+    echo "Running npm test script..."
+    echo "  Plugin: ${PLUGIN_SLUG} (${PLUGIN_PATH})"
+    echo "  Backend: npm-script"
+    echo "  Script: ${NPM_TEST_SCRIPT}"
+
+    if ! command -v npm >/dev/null 2>&1; then
+        echo "ERROR: package.json declares scripts.${NPM_TEST_SCRIPT}, but npm is not available on PATH." >&2
+        FAILED_STEP="npm test script setup"
+        return 1
+    fi
+
+    if [ "${#PASSTHROUGH_ARGS[@]}" -gt 0 ]; then
+        ( cd "${PLUGIN_PATH}" && npm run "$NPM_TEST_SCRIPT" -- "${PASSTHROUGH_ARGS[@]}" )
+    else
+        ( cd "${PLUGIN_PATH}" && npm run "$NPM_TEST_SCRIPT" )
     fi
 }
 
@@ -175,12 +296,12 @@ WP_CODEBOX_BIN="$(homeboy_wp_codebox_resolve_bin "${HOMEBOY_SETTINGS_JSON:-}")" 
     exit 1
 }
 
-settings_json="${HOMEBOY_SETTINGS_JSON:-}"
-[ -n "$settings_json" ] || settings_json="{}"
-
-WP_CODEBOX_CORE_MODULE="${HOMEBOY_WP_CODEBOX_CORE_MODULE:-}"
+WP_CODEBOX_CORE_MODULE="${HOMEBOY_SETTINGS_WP_CODEBOX_CORE_MODULE:-}"
 if [ -z "$WP_CODEBOX_CORE_MODULE" ] && [ "$settings_json" != "{}" ]; then
     WP_CODEBOX_CORE_MODULE=$(printf '%s' "$settings_json" | jq -r '.wp_codebox_core_module // empty' 2>/dev/null || true)
+fi
+if [ -z "$WP_CODEBOX_CORE_MODULE" ]; then
+    WP_CODEBOX_CORE_MODULE="${HOMEBOY_WP_CODEBOX_CORE_MODULE:-}"
 fi
 if [ -n "$WP_CODEBOX_CORE_MODULE" ]; then
     export HOMEBOY_WP_CODEBOX_CORE_MODULE="$WP_CODEBOX_CORE_MODULE"
@@ -261,10 +382,26 @@ if ! guard_component_path; then
 fi
 
 TEST_DIR="${PLUGIN_PATH}/tests"
-if [ ! -d "$TEST_DIR" ]; then
+if [ ! -d "$TEST_DIR" ] && ! phpunit_has_explicit_scope_request; then
     if component_has_composer_test_script; then
         run_composer_test_script
         exit $?
+    fi
+
+    if component_npm_test_script; then
+        run_npm_test_script
+        exit $?
+    fi
+
+    if phpunit_no_tests_is_failure_policy; then
+        echo ""
+        echo "NO PHPUNIT TEST DIRECTORY DISCOVERED"
+        echo "  Expected: ${TEST_DIR}"
+        echo "  PHPUnit no-test discovery is configured as failure, and no PHPUnit test directory exists."
+        echo ""
+        FAILED_STEP="PHPUnit tests (configured suite has no test directory, wp-codebox)"
+        write_phpunit_discovery_result failed "no-phpunit-test-directory-configured" "No PHPUnit test directory exists at the WordPress runner discovery path; no PHPUnit assertions ran."
+        exit 1
     fi
 
     echo ""
@@ -551,6 +688,30 @@ detect_phpunit_project_bootstrap() {
     return 1
 }
 
+resolve_wp_codebox_sandbox_host_path() {
+    local settings_json="$1"
+    local sandbox_path="$2"
+
+    if [ -e "$sandbox_path" ]; then
+        printf '%s\n' "$sandbox_path"
+        return 0
+    fi
+
+    printf '%s' "$settings_json" | jq -r --arg sandboxPath "$sandbox_path" '
+        (.wp_codebox_phpunit_mounts // [])[]
+        | select((.source // "") != "" and (.target // "") != "")
+        | (.target | rtrimstr("/")) as $target
+        | (.source | rtrimstr("/")) as $source
+        | select($sandboxPath == $target or ($sandboxPath | startswith($target + "/")))
+        | $source + ($sandboxPath | sub("^" + ($target | gsub("([][\\.^$*+?{}|()-])"; "\\\\\\1")); ""))
+    ' 2>/dev/null | while IFS= read -r candidate; do
+        if [ -e "$candidate" ]; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+}
+
 validate_project_bootstrap_ref() {
     local bootstrap_ref="$1"
 
@@ -626,7 +787,11 @@ DEPENDENCY_PATHS="${HOMEBOY_WORDPRESS_DEPENDENCY_PATHS:-}"
 WP_CONFIG_DEFINES_JSON="{}"
 PHPUNIT_ENV_JSON="{}"
 WP_CODEBOX_FILE_MOUNTS_JSON="[]"
-PHPUNIT_NO_TESTS="skipped"
+WP_CODEBOX_PHPUNIT_MOUNTS_JSON="[]"
+WP_CODEBOX_PHPUNIT_TEST_ROOT=""
+WP_CODEBOX_PHPUNIT_CWD=""
+WP_CODEBOX_PHPUNIT_PRELOAD_FILES_JSON="[]"
+WP_CODEBOX_COMMAND_DIAGNOSTICS_JSON="null"
 WP_CODEBOX_WORDPRESS_VERSION=""
 WP_CODEBOX_MULTISITE=""
 if [ -n "${HOMEBOY_SETTINGS_JSON:-}" ] && [ "${HOMEBOY_SETTINGS_JSON}" != "{}" ]; then
@@ -636,14 +801,35 @@ if [ -n "${HOMEBOY_SETTINGS_JSON:-}" ] && [ "${HOMEBOY_SETTINGS_JSON}" != "{}" ]
     extracted=$(printf '%s' "$HOMEBOY_SETTINGS_JSON" | jq -c '.wp_codebox_file_mounts // []' 2>/dev/null || echo "[]")
     [ -n "$extracted" ] && [ "$extracted" != "null" ] && WP_CODEBOX_FILE_MOUNTS_JSON="$extracted"
 
-    extracted=$(printf '%s' "$HOMEBOY_SETTINGS_JSON" | jq -r '.phpunit_no_tests // empty' 2>/dev/null || true)
-    [ -n "$extracted" ] && [ "$extracted" != "null" ] && PHPUNIT_NO_TESTS="$extracted"
+    extracted=$(printf '%s' "$HOMEBOY_SETTINGS_JSON" | jq -c '.wp_codebox_phpunit_mounts // []' 2>/dev/null || echo "[]")
+    [ -n "$extracted" ] && [ "$extracted" != "null" ] && WP_CODEBOX_PHPUNIT_MOUNTS_JSON="$extracted"
 
-    extracted=$(printf '%s' "$HOMEBOY_SETTINGS_JSON" | jq -r '.wp_codebox_wordpress_version // empty' 2>/dev/null || true)
+    extracted=$(printf '%s' "$HOMEBOY_SETTINGS_JSON" | jq -r '.wp_codebox_phpunit_test_root // empty' 2>/dev/null || true)
+    [ -n "$extracted" ] && [ "$extracted" != "null" ] && WP_CODEBOX_PHPUNIT_TEST_ROOT="$extracted"
+
+    extracted=$(printf '%s' "$HOMEBOY_SETTINGS_JSON" | jq -r '.wp_codebox_phpunit_config // empty' 2>/dev/null || true)
+    [ -n "$extracted" ] && [ "$extracted" != "null" ] && WP_CODEBOX_PHPUNIT_CONFIG="$extracted"
+
+    extracted=$(printf '%s' "$HOMEBOY_SETTINGS_JSON" | jq -r '.wp_codebox_phpunit_cwd // empty' 2>/dev/null || true)
+    [ -n "$extracted" ] && [ "$extracted" != "null" ] && WP_CODEBOX_PHPUNIT_CWD="$extracted"
+
+    extracted=$(printf '%s' "$HOMEBOY_SETTINGS_JSON" | jq -c '.wp_codebox_phpunit_preload_files // []' 2>/dev/null || echo "[]")
+    [ -n "$extracted" ] && [ "$extracted" != "null" ] && WP_CODEBOX_PHPUNIT_PRELOAD_FILES_JSON="$extracted"
+
+    extracted=$(printf '%s' "$HOMEBOY_SETTINGS_JSON" | jq -r '.phpunit_no_tests // empty' 2>/dev/null || true)
+    if [ -n "$extracted" ] && [ "$extracted" != "null" ]; then
+        PHPUNIT_NO_TESTS="$extracted"
+        PHPUNIT_NO_TESTS_CONFIGURED=1
+    fi
+
+    extracted=$(printf '%s' "$HOMEBOY_SETTINGS_JSON" | jq -r '.wordpress_runtime_version // .wp_codebox_wordpress_version // empty' 2>/dev/null || true)
     [ -n "$extracted" ] && [ "$extracted" != "null" ] && WP_CODEBOX_WORDPRESS_VERSION="$extracted"
 
     extracted=$(printf '%s' "$HOMEBOY_SETTINGS_JSON" | jq -r '.wp_codebox_multisite // empty' 2>/dev/null || true)
     [ -n "$extracted" ] && [ "$extracted" != "null" ] && WP_CODEBOX_MULTISITE="$extracted"
+
+    extracted=$(printf '%s' "$HOMEBOY_SETTINGS_JSON" | jq -c '.wp_codebox_command_diagnostics // .command_diagnostics // .diagnostics_capture // .diagnosticsCapture // null' 2>/dev/null || echo "null")
+    [ -n "$extracted" ] && WP_CODEBOX_COMMAND_DIAGNOSTICS_JSON="$extracted"
 fi
 if [ -n "${HOMEBOY_WORDPRESS_MULTISITE+x}" ]; then
     WP_CODEBOX_MULTISITE="$HOMEBOY_WORDPRESS_MULTISITE"
@@ -667,27 +853,38 @@ PHPUNIT_ARGS_JSON=$(printf '%s\0' "${PASSTHROUGH_ARGS[@]}" | php -r '
 
 SELECTED_TEST_FILE_REL=""
 if [ -n "$SELECTED_TEST_FILE" ]; then
+    SELECTED_TEST_ROOT_HOST=""
+    if [ -n "$WP_CODEBOX_PHPUNIT_TEST_ROOT" ]; then
+        SELECTED_TEST_ROOT_HOST=$(resolve_wp_codebox_sandbox_host_path "${HOMEBOY_SETTINGS_JSON:-{}}" "$WP_CODEBOX_PHPUNIT_TEST_ROOT" || true)
+    fi
+    if [ -z "$SELECTED_TEST_ROOT_HOST" ]; then
+        SELECTED_TEST_ROOT_HOST="${PLUGIN_PATH}/tests"
+    fi
+
     if [ "${SELECTED_TEST_FILE#/}" != "$SELECTED_TEST_FILE" ]; then
-        selected_abs="$SELECTED_TEST_FILE"
+        selected_abs=$(resolve_wp_codebox_sandbox_host_path "${HOMEBOY_SETTINGS_JSON:-{}}" "$SELECTED_TEST_FILE" || true)
+        [ -n "$selected_abs" ] || selected_abs="$SELECTED_TEST_FILE"
     else
         selected_abs="${PLUGIN_PATH}/${SELECTED_TEST_FILE}"
+        if [ ! -f "$selected_abs" ]; then
+            selected_abs="${SELECTED_TEST_ROOT_HOST%/}/${SELECTED_TEST_FILE}"
+        fi
     fi
     if [ ! -f "$selected_abs" ]; then
         echo "ERROR: requested PHPUnit test file not found: ${SELECTED_TEST_FILE}" >&2
         exit 2
     fi
-    case "$selected_abs" in
-        "${PLUGIN_PATH}"/tests/*.php|"${PLUGIN_PATH}"/tests/*/*.php|"${PLUGIN_PATH}"/tests/*/*/*.php|"${PLUGIN_PATH}"/tests/*/*/*/*.php)
-            SELECTED_TEST_FILE_REL="${selected_abs#"${PLUGIN_PATH}/"}"
-            ;;
-        *)
-            echo "ERROR: requested PHPUnit test file must live under tests/: ${SELECTED_TEST_FILE}" >&2
-            exit 2
-            ;;
-    esac
+    selected_root_real=$(php -r 'echo realpath($argv[1]) ?: "";' "$SELECTED_TEST_ROOT_HOST" 2>/dev/null || true)
+    selected_abs_real=$(php -r 'echo realpath($argv[1]) ?: "";' "$selected_abs" 2>/dev/null || true)
+    if [ -z "$selected_root_real" ] || [ -z "$selected_abs_real" ] || [ "${selected_abs_real#"${selected_root_real%/}/"}" = "$selected_abs_real" ]; then
+        echo "ERROR: requested PHPUnit test file must live under configured test root: ${SELECTED_TEST_FILE}" >&2
+        exit 2
+    fi
+    SELECTED_TEST_FILE_REL="${selected_abs_real#"${selected_root_real%/}/"}"
 fi
 
 MOUNTS_JSON="[]"
+EXTRA_PLUGINS_JSON="[]"
 homeboy_wp_codebox_add_recipe_mount() {
     local source="$1"
     local target="$2"
@@ -695,7 +892,15 @@ homeboy_wp_codebox_add_recipe_mount() {
     MOUNTS_JSON=$(jq -nc --argjson mounts "$MOUNTS_JSON" --arg source "$source" --arg target "$target" --arg mode "$mode" '$mounts + [{source: $source, target: $target, mode: $mode}]')
 }
 
-homeboy_wp_codebox_add_recipe_mount "${PLUGIN_PATH}" "/wordpress/wp-content/plugins/${PLUGIN_SLUG}"
+if [ -n "$WP_CODEBOX_SOURCE_ROOT" ]; then
+    EXTRA_PLUGINS_JSON=$(jq -nc \
+        --arg source "$WP_CODEBOX_SOURCE_ROOT" \
+        --arg sourceSubpath "$WP_CODEBOX_SOURCE_SUBPATH" \
+        --arg slug "$PLUGIN_SLUG" \
+        '[{source: $source, sourceRoot: $source, sourceSubpath: $sourceSubpath, slug: $slug, activate: false}]')
+else
+    homeboy_wp_codebox_add_recipe_mount "${PLUGIN_PATH}" "/wordpress/wp-content/plugins/${PLUGIN_SLUG}"
+fi
 
 if [ -n "$DEPENDENCY_PATHS" ]; then
     while IFS= read -r dep_path; do
@@ -703,6 +908,39 @@ if [ -n "$DEPENDENCY_PATHS" ]; then
         dep_slug="$(homeboy_get_validation_dependency_slug "$dep_path" || basename "$dep_path")"
         homeboy_wp_codebox_add_recipe_mount "${dep_path}" "/wordpress/wp-content/plugins/${dep_slug}"
     done <<< "$DEPENDENCY_PATHS"
+fi
+
+if printf '%s' "$WP_CODEBOX_PHPUNIT_MOUNTS_JSON" | jq -e 'type == "array" and length > 0' >/dev/null 2>&1; then
+    while IFS= read -r mount_json; do
+        [ -n "$mount_json" ] || continue
+        mount_source=$(printf '%s' "$mount_json" | jq -r '.source // empty')
+        mount_target=$(printf '%s' "$mount_json" | jq -r '.target // empty')
+        mount_mode=$(printf '%s' "$mount_json" | jq -r '.mode // "readonly"')
+        if [ -z "$mount_source" ] || [ -z "$mount_target" ]; then
+            echo "Error: wp_codebox_phpunit_mounts entries require source and target" >&2
+            FAILED_STEP="WP Codebox PHPUnit mount setup"
+            exit 1
+        fi
+        if [[ "$mount_source" != /* ]] || [ ! -e "$mount_source" ]; then
+            echo "Error: wp_codebox_phpunit_mounts source must be an absolute existing path: $mount_source" >&2
+            FAILED_STEP="WP Codebox PHPUnit mount setup"
+            exit 1
+        fi
+        if [[ "$mount_target" != /* ]]; then
+            echo "Error: wp_codebox_phpunit_mounts target must be an absolute WP Codebox sandbox path: $mount_target" >&2
+            FAILED_STEP="WP Codebox PHPUnit mount setup"
+            exit 1
+        fi
+        case "$mount_mode" in
+            readonly|readwrite) ;;
+            *)
+                echo "Error: wp_codebox_phpunit_mounts mode must be readonly or readwrite: $mount_mode" >&2
+                FAILED_STEP="WP Codebox PHPUnit mount setup"
+                exit 1
+                ;;
+        esac
+        homeboy_wp_codebox_add_recipe_mount "$mount_source" "$mount_target" "$mount_mode"
+    done < <(printf '%s' "$WP_CODEBOX_PHPUNIT_MOUNTS_JSON" | jq -c '.[]')
 fi
 
 PLUGIN_DB_PHP="${PLUGIN_PATH}/db.php"
@@ -780,7 +1018,102 @@ if [ -n "$DEPENDENCY_PATHS" ]; then
 fi
 
 RESULT_FILE="${PLUGIN_PATH}/.pg-test-result.txt"
-rm -f "$RESULT_FILE"
+PHPUNIT_RESULT_CACHE_FILE="${PLUGIN_PATH}/.phpunit.result.cache"
+WP_CODEBOX_TMPFILE=""
+PHPUNIT_STDOUT_TMPFILE=""
+RECIPE_FILE=""
+RECIPE_OPTIONS_FILE=""
+RECIPE_BUILDER_SOURCE_FILE=""
+WP_CODEBOX_PHPUNIT_PERSIST_ON_FAILURE=0
+
+cleanup_wp_codebox_phpunit_runtime_files() {
+    rm -f "$RESULT_FILE" "$PHPUNIT_RESULT_CACHE_FILE"
+}
+
+persist_wp_codebox_phpunit_failure_artifacts() {
+    [ "$WP_CODEBOX_PHPUNIT_PERSIST_ON_FAILURE" = "1" ] || return 0
+
+    mkdir -p "$ARTIFACTS_DIR"
+
+    [ -n "$RECIPE_FILE" ] && [ -f "$RECIPE_FILE" ] && cp "$RECIPE_FILE" "${ARTIFACTS_DIR}/wp-codebox-phpunit-recipe.json"
+    [ -n "$RECIPE_OPTIONS_FILE" ] && [ -f "$RECIPE_OPTIONS_FILE" ] && cp "$RECIPE_OPTIONS_FILE" "${ARTIFACTS_DIR}/wp-codebox-phpunit-recipe-options.json"
+
+    local resolved_bin
+    resolved_bin=$(homeboy_wp_codebox_resolved_bin_path "$WP_CODEBOX_BIN")
+    local command_json
+    command_json=$(printf '%s\0' "${wp_codebox_command[@]}" | php -r '
+        $raw = stream_get_contents(STDIN);
+        $parts = array_values(array_filter(explode("\0", $raw), static function ($value) { return $value !== ""; }));
+        echo json_encode($parts, JSON_UNESCAPED_SLASHES);
+    ' 2>/dev/null || printf '[]')
+    local recipe_builder_source=""
+    [ -n "$RECIPE_BUILDER_SOURCE_FILE" ] && [ -f "$RECIPE_BUILDER_SOURCE_FILE" ] && recipe_builder_source=$(cat "$RECIPE_BUILDER_SOURCE_FILE")
+
+    jq -n \
+        --arg schema "homeboy/wordpress-wp-codebox-phpunit-provenance/v1" \
+        --arg cliBin "$WP_CODEBOX_BIN" \
+        --arg resolvedCliPath "$resolved_bin" \
+        --argjson command "$command_json" \
+        --arg recipeBuilder "$PHPUNIT_RECIPE_BUILDER" \
+        --arg recipeBuilderSource "$recipe_builder_source" \
+        --arg artifactsDir "$ARTIFACTS_DIR" \
+        '{
+            schema: $schema,
+            wp_codebox: {
+                cli_bin: $cliBin,
+                resolved_cli_path: $resolvedCliPath,
+                command: $command,
+                recipe_builder: $recipeBuilder,
+                recipe_builder_source: $recipeBuilderSource
+            },
+            artifacts: {
+                directory: $artifactsDir,
+                recipe: "wp-codebox-phpunit-recipe.json",
+                recipe_options: "wp-codebox-phpunit-recipe-options.json",
+                profile: "wp-codebox-phpunit-profile.json"
+            }
+        }' > "${ARTIFACTS_DIR}/wp-codebox-phpunit-provenance.json"
+
+    jq -n \
+        --arg schema "homeboy/wordpress-wp-codebox-phpunit-profile/v1" \
+        --arg testRoot "$WP_CODEBOX_PHPUNIT_TEST_ROOT" \
+        --arg config "$WP_CODEBOX_PHPUNIT_CONFIG" \
+        --arg cwd "$WP_CODEBOX_PHPUNIT_CWD" \
+        --arg bootstrapMode "$WP_CODEBOX_PHPUNIT_BOOTSTRAP_MODE" \
+        --arg projectBootstrap "$WP_CODEBOX_PHPUNIT_PROJECT_BOOTSTRAP" \
+        --argjson extraMounts "$WP_CODEBOX_PHPUNIT_MOUNTS_JSON" \
+        --argjson passthroughArgs "$PHPUNIT_ARGS_JSON" \
+        '{
+            schema: $schema,
+            phpunit: {
+                test_root: $testRoot,
+                config: $config,
+                cwd: $cwd,
+                extra_mounts: $extraMounts,
+                bootstrap_mode: $bootstrapMode,
+                project_bootstrap: $projectBootstrap,
+                passthrough_args: $passthroughArgs
+            }
+        }' > "${ARTIFACTS_DIR}/wp-codebox-phpunit-profile.json"
+}
+
+cleanup_wp_codebox_phpunit_files() {
+    local status=$?
+    set +e
+    if [ "$status" -ne 0 ]; then
+        persist_wp_codebox_phpunit_failure_artifacts
+    fi
+    cleanup_wp_codebox_phpunit_runtime_files
+    [ -n "$WP_CODEBOX_TMPFILE" ] && rm -f "$WP_CODEBOX_TMPFILE"
+    [ -n "$PHPUNIT_STDOUT_TMPFILE" ] && rm -f "$PHPUNIT_STDOUT_TMPFILE"
+    [ -n "$RECIPE_FILE" ] && rm -f "$RECIPE_FILE"
+    [ -n "$RECIPE_OPTIONS_FILE" ] && rm -f "$RECIPE_OPTIONS_FILE"
+    [ -n "$RECIPE_BUILDER_SOURCE_FILE" ] && rm -f "$RECIPE_BUILDER_SOURCE_FILE"
+    exit "$status"
+}
+
+trap cleanup_wp_codebox_phpunit_files EXIT
+cleanup_wp_codebox_phpunit_runtime_files
 
 ARTIFACTS_DIR="${HOMEBOY_WP_CODEBOX_ARTIFACTS_DIR:-}"
 if [ -z "$ARTIFACTS_DIR" ] && [ -n "${HOMEBOY_SETTINGS_JSON:-}" ] && [ "${HOMEBOY_SETTINGS_JSON}" != "{}" ]; then
@@ -799,19 +1132,89 @@ echo "  Backend: wp-codebox"
 if [ "${HOMEBOY_DEBUG:-}" = "1" ]; then
     echo "  Mounts: ${MOUNTS_JSON}"
     echo "  WordPress version: ${WP_CODEBOX_WORDPRESS_VERSION}"
+    echo "  PHPUnit test root: ${WP_CODEBOX_PHPUNIT_TEST_ROOT:-default}"
+    echo "  PHPUnit config: ${WP_CODEBOX_PHPUNIT_CONFIG:-default}"
+    echo "  PHPUnit cwd: ${WP_CODEBOX_PHPUNIT_CWD:-default}"
     echo "  Multisite: ${WP_CODEBOX_MULTISITE:-0}"
     echo "  Artifacts: ${ARTIFACTS_DIR}"
 fi
 
 WP_CODEBOX_TMPFILE=$(mktemp)
 PHPUNIT_STDOUT_TMPFILE=$(mktemp)
+PHPUNIT_RECIPE_BUILDER_STDERR=$(mktemp)
 RECIPE_FILE=$(mktemp "${TMPDIR:-/tmp}/homeboy-wp-codebox-test-recipe.XXXXXX")
 RECIPE_OPTIONS_FILE=$(mktemp "${TMPDIR:-/tmp}/homeboy-wp-codebox-test-recipe-options.XXXXXX")
+RECIPE_BUILDER_SOURCE_FILE=$(mktemp "${TMPDIR:-/tmp}/homeboy-wp-codebox-test-recipe-builder-source.XXXXXX")
 homeboy_wp_codebox_set_command "$WP_CODEBOX_BIN"
 wp_codebox_command=("${HOMEBOY_WP_CODEBOX_COMMAND[@]}")
 
+fail_wp_codebox_phpunit_profile_setup() {
+    local message="$1"
+    local detail="${2:-}"
+
+    FAILED_STEP="WP Codebox PHPUnit profile setup"
+    FAILURE_OUTPUT="$message"
+    echo ""
+    echo "============================================"
+    echo "WP CODEBOX PHPUNIT PROFILE CONFIGURATION FAILURE"
+    echo "============================================"
+    echo "$message" >&2
+    if [ -n "$detail" ]; then
+        echo "" >&2
+        echo "$detail" >&2
+    fi
+    write_phpunit_discovery_result failed "wp-codebox-phpunit-profile-configuration" "$message"
+    rm -f "$WP_CODEBOX_TMPFILE" "$PHPUNIT_STDOUT_TMPFILE" "$PHPUNIT_RECIPE_BUILDER_STDERR" "$RECIPE_FILE" "$RECIPE_OPTIONS_FILE"
+    exit 1
+}
+
+validate_wp_codebox_phpunit_recipe_profile() {
+    local validation_output
+
+    validation_output=$(jq -r \
+        --argjson requestedMounts "$WP_CODEBOX_PHPUNIT_MOUNTS_JSON" \
+        --arg requestedCwd "$WP_CODEBOX_PHPUNIT_CWD" \
+        --arg requestedTestRoot "$WP_CODEBOX_PHPUNIT_TEST_ROOT" \
+        --arg requestedConfig "$WP_CODEBOX_PHPUNIT_CONFIG" \
+        --argjson requestedPreloadFiles "$WP_CODEBOX_PHPUNIT_PRELOAD_FILES_JSON" \
+        '
+        def arg_present($args; $name; $value):
+            ($value == "") or (($args // []) | index(($name + "=" + $value)) != null);
+        def json_arg_present($args; $name; $value):
+            ($value | length) == 0 or (($args // []) | index(($name + "=" + ($value | tojson))) != null);
+        def mount_mode($mount): ($mount.mode // "readonly");
+
+        . as $recipe
+        | ($recipe.inputs.mounts // []) as $recipeMounts
+        | (if ($requestedMounts | type == "array") then $requestedMounts else [] end) as $requestedMountsArray
+        | ($recipe.workflow.steps // [] | map(select((.command // "") | test("(^|\\.)wordpress\\.phpunit$"))) | .[0]) as $phpunitStep
+        | [
+            (if $phpunitStep == null then "generated recipe does not include a wordpress.phpunit workflow step" else empty end),
+            (if ($requestedMounts | type == "array") then empty else "wp_codebox_phpunit_mounts must be an array" end),
+            ($requestedMountsArray[] as $mount
+                | select(($recipeMounts | any(.source == $mount.source and .target == $mount.target and mount_mode(.) == mount_mode($mount))) | not)
+                | "wp_codebox_phpunit_mounts entry missing from generated recipe inputs: " + (($mount.source // "") + " -> " + ($mount.target // "") + " (" + mount_mode($mount) + ")")),
+            (if $phpunitStep == null then empty elif arg_present($phpunitStep.args; "cwd"; $requestedCwd) then empty else "wp_codebox_phpunit_cwd missing from generated wordpress.phpunit args: " + $requestedCwd end),
+            (if $phpunitStep == null then empty elif arg_present($phpunitStep.args; "test-root"; $requestedTestRoot) then empty else "wp_codebox_phpunit_test_root missing from generated wordpress.phpunit args: " + $requestedTestRoot end),
+            (if $phpunitStep == null then empty elif arg_present($phpunitStep.args; "phpunit-xml"; $requestedConfig) then empty else "wp_codebox_phpunit_config missing from generated wordpress.phpunit args: " + $requestedConfig end),
+            (if $phpunitStep == null then empty elif json_arg_present($phpunitStep.args; "preload-files-json"; $requestedPreloadFiles) then empty else "wp_codebox_phpunit_preload_files missing from generated wordpress.phpunit args" end)
+        ] | map(select(. != null and . != "")) | .[]
+        ' "$RECIPE_FILE" 2>&1) || {
+        printf '%s\n' "$validation_output"
+        return 1
+    }
+
+    if [ -n "$validation_output" ]; then
+        printf '%s\n' "$validation_output"
+        return 1
+    fi
+
+    return 0
+}
+
 jq -n \
     --arg wp "$WP_CODEBOX_WORDPRESS_VERSION" \
+    --argjson extraPlugins "$EXTRA_PLUGINS_JSON" \
     --argjson mounts "$MOUNTS_JSON" \
     --arg pluginSlug "$PLUGIN_SLUG" \
     --arg selectedTestFile "$SELECTED_TEST_FILE_REL" \
@@ -820,11 +1223,17 @@ jq -n \
     --argjson env "$PHPUNIT_ENV_JSON" \
     --argjson defines "$WP_CONFIG_DEFINES_JSON" \
     --argjson bootstrapFiles "$WP_CODEBOX_BOOTSTRAP_FILES_JSON" \
+    --argjson preloadFiles "$WP_CODEBOX_PHPUNIT_PRELOAD_FILES_JSON" \
     --arg bootstrapMode "$WP_CODEBOX_PHPUNIT_BOOTSTRAP_MODE" \
     --arg projectBootstrap "$WP_CODEBOX_PHPUNIT_PROJECT_BOOTSTRAP" \
+    --arg phpunitTestRoot "$WP_CODEBOX_PHPUNIT_TEST_ROOT" \
+    --arg phpunitConfig "$WP_CODEBOX_PHPUNIT_CONFIG" \
+    --arg phpunitCwd "$WP_CODEBOX_PHPUNIT_CWD" \
     --arg dependencyMounts "$WP_CODEBOX_DEP_MOUNTS" \
     --arg multisite "$WP_CODEBOX_MULTISITE" \
+    --argjson diagnostics "$WP_CODEBOX_COMMAND_DIAGNOSTICS_JSON" \
     '({
+        extra_plugins: $extraPlugins,
         mounts: $mounts,
         pluginSlug: $pluginSlug,
         selectedTestFile: $selectedTestFile,
@@ -833,23 +1242,49 @@ jq -n \
         env: $env,
         wpConfigDefines: $defines,
         bootstrapFiles: $bootstrapFiles,
+        preloadFiles: $preloadFiles,
         bootstrapMode: $bootstrapMode,
         projectBootstrap: $projectBootstrap,
         autoloadFile: "/wp-codebox-vendor/autoload.php",
         testsDir: "/wp-codebox-vendor/wp-phpunit/wp-phpunit",
         dependencyMounts: ($dependencyMounts | split("\n") | map(select(. != ""))),
         multisite: (if (($multisite | ascii_downcase) as $v | $v == "1" or $v == "true" or $v == "yes" or $v == "on") then true else false end)
-    } + (if $wp == "" then {} else {wordpressVersion: $wp} end))' > "$RECIPE_OPTIONS_FILE"
+    }
+    + (if $wp == "" then {} else {wordpressVersion: $wp} end)
+    + (if $phpunitTestRoot == "" then {} else {testRoot: $phpunitTestRoot} end)
+    + (if $phpunitConfig == "" then {} else {phpunitXml: $phpunitConfig} end)
+    + (if $phpunitCwd == "" then {} else {cwd: $phpunitCwd} end)
+    + (if $diagnostics == null then {} else {diagnosticsCapture: $diagnostics} end))' > "$RECIPE_OPTIONS_FILE"
+
+WP_CODEBOX_PHPUNIT_PERSIST_ON_FAILURE=1
+WP_CODEBOX_NODE_OPTIONS="${HOMEBOY_WP_CODEBOX_NODE_OPTIONS:-${NODE_OPTIONS:-}}"
+case " $WP_CODEBOX_NODE_OPTIONS " in
+    *" --max-old-space-size="*) ;;
+    *)
+        if [ -n "$WP_CODEBOX_NODE_OPTIONS" ]; then
+            WP_CODEBOX_NODE_OPTIONS="${WP_CODEBOX_NODE_OPTIONS} --max-old-space-size=8192"
+        else
+            WP_CODEBOX_NODE_OPTIONS="--max-old-space-size=8192"
+        fi
+        ;;
+esac
 
 if [ ! -f "$PHPUNIT_RECIPE_BUILDER" ]; then
-    echo "Error: WP Codebox PHPUnit recipe builder not found: ${PHPUNIT_RECIPE_BUILDER}" >&2
-    FAILED_STEP="WP Codebox PHPUnit recipe setup"
-    exit 1
+    fail_wp_codebox_phpunit_profile_setup "WP Codebox PHPUnit recipe builder not found: ${PHPUNIT_RECIPE_BUILDER}"
 fi
-node "$PHPUNIT_RECIPE_BUILDER" < "$RECIPE_OPTIONS_FILE" > "$RECIPE_FILE"
+set +e
+HOMEBOY_WP_CODEBOX_RECIPE_BUILDER_SOURCE_FILE="$RECIPE_BUILDER_SOURCE_FILE" node "$PHPUNIT_RECIPE_BUILDER" < "$RECIPE_OPTIONS_FILE" > "$RECIPE_FILE" 2> "$PHPUNIT_RECIPE_BUILDER_STDERR"
+recipe_builder_exit=$?
+set -e
+if [ $recipe_builder_exit -ne 0 ]; then
+    fail_wp_codebox_phpunit_profile_setup "WP Codebox PHPUnit recipe generation failed before WP Codebox runtime execution." "$(cat "$PHPUNIT_RECIPE_BUILDER_STDERR")"
+fi
+if ! validation_errors=$(validate_wp_codebox_phpunit_recipe_profile); then
+    fail_wp_codebox_phpunit_profile_setup "Requested WP Codebox PHPUnit profile settings were not represented in the generated recipe." "$validation_errors"
+fi
 
 set +e
-"${wp_codebox_command[@]}" recipe-run \
+NODE_OPTIONS="$WP_CODEBOX_NODE_OPTIONS" "${wp_codebox_command[@]}" recipe-run \
     --recipe "$RECIPE_FILE" \
     --artifacts "$ARTIFACTS_DIR" \
     --json \
@@ -857,7 +1292,7 @@ set +e
 wp_codebox_exit=$?
 set -e
 
-rm -f "$RECIPE_FILE" "$RECIPE_OPTIONS_FILE"
+rm -f "$RECIPE_FILE" "$RECIPE_OPTIONS_FILE" "$PHPUNIT_RECIPE_BUILDER_STDERR"
 
 WP_CODEBOX_OUTPUT=$(cat "$WP_CODEBOX_TMPFILE")
 PHPUNIT_OUTPUT=""
@@ -1007,11 +1442,19 @@ if echo "$PHPUNIT_OUTPUT" | grep -q "^NO_TEST_FILES"; then
         exit $?
     fi
 
-    if [ "$PHPUNIT_NO_TESTS" = "failed" ] || [ "$PHPUNIT_NO_TESTS" = "fail" ] || [ -f "${PLUGIN_PATH}/phpunit.xml" ] || [ -f "${PLUGIN_PATH}/phpunit.xml.dist" ]; then
+    if component_npm_test_script; then
+        rm -f "$RESULT_FILE"
+        run_npm_test_script
+        exit $?
+    fi
+
+    if phpunit_no_tests_is_failure_policy || [ -f "${PLUGIN_PATH}/phpunit.xml" ] || [ -f "${PLUGIN_PATH}/phpunit.xml.dist" ] || { phpunit_has_explicit_scope_request && ! phpunit_no_tests_allows_skip; }; then
         dump_diagnostics "NO PHPUNIT TEST FILES DISCOVERED"
         echo ""
-        if [ "$PHPUNIT_NO_TESTS" = "failed" ] || [ "$PHPUNIT_NO_TESTS" = "fail" ]; then
+        if phpunit_no_tests_is_failure_policy; then
             echo "PHPUnit no-test discovery is configured as failure, and no files matched the WordPress runner discovery contract."
+        elif phpunit_has_explicit_scope_request; then
+            echo "Explicit PHPUnit test scope/config was requested, but no files matched the WordPress runner discovery contract."
         else
             echo "PHPUnit config exists, but no files matched the WordPress runner discovery contract."
         fi

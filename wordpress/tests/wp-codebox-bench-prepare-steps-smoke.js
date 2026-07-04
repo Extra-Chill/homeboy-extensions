@@ -33,13 +33,31 @@ if (process.argv[2] !== 'recipe-run' || recipeIndex < 0) {
 const recipe = JSON.parse(fs.readFileSync(process.argv[recipeIndex + 1], 'utf8'));
 const extraPlugins = recipe.inputs.extraPlugins || recipe.inputs.extra_plugins || [];
 const plugin = extraPlugins.find((entry) => entry.slug === 'prepare-steps-fixture');
-if (!plugin || !fs.existsSync(plugin.source + '/includes/react-admin/feature-config.php')) {
+if (!plugin || !plugin.sourceSubpath || !fs.existsSync(plugin.source + '/' + plugin.sourceSubpath + '/includes/react-admin/feature-config.php')) {
   process.stderr.write('generated feature config missing before wp-codebox launch\\n');
   process.exit(8);
 }
-if (!fs.existsSync(plugin.source + '/../../packages/php/monorepo-plugin/composer.json')) {
+if (plugin.source !== plugin.sourceRoot || plugin.sourceSubpath !== 'plugins/prepare-steps-fixture') {
+  process.stderr.write('monorepo source root/subpath missing from plugin recipe input\\n');
+  process.exit(10);
+}
+if (!fs.existsSync(plugin.source + '/packages/php/monorepo-plugin/composer.json')) {
   process.stderr.write('monorepo composer path repository missing from plugin source context\\n');
   process.exit(9);
+}
+if (process.env.FAKE_WP_CODEBOX_FAILURE === '1') {
+  process.stdout.write(JSON.stringify({
+    success: false,
+    failure_classification: 'assertion_failure',
+    message: 'fixture workload assertion failed',
+    benchResults: {
+      component_id: 'prepare-steps-fixture',
+      iterations: 1,
+      warmup_iterations: 0,
+      scenarios: [{ id: 'assert-prepare', metrics: { mean_ms: 12.5 } }]
+    }
+  }) + '\\n');
+  process.exit(0);
 }
 process.stdout.write(JSON.stringify({
   success: true,
@@ -116,6 +134,42 @@ file_put_contents($target, "<?php return ['prepared' => true];\n");
 
   assert.equal(successResult.status, 0, successResult.stderr || successResult.stdout);
   assert.equal(fs.existsSync(generatedPath), true);
+
+  const staleResultsPath = path.join(root, 'stale-results.json');
+  fs.writeFileSync(staleResultsPath, JSON.stringify({
+    component_id: 'prepare-steps-fixture',
+    iterations: 0,
+    scenarios: [{ id: 'assert-prepare', metrics: { browser_peak_used_js_heap_bytes: 999 } }],
+  }));
+  const childFailureArtifactsDir = path.join(root, 'child-failure-artifacts');
+  const childFailureResult = spawnSync('bash', [path.join(extensionPath, 'scripts', 'bench', 'bench-runner.sh')], {
+    cwd: componentPath,
+    encoding: 'utf8',
+    env: {
+      ...baseEnv,
+      FAKE_WP_CODEBOX_FAILURE: '1',
+      HOMEBOY_BENCH_RESULTS_FILE: staleResultsPath,
+      HOMEBOY_WP_CODEBOX_ARTIFACTS_DIR: childFailureArtifactsDir,
+      HOMEBOY_SETTINGS_JSON: JSON.stringify({
+        wp_codebox_source_root: sourceRoot,
+        wp_codebox_source_subpath: sourceSubpath,
+        wp_codebox_prepare_steps: [
+          { command: 'php', args: ['bin/generate-feature-config.php'] },
+        ],
+      }),
+    },
+  });
+
+  assert.equal(childFailureResult.status, 1);
+  assert.match(childFailureResult.stderr, /WP Codebox wordpress\.bench did not return a successful bench result envelope/);
+  assert.match(childFailureResult.stderr, /Failure classification: assertion_failure/);
+  const preservedResults = JSON.parse(fs.readFileSync(staleResultsPath, 'utf8'));
+  assert.equal(preservedResults.iterations, 1);
+  assert.equal(preservedResults.scenarios[0].metrics.mean_ms, 12.5);
+  assert.equal(preservedResults.scenarios[0].metrics.browser_peak_used_js_heap_bytes, undefined);
+  const childFailureDiagnostics = JSON.parse(fs.readFileSync(path.join(childFailureArtifactsDir, 'wp-codebox-bench-run-diagnostics.json'), 'utf8'));
+  assert.equal(childFailureDiagnostics.diagnostics[0].failure_classification, 'assertion_failure');
+  assert.equal(childFailureDiagnostics.diagnostics[0].persisted_child_bench_results, true);
 
   fs.rmSync(generatedPath, { force: true });
   const failureArtifactsDir = path.join(root, 'failure-artifacts');

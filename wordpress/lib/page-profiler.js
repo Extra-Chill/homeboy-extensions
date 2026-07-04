@@ -31,11 +31,6 @@ const DEFAULT_DIAGNOSIS_THRESHOLDS = {
 const DEFAULT_REST_OBSERVATION_MS = 1000;
 const DEFAULT_THIRD_PARTY_WATERFALL_GROUPS = [
 	{
-		id: 'woocommerce-store-api',
-		label: 'WooCommerce Store API',
-		urlIncludes: ['/wp-json/wc/store/', 'rest_route=/wc/store/'],
-	},
-	{
 		id: 'wordpress-assets',
 		label: 'WordPress assets',
 		urlIncludes: ['/wp-admin/', '/wp-content/', '/wp-includes/', '/wp-json/'],
@@ -51,6 +46,7 @@ const DEFAULT_THIRD_PARTY_WATERFALL_GROUPS = [
 		domains: ['gstatic.com', 'googleapis.com', 'google.com'],
 	},
 ];
+const WORDPRESS_PAGE_PROFILER_PRODUCT_ADAPTERS = Object.freeze({});
 const DEFAULT_GATE_THRESHOLDS = {
 	readyMsRegression: 250,
 	networkIdleMsRegression: 500,
@@ -294,6 +290,14 @@ function normalizeThirdPartyWaterfallGroups(groups) {
 		}));
 }
 
+function normalizeWaterfallProductAdapters(adapters) {
+	return (Array.isArray(adapters) ? adapters : [])
+		.map((adapter) => {
+			return isPlainObject(adapter) ? adapter : null;
+		})
+		.filter(Boolean);
+}
+
 function normalizeNetworkUrlPattern(url) {
 	const parsed = safeUrl(url);
 	if (!parsed) {
@@ -412,7 +416,12 @@ function flattenThirdPartyWaterfallMetrics(summary) {
 }
 
 function summarizeThirdPartyWaterfall(rows, options = {}) {
-	const groups = normalizeThirdPartyWaterfallGroups(options.groups || options.vendorGroups || options.waterfallGroups);
+	const productAdapters = normalizeWaterfallProductAdapters(options.productAdapters || options.product_adapters || options.productWaterfallAdapters || options.product_waterfall_adapters);
+	const groups = normalizeThirdPartyWaterfallGroups([
+		...normalizeThirdPartyWaterfallGroups(options.groups || options.vendorGroups || options.waterfallGroups).filter((group) => !DEFAULT_THIRD_PARTY_WATERFALL_GROUPS.some((defaultGroup) => defaultGroup.id === group.id)),
+		...productAdapters.flatMap((adapter) => normalizeThirdPartyWaterfallGroups(adapter.waterfallGroups || adapter.waterfall_groups)),
+		...normalizeThirdPartyWaterfallGroups(options.groups || options.vendorGroups || options.waterfallGroups).filter((group) => DEFAULT_THIRD_PARTY_WATERFALL_GROUPS.some((defaultGroup) => defaultGroup.id === group.id)),
+	]);
 	const topUrlLimit = Number(options.topUrlLimit ?? 10);
 	const duplicatePatternLimit = Number(options.duplicatePatternLimit ?? 10);
 	const grouped = new Map();
@@ -447,7 +456,12 @@ function summarizeThirdPartyWaterfall(rows, options = {}) {
 	const finalizedGroups = [...grouped.values()]
 		.map((group) => finalizeThirdPartyWaterfallGroup(group, topUrlLimit, duplicatePatternLimit))
 		.sort((a, b) => b.transferSizeBytes - a.transferSizeBytes || b.totalCount - a.totalCount || a.label.localeCompare(b.label));
-	const firstPartyGroupIds = new Set(['same-origin', 'wordpress-assets', 'woocommerce-store-api', 'unknown']);
+	const firstPartyGroupIds = new Set([
+		'same-origin',
+		'wordpress-assets',
+		'unknown',
+		...productAdapters.flatMap((adapter) => adapter.firstPartyWaterfallGroupIds || adapter.first_party_waterfall_group_ids || []),
+	]);
 	const thirdPartyGroups = finalizedGroups.filter((group) => !firstPartyGroupIds.has(group.id));
 	const summary = {
 		schema: 'homeboy/third-party-waterfall/v1',
@@ -2366,6 +2380,140 @@ function readJsonlFileIfPresent(filePath) {
 		.map((line) => JSON.parse(line));
 }
 
+function normalizeArtifactRoleValue(value) {
+	return String(value || '').trim().toLowerCase().replace(/[-\s]+/g, '_');
+}
+
+function normalizeArtifactCapabilityValues(value) {
+	if (value === undefined || value === null || value === '') {
+		return [];
+	}
+	if (Array.isArray(value)) {
+		return value.flatMap(normalizeArtifactCapabilityValues);
+	}
+	return [normalizeArtifactRoleValue(value)].filter(Boolean);
+}
+
+function normalizePageProfilerArtifactRefs(value) {
+	if (value === undefined || value === null || value === '') {
+		return [];
+	}
+	if (Array.isArray(value)) {
+		return value.flatMap(normalizePageProfilerArtifactRefs);
+	}
+	if (!isPlainObject(value)) {
+		return [];
+	}
+	return [{
+		...value,
+		role: normalizeArtifactRoleValue(value.role || value.artifact_role || value.artifactRole || value.kind || value.type),
+		kind: normalizeArtifactRoleValue(value.kind || value.type),
+		capabilities: normalizeArtifactCapabilityValues(value.capabilities || value.capability),
+	}];
+}
+
+function resolveProviderNeutralArtifactRefsForSpec(input, spec) {
+	const byPageId = input.browserArtifactsByPageId || input.browserArtifactRefsByPageId || input.artifactRefsByPageId || input.artifact_refs_by_page_id;
+	const pageRefs = byPageId && typeof byPageId === 'object' && spec?.id ? byPageId[spec.id] : undefined;
+	return normalizePageProfilerArtifactRefs([
+		pageRefs,
+		input.browserArtifacts,
+		input.browserArtifactRefs,
+		input.artifactRefs,
+		input.artifact_refs,
+		Array.isArray(input.artifacts) ? input.artifacts : undefined,
+	]);
+}
+
+function artifactMatchesRole(artifact, roles) {
+	const normalizedRoles = roles.map(normalizeArtifactRoleValue);
+	return normalizedRoles.includes(artifact.role) || normalizedRoles.includes(artifact.kind);
+}
+
+function artifactHasCapability(artifact, capabilities) {
+	const normalizedCapabilities = capabilities.map(normalizeArtifactRoleValue);
+	return artifact.capabilities.some((capability) => normalizedCapabilities.includes(capability));
+}
+
+function providerNeutralBrowserArtifactsAvailable(input, spec) {
+	const artifacts = resolveProviderNeutralArtifactRefsForSpec(input, spec);
+	return artifacts.some((artifact) => artifactMatchesRole(artifact, [
+		'browser_summary',
+		'browser_action_summary',
+		'browser_network',
+		'browser_actions',
+		'browser_metrics',
+		'browser_artifact_bundle',
+	]) || artifactHasCapability(artifact, [
+		'browser_profile_artifacts',
+		'page_profile_artifacts',
+		'browser_metrics',
+	]));
+}
+
+function artifactPath(artifact, baseDirectory) {
+	const value = artifact?.path || artifact?.file || artifact?.directory;
+	if (typeof value !== 'string' || value.trim() === '') {
+		return null;
+	}
+	return nodePath.isAbsolute(value) || !baseDirectory ? value : nodePath.resolve(baseDirectory, value);
+}
+
+function firstArtifactPath(artifacts, roles, baseDirectory) {
+	const artifact = artifacts.find((candidate) => artifactMatchesRole(candidate, roles));
+	return artifactPath(artifact, baseDirectory);
+}
+
+function browserArtifactDirectoryFromNeutralRefs(artifacts, baseDirectory) {
+	for (const artifact of artifacts) {
+		if (!artifactMatchesRole(artifact, ['browser_artifact_bundle', 'artifact_bundle']) && !artifactHasCapability(artifact, ['browser_profile_artifacts', 'page_profile_artifacts', 'browser_metrics'])) {
+			continue;
+		}
+		const root = artifactPath(artifact, baseDirectory);
+		if (!root) {
+			continue;
+		}
+		const candidates = [
+			root,
+			nodePath.join(root, 'browser'),
+			nodePath.join(root, 'files', 'browser'),
+		];
+		const directory = candidates.find((candidate) => fs.existsSync(candidate) && fs.statSync(candidate).isDirectory());
+		if (directory) {
+			return directory;
+		}
+	}
+	return null;
+}
+
+function readProviderNeutralBrowserProfileArtifacts(input, spec) {
+	const baseDirectory = input.artifactsBaseDirectory || input.artifactBaseDirectory || input.artifactsDirectory || input.artifactDirectory;
+	const artifacts = resolveProviderNeutralArtifactRefsForSpec(input, spec);
+	if (artifacts.length === 0 || !providerNeutralBrowserArtifactsAvailable(input, spec)) {
+		return null;
+	}
+	const browserDirectory = browserArtifactDirectoryFromNeutralRefs(artifacts, baseDirectory);
+	const summaryPath = firstArtifactPath(artifacts, ['browser_summary', 'page_profile_summary'], baseDirectory) || (browserDirectory ? nodePath.join(browserDirectory, 'summary.json') : null);
+	const actionSummaryPath = firstArtifactPath(artifacts, ['browser_action_summary', 'browser_actions_summary'], baseDirectory) || (browserDirectory ? nodePath.join(browserDirectory, 'action-summary.json') : null);
+	const networkPath = firstArtifactPath(artifacts, ['browser_network', 'browser_network_log'], baseDirectory) || (browserDirectory ? nodePath.join(browserDirectory, 'network.jsonl') : null);
+	const actionsPath = firstArtifactPath(artifacts, ['browser_actions', 'browser_action_log'], baseDirectory) || (browserDirectory ? nodePath.join(browserDirectory, 'actions.jsonl') : null);
+	const metricsPath = firstArtifactPath(artifacts, ['browser_metrics', 'page_profile_metrics'], baseDirectory);
+	const metrics = readJsonFileIfPresent(metricsPath) || {};
+
+	return {
+		browserDirectory,
+		summary: readJsonFileIfPresent(summaryPath) || readJsonFileIfPresent(actionSummaryPath) || {},
+		actionSummary: readJsonFileIfPresent(actionSummaryPath) || {},
+		network: readJsonlFileIfPresent(networkPath),
+		actions: readJsonlFileIfPresent(actionsPath),
+		parsed: {
+			metrics: metrics.metrics || metrics,
+			artifacts: Object.fromEntries(artifacts.filter((artifact) => artifact.role).map((artifact) => [artifact.role, artifact])),
+		},
+		source: 'provider-neutral-browser-artifacts',
+	};
+}
+
 function resolveWpCodeboxBrowserDirectory(artifactsDirectory) {
 	if (typeof artifactsDirectory !== 'string' || artifactsDirectory.trim() === '') {
 		return null;
@@ -2462,13 +2610,28 @@ function readWpCodeboxBrowserProfileArtifacts(artifactsDirectory, wpCodeboxBin =
 		network,
 		actions,
 		parsed,
+		source: 'wp-codebox-browser-artifacts',
 	};
 }
 
-function createWordPressPageProfileFromWpCodeboxArtifacts(input, spec) {
+function resolveBrowserProfileArtifactsForSpec(input, spec) {
+	const providerNeutralArtifacts = readProviderNeutralBrowserProfileArtifacts(input, spec);
+	if (providerNeutralArtifacts) {
+		return providerNeutralArtifacts;
+	}
 	const artifactsDirectory = resolveWpCodeboxArtifactDirectoryForSpec(input, spec);
+	if (!artifactsDirectory) {
+		return null;
+	}
 	const wpCodeboxBin = input.wpCodeboxBin || input.wp_codebox_bin || process.env.HOMEBOY_WP_CODEBOX_BIN || 'wp-codebox';
-	const artifactData = readWpCodeboxBrowserProfileArtifacts(artifactsDirectory, wpCodeboxBin);
+	return readWpCodeboxBrowserProfileArtifacts(artifactsDirectory, wpCodeboxBin);
+}
+
+function createWordPressPageProfileFromBrowserArtifacts(input, spec) {
+	const artifactData = resolveBrowserProfileArtifactsForSpec(input, spec);
+	if (!artifactData) {
+		throw new Error('Browser profile artifacts not found');
+	}
 	const summary = artifactData.summary;
 	const actionSummary = artifactData.actionSummary;
 	const url = summary.finalUrl || summary.requestedUrl || actionSummary.finalUrl || actionSummary.requestedUrl || resolveWordPressUrl(input.baseUrl || summary.requestedUrl || 'http://example.test/', spec.url);
@@ -2513,7 +2676,7 @@ function createWordPressPageProfileFromWpCodeboxArtifacts(input, spec) {
 		readyMs,
 		readiness: {
 			readyMs,
-			source: 'wp-codebox-browser-artifacts',
+			source: artifactData.source,
 			waitFor: summary.waitFor,
 		},
 		resources: resourceSummary,
@@ -2540,13 +2703,18 @@ function createWordPressPageProfileFromWpCodeboxArtifacts(input, spec) {
 			},
 		},
 		thirdPartyWaterfall,
-		wpCodebox: {
+		artifactProfile: {
+			artifactBacked: true,
+			source: artifactData.source,
+			browserDirectory: artifactData.browserDirectory,
+		},
+		...(artifactData.source === 'wp-codebox-browser-artifacts' ? { wpCodebox: {
 			artifactBacked: true,
 			browserDirectory: artifactData.browserDirectory,
 			upstreamGaps: [
 				'wordpress.browser-probe network.jsonl does not include request timing or transfer/body size fields, so Homeboy REST waterfall timing/byte gates are partial for WP Codebox artifact-backed runs.',
 			],
-		},
+		} } : {}),
 	};
 
 	return {
@@ -2557,6 +2725,10 @@ function createWordPressPageProfileFromWpCodeboxArtifacts(input, spec) {
 			networkRequests: networkRows,
 		}),
 	};
+}
+
+function createWordPressPageProfileFromWpCodeboxArtifacts(input, spec) {
+	return createWordPressPageProfileFromBrowserArtifacts(input, spec);
 }
 
 function addFinding(findings, severity, code, message, data = {}) {
@@ -3348,8 +3520,8 @@ async function profileWordPressPage(input) {
 	const { page, baseUrl, wordpressProfilerRows = [], mark } = input;
 	const spec = normalizePageSpec(input.spec || input.pageSpec || input.page || {});
 	const wpCodeboxArtifactsDirectory = resolveWpCodeboxArtifactDirectoryForSpec(input, spec);
-	if (wpCodeboxArtifactsDirectory && (!page || input.useWpCodeboxBrowserArtifacts === true)) {
-		return createWordPressPageProfileFromWpCodeboxArtifacts(input, spec);
+	if ((providerNeutralBrowserArtifactsAvailable(input, spec) || wpCodeboxArtifactsDirectory) && (!page || input.useWpCodeboxBrowserArtifacts === true)) {
+		return createWordPressPageProfileFromBrowserArtifacts(input, spec);
 	}
 	const url = resolveWordPressUrl(baseUrl, spec.url);
 	const started = Date.now();
@@ -3775,6 +3947,7 @@ module.exports = {
 	DEFAULT_REST_OBSERVATION_MS,
 	WORDPRESS_RESOURCE_INCLUDE,
 	DEFAULT_THIRD_PARTY_WATERFALL_GROUPS,
+	WORDPRESS_PAGE_PROFILER_PRODUCT_ADAPTERS,
 	classifyResourceUrl,
 	classifyWordPressRestPreloadOpportunities,
 	compareWordPressRestNetworkWaterfalls,

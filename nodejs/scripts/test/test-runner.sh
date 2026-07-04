@@ -28,16 +28,20 @@ set -euo pipefail
 #   HOMEBOY_DEBUG                — verbose
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-RUNNER_PRELUDE="${HOMEBOY_RUNTIME_RUNNER_PRELUDE:?HOMEBOY_RUNTIME_RUNNER_PRELUDE is required}"
-COMMAND_CAPTURE_HELPER="${HOMEBOY_RUNTIME_COMMAND_CAPTURE:?HOMEBOY_RUNTIME_COMMAND_CAPTURE is required}"
-SETTINGS_HELPER="${HOMEBOY_RUNTIME_SETTINGS_HELPER:-${SCRIPT_DIR}/../lib/settings.sh}"
+SHARED_LIB_DIR="${HOMEBOY_SHARED_LIB_DIR:-}"
+if [ -z "$SHARED_LIB_DIR" ] && [ -n "${HOMEBOY_EXTENSION_PATH:-}" ] && [ -d "${HOMEBOY_EXTENSION_PATH}/../scripts/lib" ]; then
+    SHARED_LIB_DIR="$(cd "${HOMEBOY_EXTENSION_PATH}/../scripts/lib" && pwd)"
+fi
+SHARED_LIB_DIR="${SHARED_LIB_DIR:-$(cd "${SCRIPT_DIR}/../../../scripts/lib" && pwd)}"
+SETTINGS_HELPER="${HOMEBOY_RUNTIME_SETTINGS_HELPER:-${SHARED_LIB_DIR}/settings.sh}"
 # shellcheck source=/dev/null
-source "$RUNNER_PRELUDE"
-homeboy_runner_init --bash 4 --sidecar-writer --failure-trap
+source "${SHARED_LIB_DIR}/runner-harness.sh"
+# shellcheck source=/dev/null
+source "${SHARED_LIB_DIR}/test-failures-adapter.sh"
+homeboy_runner_harness_init --bash 4 --sidecar-writer --failure-trap
 # shellcheck source=/dev/null
 source "$SETTINGS_HELPER"
-# shellcheck source=/dev/null
-source "$COMMAND_CAPTURE_HELPER"
+homeboy_runner_harness_source_command_capture
 # shellcheck source=../lib/node-helpers.sh
 source "${SCRIPT_DIR}/../lib/node-helpers.sh"
 homeboy_require_package_json
@@ -57,16 +61,6 @@ elif [ -n "${HOMEBOY_CHANGED_TEST_FILES:-}" ]; then
     done <<< "$HOMEBOY_CHANGED_TEST_FILES"
 fi
 
-homeboy_node_package_value() {
-    local expression="$1"
-    PACKAGE_JSON_PATH="${PROJECT_PATH}/package.json" \
-    node -e "
-        const pkg = require(process.env.PACKAGE_JSON_PATH);
-        const value = (${expression});
-        if (typeof value === 'string' && value) console.log(value);
-    " 2>/dev/null || true
-}
-
 homeboy_node_script_command() {
     local script_name="$1"
     printf '%s --' "$(homeboy_project_run_script_command "$script_name")"
@@ -84,13 +78,6 @@ homeboy_node_targeted_test_script() {
             exit 1
         fi
         printf '%s' "$configured_script"
-        return 0
-    fi
-
-    local package_name
-    package_name="$(homeboy_node_package_value "pkg.name || ''")"
-    if [ "$package_name" = "gutenberg" ] && homeboy_has_npm_script "test:unit"; then
-        printf '%s' "test:unit"
         return 0
     fi
 
@@ -170,39 +157,8 @@ extract_vitest_failure_line() {
 write_node_failure_json() {
     [ -n "${HOMEBOY_TEST_FAILURES_FILE:-}" ] || return 0
     [ -n "$FAILED_TEST_NAME" ] || return 0
-    if ! type homeboy_sidecar_emit >/dev/null 2>&1; then
-        echo "Error: HOMEBOY_RUNTIME_SIDECAR_WRITER is required to write test failures" >&2
-        return 1
-    fi
-
-    FAILURE_JSON="$(HOMEBOY_NODE_TEST_OUTPUT="$OUTPUT" node - "$FAILED_TEST_NAME" "$FAILED_TEST_FILE" "$FAILED_ERROR_TYPE" "$FAILED_MESSAGE" <<'JS'
-const crypto = require('node:crypto');
-
-const [testName, testFile, errorType, message] = process.argv.slice(2);
-const stdout = process.env.HOMEBOY_NODE_TEST_OUTPUT || '';
-const fingerprintInput = [testName, testFile, errorType, message].join('\0');
-const fingerprint = crypto.createHash('sha256').update(fingerprintInput).digest('hex');
-const stdoutExcerpt = stdout.split(/\r?\n/).slice(-40).join('\n');
-
-console.log(JSON.stringify({
-  test_name: testName,
-  test_file: testFile,
-  error_type: errorType,
-  test_id: testName,
-  suite: '',
-  file: testFile,
-  line: 0,
-  message,
-  failure_type: errorType,
-  fingerprint,
-  stdout_excerpt: stdoutExcerpt,
-  stderr_excerpt: '',
-  source_file: testFile,
-  source_line: 0
-}));
-JS
-)"
-    homeboy_sidecar_emit test.failure "$FAILURE_JSON"
+    FAILURE_JSON="$(homeboy_test_failure_record_json nodejs "$FAILED_TEST_NAME" "" "$FAILED_TEST_FILE" 0 "$FAILED_MESSAGE" "$FAILED_ERROR_TYPE" "$(printf '%s' "$OUTPUT" | tail -40)" "")"
+    homeboy_test_failure_emit_record_json "$FAILURE_JSON"
 }
 
 # Vitest summary lines look like:

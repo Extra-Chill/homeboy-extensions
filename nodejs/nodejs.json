@@ -1,6 +1,6 @@
 {
   "name": "Node.js",
-  "version": "3.2.0",
+  "version": "3.3.0",
   "icon": "server.rack",
   "description": "Node.js project type — discovery, audit grammar, and npm release lifecycle",
   "author": "Extra Chill",
@@ -18,6 +18,49 @@
     "trace.artifacts": true,
     "annotations": false
   },
+  "contract_producers": [
+    {
+      "id": "nodejs.lint-results",
+      "phase": "result",
+      "invocation": { "script": "scripts/lint/lint-runner.sh" },
+      "produces": [
+        { "kind": "artifact", "name": "lint.findings" }
+      ]
+    },
+    {
+      "id": "nodejs.test-results",
+      "phase": "result",
+      "invocation": { "script": "scripts/test/test-runner.sh" },
+      "produces": [
+        { "kind": "artifact", "name": "test.results" },
+        { "kind": "artifact", "name": "test.failures" }
+      ]
+    },
+    {
+      "id": "nodejs.bench-results",
+      "phase": "result",
+      "invocation": {
+        "script": "scripts/bench/bench-runner.sh",
+        "output_schema": "homeboy/bench-results/v1"
+      },
+      "produces": [
+        {
+          "kind": "artifact",
+          "name": "bench.results",
+          "schema": "homeboy/bench-results/v1"
+        }
+      ]
+    },
+    {
+      "id": "nodejs.trace-results",
+      "phase": "result",
+      "invocation": { "script": "scripts/trace/trace-runner.sh" },
+      "produces": [
+        { "kind": "artifact", "name": "trace.results" },
+        { "kind": "artifact", "name": "trace.artifacts" }
+      ]
+    }
+  ],
   "scripts": {
     "validate": "scripts/validate.sh",
     "format": "scripts/format.sh"
@@ -66,6 +109,13 @@
       "type": "object",
       "default": {},
       "description": "Additional non-secret environment values consumed by Node.js bench workloads."
+    },
+    {
+      "id": "local_workspace_dependencies",
+      "label": "Local workspace dependency overrides",
+      "type": "array",
+      "default": [],
+      "description": "Declared local (unpublished) workspace package dependencies to build from source, pack, and install into the consumer as a self-contained built tarball before the build runs. Installing a built tarball (not a file: symlink) lets peer dependencies such as React dedupe to the consumer's single copy. Each entry is an object: name (required package name), path (required source path relative to the component, may reference sibling repos), and optional package_dir (monorepo subpackage to pack), build (explicit build command run in path; defaults to install + run build script), and package_manager (npm|pnpm|yarn, auto-detected by default)."
     }
   ],
   "ci": {

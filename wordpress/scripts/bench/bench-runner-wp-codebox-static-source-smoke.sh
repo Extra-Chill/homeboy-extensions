@@ -11,6 +11,7 @@ EXTRA_WORKLOAD_DIR="${TMP_ROOT}/rig-workloads"
 EXTRA_WORKLOAD="${EXTRA_WORKLOAD_DIR}/rig-workload.php"
 UNSELECTED_EXTRA_WORKLOAD="${EXTRA_WORKLOAD_DIR}/unselected-crash.php"
 mkdir -p "${SOURCE_ROOT}/static-sites/demo" "${SOURCE_ROOT}/.github/homeboy" "${SOURCE_ROOT}/tests/bench" "${SOURCE_ROOT}/scenarios" "$EXTRA_WORKLOAD_DIR"
+printf '<?php\n/**\n * Plugin Name: WP Site Generator Fixture\n */\n' > "${SOURCE_ROOT}/wp-site-generator.php"
 printf '<!doctype html><title>Demo</title>\n' > "${SOURCE_ROOT}/static-sites/demo/index.html"
 printf '<?php return array();\n' > "${SOURCE_ROOT}/.github/homeboy/ssi-import-diagnostics.php"
 printf '<?php return function (): array { return array(); };\n' > "${SOURCE_ROOT}/tests/bench/website-generation.php"
@@ -68,6 +69,14 @@ homeboy_find_validation_dependency_plugin_main_file() {
     fi
     return 1
 }
+homeboy_get_prepared_validation_dependency_slug() {
+    local dependency_path="${1:-}"
+    local artifacts_dir="${2:-}"
+    jq -er --arg dependencyPath "$dependency_path" '
+        map(select(.prepared_path == $dependencyPath or .package_root == $dependencyPath))
+        | .[-1].slug // empty
+    ' "${artifacts_dir}/prepared-bench-dependencies.json" 2>/dev/null
+}
 STUB
 
 CAPTURE_FILE="${TMP_ROOT}/capture.json"
@@ -76,7 +85,7 @@ WP_CODEBOX_CORE_MODULE="${TMP_ROOT}/wp-codebox-core.mjs"
 cat > "$WP_CODEBOX_CORE_MODULE" <<'STUB'
 export function buildWordPressBenchRecipe(options) {
   const defines = options.wpConfigDefines || {};
-  const extraPlugins = options.extra_plugins || options.extraPlugins || [];
+  const extraPlugins = options.extra_plugins || [];
   const blueprint = options.blueprint && typeof options.blueprint === 'object' && !Array.isArray(options.blueprint)
     ? {...options.blueprint, steps: [...(Array.isArray(options.blueprint.steps) ? options.blueprint.steps : [])]}
     : {steps: []};
@@ -86,7 +95,7 @@ export function buildWordPressBenchRecipe(options) {
   return {
     schema: 'wp-codebox/workspace-recipe/v1',
     runtime: {wp: options.wordpressVersion, blueprint},
-    inputs: {extraPlugins, mounts: options.mounts || []},
+    inputs: {extra_plugins: extraPlugins, mounts: options.mounts || []},
     workflow: {steps: [{
       command: 'wordpress.bench',
       args: [
@@ -186,7 +195,7 @@ HOMEBOY_BENCH_WARMUP_ITERATIONS=0 \
 bash "$SCRIPT_DIR/bench-runner-wp-codebox.sh" >/dev/null
 
 if ! jq -e --arg sourceRoot "$SOURCE_ROOT" '
-    .recipe.inputs.extraPlugins == []
+    .recipe.inputs.extra_plugins == []
     and (.recipe.inputs.mounts[] | select(.source == $sourceRoot and .target == "/wordpress/wp-content/plugins/wp-site-generator" and .mode == "readonly"))
     and (.recipe.inputs.mounts[] | select(.source | endswith("/rig-workloads/rig-workload.php")) | .target == "/wordpress/wp-content/plugins/wp-site-generator/.homeboy/bench-rig/rig-workload.php")
     and (.recipe.runtime.blueprint.steps[] | select(.step == "installPlugin" and .options.targetFolderName == "static-site-importer"))
@@ -332,7 +341,7 @@ HOMEBOY_BENCH_WARMUP_ITERATIONS=0 \
 bash "$SCRIPT_DIR/bench-runner-wp-codebox.sh" >/dev/null
 
 if ! jq -e --arg sourceRoot "$PLUGIN_ROOT" '
-    .recipe.inputs.extraPlugins == [{source: $sourceRoot, slug: "wp-site-generator", pluginFile: "wp-site-generator/plugin-main.php", activate: false}]
+    .recipe.inputs.extra_plugins == [{source: $sourceRoot, slug: "wp-site-generator", pluginFile: "wp-site-generator/plugin-main.php", activate: false}]
     and ([.recipe.inputs.mounts[] | select(.source == $sourceRoot and .target == "/wordpress/wp-content/plugins/wp-site-generator")] | length == 0)
 ' "$PLUGIN_CAPTURE_FILE" >/dev/null; then
     echo "ERROR: generated WP Codebox recipe did not include expected plugin bench inputs" >&2
@@ -362,7 +371,7 @@ HOMEBOY_BENCH_WARMUP_ITERATIONS=0 \
 bash "$SCRIPT_DIR/bench-runner-wp-codebox.sh" >/dev/null
 
 jq -e '
-    .recipe.inputs.extraPlugins[0].pluginFile == "wp-site-generator/plugin-main.php"
+    .recipe.inputs.extra_plugins[0].pluginFile == "wp-site-generator/plugin-main.php"
     and (.recipe.inputs.mounts[] | select((.source | endswith("/rig-workloads/rig-workload.php")) and .target == "/wordpress/wp-content/plugins/wp-site-generator/.homeboy/bench-rig/rig-workload.php"))
     and ([.recipe.workflow.steps[0].args[] | select(startswith("workloads-json=") and contains("\"source\":\"rig\"") and contains("\"overridesDiscovered\":true") and contains(".homeboy/bench-rig/rig-workload.php"))] | length) == 1
     and ([.recipe.workflow.steps[0].args[] | select(startswith("scenario-ids-json=") and contains("rig-workload"))] | length) == 1
@@ -376,6 +385,8 @@ mkdir -p "${DEPENDENCY_ROOT}/packages/wordpress-plugin"
 printf '<?php\n/**\n * Plugin Name: WP Codebox Fixture\n */\n' > "${DEPENDENCY_ROOT}/packages/wordpress-plugin/wp-codebox.php"
 
 DEPENDENCY_CAPTURE_FILE="${TMP_ROOT}/dependency-capture.json"
+mkdir -p "${TMP_ROOT}/dependency-artifacts"
+jq -nc --arg dependencyRoot "$DEPENDENCY_ROOT" '[{schema: "homeboy/prepared-wordpress-bench-dependency/v1", slug: "declared-wp-codebox", package_root: $dependencyRoot, prepared_path: $dependencyRoot}]' > "${TMP_ROOT}/dependency-artifacts/prepared-bench-dependencies.json"
 HOMEBOY_RUNTIME_RESOLVE_CONTEXT="$RESOLVE_HELPER" \
 HOMEBOY_RUNTIME_BENCH_HELPER_SH="$BENCH_HELPER" \
 HOMEBOY_WORDPRESS_DEPENDENCY_HELPER="$DEPENDENCY_HELPER" \
@@ -393,9 +404,9 @@ HOMEBOY_BENCH_WARMUP_ITERATIONS=0 \
 bash "$SCRIPT_DIR/bench-runner-wp-codebox.sh" >/dev/null
 
 jq -e --arg pluginRoot "$PLUGIN_ROOT" --arg dependencyRoot "${DEPENDENCY_ROOT}/packages/wordpress-plugin" '
-    .recipe.inputs.extraPlugins == [
+    .recipe.inputs.extra_plugins == [
         {source: $pluginRoot, slug: "wp-site-generator", pluginFile: "wp-site-generator/plugin-main.php", activate: false},
-        {source: $dependencyRoot, slug: "wp-codebox", pluginFile: "wp-codebox/wp-codebox.php", activate: false}
+        {source: $dependencyRoot, slug: "declared-wp-codebox", pluginFile: "declared-wp-codebox/wp-codebox.php", activate: false}
     ]
 ' "$DEPENDENCY_CAPTURE_FILE" >/dev/null
 
@@ -406,8 +417,8 @@ if [ ! -s "$DEPENDENCY_PROVENANCE_FILE" ]; then
 fi
 jq -e --arg dependencyRoot "${DEPENDENCY_ROOT}/packages/wordpress-plugin" '
     .schema == "homeboy/wordpress-bench-dependency-provenance/v1"
-    and (.dependency_slugs == ["wp-codebox"])
-    and (.plugin_inputs[] | select(.source == $dependencyRoot and .slug == "wp-codebox" and .pluginFile == "wp-codebox/wp-codebox.php"))
+    and (.dependency_slugs == ["declared-wp-codebox"])
+    and (.plugin_inputs[] | select(.source == $dependencyRoot and .slug == "declared-wp-codebox" and .pluginFile == "declared-wp-codebox/wp-codebox.php"))
     and (.settings.has_bench_env == true)
 ' "$DEPENDENCY_PROVENANCE_FILE" >/dev/null
 

@@ -11,6 +11,10 @@ fixture="$(mktemp -d "${TMPDIR:-/tmp}/homeboy-wp-codebox-recipe-helper.XXXXXX")"
 trap 'rm -rf "$fixture"' EXIT
 
 fake_wp_codebox="${fixture}/wp-codebox.cjs"
+stale_path="${fixture}/stale-bin"
+valid_path="${fixture}/valid-bin"
+global_node_root="${fixture}/global-node-modules"
+js_bin="${fixture}/wp-codebox-js-entry.mjs"
 recipe_file="${fixture}/recipe.json"
 artifacts_dir="${fixture}/artifacts"
 output_file="${fixture}/recipe-output.json"
@@ -30,6 +34,49 @@ process.stdout.write(JSON.stringify({
 }, null, 2));
 NODE
 chmod +x "$fake_wp_codebox"
+
+mkdir -p "$stale_path" "$valid_path"
+cat > "${stale_path}/wp-codebox" <<'SH'
+#!/usr/bin/env bash
+exec node "/definitely/missing/wp-codebox.js" "$@"
+SH
+chmod +x "${stale_path}/wp-codebox"
+cat > "${valid_path}/wp-codebox" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = "commands" ]; then
+    echo "fixture-wp-codebox commands"
+    exit 0
+fi
+exit 1
+SH
+chmod +x "${valid_path}/wp-codebox"
+
+cat > "$js_bin" <<'NODE'
+#!/usr/bin/env node
+process.exit(2);
+NODE
+
+if ! homeboy_wp_codebox_bin_is_runnable "$js_bin"; then
+    echo "Expected resolver validation to accept readable JS CLI entrypoints by existence" >&2
+    exit 1
+fi
+
+resolved_bin=$(PATH="${stale_path}:${valid_path}:${PATH}" homeboy_wp_codebox_resolve_bin '{}')
+if [ "$resolved_bin" != "${valid_path}/wp-codebox" ]; then
+    echo "Expected resolver to skip stale wp-codebox wrapper and select working binary" >&2
+    echo "Resolved: ${resolved_bin}" >&2
+    exit 1
+fi
+
+global_cli="${global_node_root}/wp-codebox-workspace/packages/cli/dist/index.js"
+mkdir -p "$(dirname "$global_cli")"
+printf '%s\n' 'process.exit(0);' > "$global_cli"
+resolved_bin=$(PATH="${stale_path}" HOMEBOY_GLOBAL_NODE_MODULE_ROOT="$global_node_root" homeboy_wp_codebox_resolve_bin '{}')
+if [ "$resolved_bin" != "$global_cli" ]; then
+    echo "Expected resolver to select global npm WP Codebox CLI when PATH wrappers are stale" >&2
+    echo "Resolved: ${resolved_bin}" >&2
+    exit 1
+fi
 
 printf '{"schema":"wp-codebox/workspace-recipe/v1","workflow":{"steps":[]}}\n' > "$recipe_file"
 

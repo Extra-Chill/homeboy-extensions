@@ -1,0 +1,469 @@
+'use strict';
+
+require('../../../runtime-agent-ci/tests/helpers/runtime-contract-constants-fixture.cjs');
+
+/**
+ * External dependencies
+ */
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { spawnSync } = require('node:child_process');
+
+/**
+ * Internal dependencies
+ */
+const {
+	OPENCODE_INVOCATION,
+	OPENCODE_PROVIDER_DEFAULTS,
+	OPENCODE_PROVIDER_PREFLIGHT,
+	OPENCODE_ROLE_ALIASES,
+	OPENCODE_RUNNER_READINESS,
+	OPENCODE_SECRET_ENV,
+	OPENCODE_WORKSPACE_MATERIALIZATION,
+	OPENCODE_WORKSPACE_TOOLS,
+	executeOpenCodeAgentTask,
+	providerContract,
+	runtimeManifest,
+} = require('..');
+
+const runtimeRoot = path.join(__dirname, '..');
+
+function secretEnvRequirementForProvider(contract, provider) {
+	return contract.secret_env_requirements.find((requirement) => (
+		requirement.when.any.some((selector) => selector.path === 'executor.config.provider' && selector.equals === provider)
+	));
+}
+
+(async () => {
+const provider = providerContract();
+assert.equal(provider.id, 'opencode.agent-task-executor');
+assert.equal(provider.backend, 'opencode');
+assert.equal(provider.runtime_id, 'opencode');
+assert.equal(provider.status, 'active');
+assert.equal(provider.integration_contract, 'homeboy-opencode-agent-task/v1');
+assert.deepEqual(provider.invocation, OPENCODE_INVOCATION);
+assert.equal(provider.lifecycle.max_concurrency_default, 1);
+assert.equal(provider.lifecycle.cancellation, 'provider_signal');
+assert.deepEqual(secretEnvRequirementForProvider(provider, 'codex').env, OPENCODE_SECRET_ENV);
+assert.deepEqual(provider.provider_defaults.codex.secret_env, OPENCODE_SECRET_ENV);
+assert.equal(provider.provider_defaults.codex.model, 'gpt-5.5');
+assert.deepEqual(provider.provider_defaults.codex.secret_env_sources, OPENCODE_PROVIDER_DEFAULTS.codex.secret_env_sources);
+assert.deepEqual(provider.provider_preflight, OPENCODE_PROVIDER_PREFLIGHT);
+assert.deepEqual(provider.runner_readiness, OPENCODE_RUNNER_READINESS);
+assert.deepEqual(provider.workspace_materialization, OPENCODE_WORKSPACE_MATERIALIZATION);
+assert.deepEqual(provider.workspace_tools, OPENCODE_WORKSPACE_TOOLS);
+assert.deepEqual(provider.role_aliases, OPENCODE_ROLE_ALIASES);
+assert.equal(provider.redacted_metadata_keys.includes('opencode_auth'), true);
+assert.equal(provider.capabilities.includes('repo_workspace'), true);
+assert.equal(provider.capabilities.includes('patch_artifacts'), true);
+assert.equal(provider.capabilities.includes('browser_runtime'), false);
+
+const manifest = JSON.parse(fs.readFileSync(path.join(runtimeRoot, 'opencode.json'), 'utf8'));
+assert.deepEqual(manifest, runtimeManifest());
+assert.equal(manifest.id, 'opencode');
+assert.equal(manifest.name, 'OpenCode');
+assert.equal(manifest.agent_task_executors.length, 1);
+assert.equal(manifest.agent_task_executors[0].capabilities.includes('nested_orchestrator'), true);
+assert.deepEqual(manifest.agent_task_executors[0], providerContract());
+const packageJson = JSON.parse(fs.readFileSync(path.join(runtimeRoot, 'package.json'), 'utf8'));
+assert.equal(packageJson.name, 'homeboy-agent-runtime-opencode');
+assert.equal(packageJson.homeboy.agent_runtime_manifest, 'opencode.json');
+assert.equal(JSON.stringify({ manifest, packageJson }).includes('wp-codebox'), false);
+assert.equal(JSON.stringify({ manifest, packageJson }).includes('WP Codebox'), false);
+
+const root = fs.mkdtempSync(path.join(os.tmpdir(), 'homeboy-opencode-provider-contract-'));
+try {
+	const runtimesRoot = path.join(root, 'agent-runtimes');
+	const runtimePath = path.join(runtimesRoot, 'opencode');
+	fs.mkdirSync(runtimesRoot, { recursive: true });
+	fs.symlinkSync(runtimeRoot, runtimePath, 'dir');
+
+	const command = provider.command.replaceAll('{{runtime_path}}', runtimePath);
+	const [, scriptPath] = command.match(/^node\s+(.+)$/) || [];
+	assert(scriptPath, 'provider command should be a node script command');
+	assert.equal(
+		path.normalize(scriptPath),
+		path.join(runtimePath, 'scripts', 'agent', 'homeboy-opencode-agent-task-executor.cjs')
+	);
+	assert.equal(fs.existsSync(scriptPath), true, `provider command target should exist: ${scriptPath}`);
+
+	const mockCliPath = path.join(root, 'mock-opencode.cjs');
+	fs.writeFileSync(mockCliPath, `#!/usr/bin/env node
+const assert = require('node:assert/strict');
+assert.equal(process.argv[2], 'run');
+assert.equal(process.argv.at(-1), 'Prove the OpenCode provider boundary without leaking secrets.');
+assert.equal(process.env.AI_PROVIDER_OPENAI_CODEX_REFRESH_TOKEN, 'refresh-token-must-not-leak');
+assert.equal(process.env.AI_PROVIDER_OPENAI_CODEX_ACCESS_TOKEN, 'access-token-must-not-leak');
+assert.equal(process.env.UNDECLARED_SECRET, undefined);
+process.stdout.write(process.env.AI_PROVIDER_OPENAI_CODEX_REFRESH_TOKEN || 'missing secret');
+process.stderr.write(process.env.AI_PROVIDER_OPENAI_CODEX_ACCESS_TOKEN || 'missing secret');
+process.exit(0);
+`);
+
+	const contractResult = spawnSync(process.execPath, [scriptPath, '--provider-contract'], { encoding: 'utf8' });
+	assert.equal(contractResult.status, 0, contractResult.stderr);
+	assert.deepEqual(JSON.parse(contractResult.stdout), providerContract());
+
+	const request = {
+		schema: 'homeboy/agent-task-request/v1',
+		task_id: 'opencode-real-executor',
+		executor: {
+			backend: 'opencode',
+			runtime: 'opencode',
+			secret_env: [
+				'AI_PROVIDER_OPENAI_CODEX_REFRESH_TOKEN',
+				'AI_PROVIDER_OPENAI_CODEX_ACCESS_TOKEN',
+			],
+			config: {
+				provider: 'codex',
+				runtime_bin: process.execPath,
+				command_args: [mockCliPath],
+			},
+		},
+		instructions: 'Prove the OpenCode provider boundary without leaking secrets.',
+	};
+	const runResult = spawnSync(process.execPath, [scriptPath], {
+		encoding: 'utf8',
+		env: {
+			...process.env,
+			AI_PROVIDER_OPENAI_CODEX_REFRESH_TOKEN: 'refresh-token-must-not-leak',
+			AI_PROVIDER_OPENAI_CODEX_ACCESS_TOKEN: 'access-token-must-not-leak',
+			UNDECLARED_SECRET: 'must-not-reach-opencode',
+		},
+		input: JSON.stringify(request),
+	});
+	assert.equal(runResult.status, 0, runResult.stderr);
+	const fixtureEnv = {
+		...process.env,
+		AI_PROVIDER_OPENAI_CODEX_REFRESH_TOKEN: 'refresh-token-must-not-leak',
+		AI_PROVIDER_OPENAI_CODEX_ACCESS_TOKEN: 'access-token-must-not-leak',
+		UNDECLARED_SECRET: 'must-not-reach-opencode',
+	};
+	assert.deepEqual(JSON.parse(runResult.stdout), await executeOpenCodeAgentTask(request, { env: fixtureEnv }));
+	assert.equal(`${runResult.stdout}\n${runResult.stderr}`.includes('refresh-token-must-not-leak'), false);
+	assert.equal(`${runResult.stdout}\n${runResult.stderr}`.includes('access-token-must-not-leak'), false);
+
+	const modelWorkspace = path.join(root, 'model-workspace');
+	fs.mkdirSync(modelWorkspace, { recursive: true });
+	const realModelWorkspace = fs.realpathSync(modelWorkspace);
+	const modelCliPath = path.join(root, 'mock-opencode-model.cjs');
+	fs.writeFileSync(modelCliPath, `#!/usr/bin/env node
+const assert = require('node:assert/strict');
+assert.equal(process.cwd(), ${JSON.stringify(realModelWorkspace)});
+assert.deepEqual(process.argv.slice(2, 5), ['run', '--model', 'opencode-go/kimi-k2.7-code']);
+const config = JSON.parse(process.env.OPENCODE_CONFIG_CONTENT || '{}');
+assert.equal(config.$schema, 'https://opencode.ai/config.json');
+assert.equal(config.model, 'opencode-go/kimi-k2.7-code');
+assert.equal(config.agent.build.model, 'opencode-go/kimi-k2.7-code');
+assert.equal(config.small_model, 'zai-coding-plan/glm-5.2');
+assert.equal(config.agent.title.model, 'zai-coding-plan/glm-5.2');
+assert.deepEqual(config.mcp, { example: { type: 'local' } });
+assert.equal(Object.hasOwn(config, 'agents'), false);
+process.exit(0);
+`);
+	const modelResult = await executeOpenCodeAgentTask({
+		...request,
+		task_id: 'opencode-executor-model',
+		executor: {
+			...request.executor,
+			model: 'opencode-go/kimi-k2.7-code',
+			config: {
+				...request.executor.config,
+				command_args: [modelCliPath],
+				workspace_root: modelWorkspace,
+				runtime_env: {
+					OPENCODE_CONFIG_CONTENT: JSON.stringify({
+						mcp: { example: { type: 'local' } },
+						agents: { build: { model: 'invalid-plural-key/must-not-survive' } },
+					}),
+				},
+				small_model: 'zai-coding-plan/glm-5.2',
+			},
+		},
+	}, { env: fixtureEnv });
+	assert.equal(modelResult.status, 'succeeded');
+
+	const missingArtifactResult = await executeOpenCodeAgentTask({
+		...request,
+		task_id: 'opencode-missing-artifact',
+		expected_artifacts: ['opencode-report'],
+	}, { env: fixtureEnv });
+	assert.equal(missingArtifactResult.status, 'failed');
+	assert.equal(missingArtifactResult.failure_code, 'agent_task.opencode_missing_declared_artifacts');
+	assert.match(missingArtifactResult.summary, /opencode-report/);
+	assert.equal(missingArtifactResult.metadata.missing_declared_artifacts[0].name, 'opencode-report');
+
+	const workspace = path.join(root, 'workspace');
+	const artifactDir = path.join(root, 'artifacts');
+	fs.mkdirSync(workspace, { recursive: true });
+	spawnSync('git', ['init'], { cwd: workspace, encoding: 'utf8' });
+	fs.writeFileSync(path.join(workspace, 'README.md'), 'before\n');
+	spawnSync('git', ['add', 'README.md'], { cwd: workspace, encoding: 'utf8' });
+	spawnSync('git', ['commit', '-m', 'initial'], {
+		cwd: workspace,
+		encoding: 'utf8',
+		env: {
+			...process.env,
+			GIT_AUTHOR_NAME: 'Homeboy Test',
+			GIT_AUTHOR_EMAIL: 'homeboy@example.test',
+			GIT_COMMITTER_NAME: 'Homeboy Test',
+			GIT_COMMITTER_EMAIL: 'homeboy@example.test',
+		},
+	});
+
+	const artifactCliPath = path.join(root, 'mock-opencode-artifact.cjs');
+	fs.writeFileSync(artifactCliPath, `#!/usr/bin/env node
+const fs = require('node:fs');
+fs.writeFileSync('README.md', 'after\\n');
+process.stdout.write('transcript output ' + process.env.AI_PROVIDER_OPENAI_CODEX_REFRESH_TOKEN);
+process.exit(0);
+`);
+	const artifactResult = await executeOpenCodeAgentTask({
+		...request,
+		task_id: 'opencode-artifacts',
+		workspace_path: workspace,
+		artifacts_path: artifactDir,
+		expected_artifacts: ['patch', 'transcript', 'agent_result'],
+		executor: {
+			...request.executor,
+			config: {
+				...request.executor.config,
+				command_args: [artifactCliPath],
+			},
+		},
+	}, { env: fixtureEnv });
+	assert.equal(artifactResult.status, 'succeeded');
+	assert.deepEqual(artifactResult.artifacts.map((artifact) => artifact.name).sort(), ['agent_result', 'opencode-runtime-stdout', 'patch', 'transcript']);
+	assert.match(fs.readFileSync(artifactResult.artifacts.find((artifact) => artifact.name === 'patch').path, 'utf8'), /after/);
+	const transcript = fs.readFileSync(artifactResult.artifacts.find((artifact) => artifact.name === 'transcript').path, 'utf8');
+	assert.match(transcript, /transcript output/);
+	assert.equal(transcript.includes('refresh-token-must-not-leak'), false);
+	assert.match(transcript, /\[redacted\]/);
+	assert.equal(artifactResult.artifacts.some((artifact) => artifact.name === 'opencode-runtime-stdout'), true);
+	assert.equal(artifactResult.evidence_refs.every((ref) => ref.uri.startsWith('file://')), true);
+	assert.equal(artifactResult.evidence_refs.some((ref) => Object.hasOwn(ref, 'path')), false);
+	const runtimeStdout = fs.readFileSync(artifactResult.artifacts.find((artifact) => artifact.name === 'opencode-runtime-stdout').path, 'utf8');
+	assert.match(runtimeStdout, /transcript output/);
+	assert.equal(runtimeStdout.includes('refresh-token-must-not-leak'), false);
+	assert.match(runtimeStdout, /\[redacted\]/);
+	assert.equal(artifactResult.metadata.opencode_session.status, 'not_discovered');
+	const agentResult = JSON.parse(fs.readFileSync(artifactResult.artifacts.find((artifact) => artifact.name === 'agent_result').path, 'utf8'));
+	assert.equal(agentResult.opencode_session.status, 'not_discovered');
+	assert.equal(artifactResult.metadata.missing_declared_artifacts, undefined);
+
+	const quietWorkspace = path.join(root, 'quiet-workspace');
+	fs.mkdirSync(quietWorkspace, { recursive: true });
+	spawnSync('git', ['init'], { cwd: quietWorkspace, encoding: 'utf8' });
+	fs.writeFileSync(path.join(quietWorkspace, 'README.md'), 'unchanged\n');
+	spawnSync('git', ['add', 'README.md'], { cwd: quietWorkspace, encoding: 'utf8' });
+	spawnSync('git', ['commit', '-m', 'initial'], {
+		cwd: quietWorkspace,
+		encoding: 'utf8',
+		env: {
+			...process.env,
+			GIT_AUTHOR_NAME: 'Homeboy Test',
+			GIT_AUTHOR_EMAIL: 'homeboy@example.test',
+			GIT_COMMITTER_NAME: 'Homeboy Test',
+			GIT_COMMITTER_EMAIL: 'homeboy@example.test',
+		},
+	});
+
+	const quietCliPath = path.join(root, 'mock-opencode-quiet.cjs');
+	fs.writeFileSync(quietCliPath, `#!/usr/bin/env node
+process.exit(0);
+`);
+	const quietArtifactDir = path.join(root, 'quiet-artifacts');
+	const quietResult = await executeOpenCodeAgentTask({
+		...request,
+		task_id: 'opencode-quiet-no-diff-artifacts',
+		workspace_path: quietWorkspace,
+		artifacts_path: quietArtifactDir,
+		expected_artifacts: ['patch', 'transcript', 'agent_result'],
+		executor: {
+			...request.executor,
+			config: {
+				...request.executor.config,
+				command_args: [quietCliPath],
+			},
+		},
+	}, { env: fixtureEnv });
+	assert.equal(quietResult.status, 'succeeded');
+	assert.deepEqual(quietResult.artifacts.map((artifact) => artifact.name).sort(), ['agent_result', 'patch', 'transcript']);
+	assert.equal(quietResult.metadata.missing_declared_artifacts, undefined);
+	assert.equal(fs.readFileSync(quietResult.artifacts.find((artifact) => artifact.name === 'patch').path, 'utf8'), '');
+	assert.equal(fs.readFileSync(quietResult.artifacts.find((artifact) => artifact.name === 'transcript').path, 'utf8'), '');
+	const quietAgentResult = JSON.parse(fs.readFileSync(quietResult.artifacts.find((artifact) => artifact.name === 'agent_result').path, 'utf8'));
+	assert.deepEqual(quietAgentResult.artifacts, { patch: false, transcript: false });
+
+	const deniedWorkspace = path.join(root, 'denied-workspace');
+	const deniedArtifactDir = path.join(root, 'denied-artifacts');
+	fs.mkdirSync(deniedWorkspace, { recursive: true });
+	spawnSync('git', ['init'], { cwd: deniedWorkspace, encoding: 'utf8' });
+	fs.writeFileSync(path.join(deniedWorkspace, 'README.md'), 'unchanged\n');
+	spawnSync('git', ['add', 'README.md'], { cwd: deniedWorkspace, encoding: 'utf8' });
+	spawnSync('git', ['commit', '-m', 'initial'], {
+		cwd: deniedWorkspace,
+		encoding: 'utf8',
+		env: {
+			...process.env,
+			GIT_AUTHOR_NAME: 'Homeboy Test',
+			GIT_AUTHOR_EMAIL: 'homeboy@example.test',
+			GIT_COMMITTER_NAME: 'Homeboy Test',
+			GIT_COMMITTER_EMAIL: 'homeboy@example.test',
+		},
+	});
+	const deniedCliPath = path.join(root, 'mock-opencode-policy-denied.cjs');
+	fs.writeFileSync(deniedCliPath, `#!/usr/bin/env node
+process.stdout.write(JSON.stringify({
+  type: 'message',
+  timestamp: '2026-07-03T15:12:00.000Z',
+  parts: [{
+    type: 'tool',
+    tool: 'bash',
+    input: { command: 'cd /tmp && git clone https://example.invalid/private.git' },
+    state: { error: 'The user rejected permission to use this specific tool call.' }
+  }]
+}) + '\\n');
+process.exit(0);
+`);
+	const deniedResult = await executeOpenCodeAgentTask({
+		...request,
+		task_id: 'opencode-policy-denied',
+		workspace_path: deniedWorkspace,
+		artifacts_path: deniedArtifactDir,
+		expected_artifacts: ['patch', 'transcript', 'agent_result'],
+		executor: {
+			...request.executor,
+			config: {
+				...request.executor.config,
+				command_args: [deniedCliPath],
+			},
+		},
+	}, { env: fixtureEnv });
+	assert.equal(deniedResult.status, 'failed');
+	assert.equal(deniedResult.failure_classification, 'policy_denied');
+	assert.equal(deniedResult.failure_code, 'agent_task.opencode_policy_denied');
+	assert.equal(deniedResult.failure_category, 'task.policy_denied');
+	assert.equal(deniedResult.retryable, false);
+	assert.equal(deniedResult.metadata.missing_declared_artifacts, undefined);
+	assert.deepEqual(deniedResult.artifacts.map((artifact) => artifact.name).sort(), ['agent_result', 'opencode-runtime-stdout', 'patch', 'transcript']);
+	assert.deepEqual(deniedResult.metadata.denied_tool_call, {
+		tool: 'bash',
+		command: 'cd /tmp && git clone https://example.invalid/private.git',
+		timestamp: '2026-07-03T15:12:00.000Z',
+	});
+	assert.equal(deniedResult.diagnostics.some((diagnostic) => diagnostic.class === 'opencode.policy_denied'), true);
+	assert.match(fs.readFileSync(deniedResult.artifacts.find((artifact) => artifact.name === 'transcript').path, 'utf8'), /rejected permission/);
+	assert.equal(fs.readFileSync(deniedResult.artifacts.find((artifact) => artifact.name === 'patch').path, 'utf8'), '');
+	const deniedAgentResult = JSON.parse(fs.readFileSync(deniedResult.artifacts.find((artifact) => artifact.name === 'agent_result').path, 'utf8'));
+	assert.equal(deniedAgentResult.status, 'failed');
+	assert.equal(deniedAgentResult.failure_classification, 'policy_denied');
+	assert.deepEqual(deniedAgentResult.denied_tool_call, deniedResult.metadata.denied_tool_call);
+
+	const inheritedPipeCliPath = path.join(root, 'mock-opencode-inherited-pipe.cjs');
+	fs.writeFileSync(inheritedPipeCliPath, `#!/usr/bin/env node
+const { spawn } = require('node:child_process');
+spawn(process.execPath, ['-e', 'setTimeout(() => {}, 10000)'], { detached: true, stdio: ['ignore', 'inherit', 'inherit'] }).unref();
+process.stdout.write('parent finished');
+process.exit(0);
+`);
+	const inheritedPipeResult = await Promise.race([
+		executeOpenCodeAgentTask({
+			...request,
+			task_id: 'opencode-inherited-pipe-exit',
+			executor: {
+				...request.executor,
+				config: {
+					...request.executor.config,
+					command_args: [inheritedPipeCliPath],
+				},
+			},
+		}, { env: fixtureEnv }),
+		new Promise((_, reject) => setTimeout(() => reject(new Error('OpenCode executor hung on inherited stdio pipes')), 2000)),
+	]);
+	assert.equal(inheritedPipeResult.status, 'succeeded');
+	assert.match(inheritedPipeResult.diagnostics[0].message, /status 0/);
+
+	const quotaLogPath = path.join(root, 'opencode-quota.log');
+	const quotaCliPath = path.join(root, 'mock-opencode-quota.cjs');
+	fs.writeFileSync(quotaCliPath, `#!/usr/bin/env node
+const fs = require('node:fs');
+fs.appendFileSync(${JSON.stringify(quotaLogPath)}, 'timestamp=2026-06-30T17:03:48.665Z level=ERROR message="stream error" error.error="AI_APICallError: Usage limit reached for 5 hour. Your limit will reset later"\\n');
+setTimeout(() => {}, 10000);
+`);
+	const quotaResult = await Promise.race([
+		executeOpenCodeAgentTask({
+			...request,
+			task_id: 'opencode-quota-fail-fast',
+			executor: {
+				...request.executor,
+				config: {
+					...request.executor.config,
+					command_args: [quotaCliPath],
+					diagnostic_log_path: quotaLogPath,
+				},
+			},
+		}, { env: fixtureEnv }),
+		new Promise((_, reject) => setTimeout(() => reject(new Error('OpenCode executor did not fail fast on provider quota exhaustion')), 3000)),
+	]);
+	assert.equal(quotaResult.status, 'provider_error');
+	assert.equal(quotaResult.failure_code, 'agent_task.opencode_usage_limit');
+	assert.equal(quotaResult.failure_classification, 'provider_quota');
+	assert.match(quotaResult.diagnostics[0].message, /Usage limit reached/);
+
+	const implicitArtifactResult = await executeOpenCodeAgentTask({
+		...request,
+		task_id: 'opencode-implicit-artifact-dir',
+		workspace_path: quietWorkspace,
+		expected_artifacts: ['patch', 'transcript', 'agent_result'],
+		executor: {
+			...request.executor,
+			config: {
+				...request.executor.config,
+				command_args: [quietCliPath],
+			},
+		},
+	}, { env: fixtureEnv });
+	assert.equal(implicitArtifactResult.status, 'succeeded');
+	assert.deepEqual(implicitArtifactResult.artifacts.map((artifact) => artifact.name).sort(), ['agent_result', 'patch', 'transcript']);
+	assert.equal(implicitArtifactResult.metadata.missing_declared_artifacts, undefined);
+	assert.equal(
+		implicitArtifactResult.artifacts.every((artifact) => artifact.path.startsWith(path.join(quietWorkspace, '.homeboy', 'opencode'))),
+		true
+	);
+
+	const workspaceRootResult = await executeOpenCodeAgentTask({
+		...request,
+		task_id: 'opencode-workspace-root-artifact-dir',
+		workspace: {
+			mode: 'existing',
+			root: quietWorkspace,
+		},
+		expected_artifacts: ['patch', 'transcript', 'agent_result'],
+		executor: {
+			...request.executor,
+			config: {
+				...request.executor.config,
+				command_args: [quietCliPath],
+				workspace_root: quietWorkspace,
+			},
+		},
+	}, { env: fixtureEnv });
+	assert.equal(workspaceRootResult.status, 'succeeded');
+	assert.deepEqual(workspaceRootResult.artifacts.map((artifact) => artifact.name).sort(), ['agent_result', 'patch', 'transcript']);
+	assert.equal(workspaceRootResult.metadata.missing_declared_artifacts, undefined);
+	assert.equal(
+		workspaceRootResult.artifacts.every((artifact) => artifact.path.startsWith(path.join(quietWorkspace, '.homeboy', 'opencode'))),
+		true
+	);
+} finally {
+	fs.rmSync(root, { recursive: true, force: true });
+}
+
+process.stdout.write('OpenCode agent task executor boundary passed\n');
+})().catch((error) => {
+	process.stderr.write(`${error.stack || error.message}\n`);
+	process.exit(1);
+});

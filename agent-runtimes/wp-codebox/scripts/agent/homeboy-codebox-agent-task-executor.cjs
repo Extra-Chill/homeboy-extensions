@@ -9,7 +9,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
-const { pathToFileURL } = require('node:url');
 
 /**
  * Internal dependencies
@@ -27,9 +26,50 @@ const {
   providerPluginValidation,
   providerSecretEnv,
 } = require('../../lib/provider-preflight-manifest');
+const {
+  wpCodeboxRuntimeReadinessDiagnostics,
+} = require('../../lib/wp-codebox-runtime-readiness');
+const {
+  loadWpCodeboxCore,
+} = requireWpCodeboxCoreLoader();
 
-const DEFAULT_CODEBOX_CORE_MODULE = '@automattic/wp-codebox-core';
+const WP_CODEBOX_RUN_RESULTS_MODULE_OPTIONS = {
+  packageCandidates: [
+    '@automattic/wp-codebox-core/run-results',
+    'wp-codebox-workspace/run-results',
+    // Compatibility fallback for WP Codebox builds before focused package entrypoints.
+    '@automattic/wp-codebox-core',
+  ],
+  packageDistEntries: ['run-results.js', 'index.js'],
+};
+
+function requireWpCodeboxCoreLoader() {
+  const candidates = [
+    path.resolve(__dirname, '../../../../wordpress/lib/wp-codebox-core-loader'),
+    path.resolve(__dirname, '../../../../extensions/wordpress/lib/wp-codebox-core-loader'),
+  ];
+
+  for (const candidate of candidates) {
+    try {
+      return require(candidate);
+    } catch (error) {
+      if (!error || error.code !== 'MODULE_NOT_FOUND') {
+        throw error;
+      }
+    }
+  }
+
+  throw new Error(`Unable to resolve wp-codebox-core-loader from ${candidates.join(', ')}`);
+}
+
 const DEFAULT_TASK_RUNNER = path.resolve(__dirname, 'homeboy-wp-codebox-task-runner.cjs');
+
+// Diagnostics mode. When enabled, the task-runner subprocess stderr is
+// fd-inherited so the deeper wp-codebox CLI stderr streams live to the job log.
+function runtimeAgentDebugEnabled(env = process.env) {
+  return ['1', 'true', 'yes', 'on'].includes(String(env.HOMEBOY_RUNTIME_AGENT_DEBUG || '').trim().toLowerCase());
+}
+
 function argValue(name) {
   const index = process.argv.indexOf(name);
   return index >= 0 ? process.argv[index + 1] : '';
@@ -170,138 +210,9 @@ function providerAuthEnv(taskInput) {
   return env;
 }
 
-function directorySizeBytes(directory) {
-  try {
-    return fs.readdirSync(directory, { withFileTypes: true }).reduce((total, entry) => {
-      const entryPath = path.join(directory, entry.name);
-      if (entry.isDirectory()) {
-        return total + directorySizeBytes(entryPath);
-      }
-      return total + fs.statSync(entryPath).size;
-    }, 0);
-  } catch {
-    return undefined;
-  }
-}
-
-function fileArtifactKind(filePath) {
-  const fileName = path.basename(filePath).toLowerCase();
-  if (fileName === 'manifest.json') {
-    return 'codebox-artifact-manifest';
-  }
-  if (fileName === 'runtime-reference-manifest.json') {
-    return 'codebox-runtime-reference-manifest';
-  }
-  const relative = filePath.replace(/\\/g, '/');
-  if (/transcript|conversation|messages/.test(relative)) {
-    return 'codebox-transcript';
-  }
-  if (/command|stdout|stderr|console|log/.test(relative)) {
-    return 'codebox-command-log';
-  }
-  if (/heartbeat|status/.test(relative)) {
-    return 'codebox-heartbeat';
-  }
-  if (/phase/.test(relative)) {
-    return 'codebox-phase';
-  }
-  return '';
-}
-
-function discoverTimeoutArtifactRefs(artifactsRoot) {
-  if (!artifactsRoot || !fs.existsSync(artifactsRoot)) {
-    return { artifacts: [], evidenceRefs: [], lastKnownPhase: '', lastHeartbeat: null };
-  }
-
-  const discovered = [];
-  const queue = [{ filePath: artifactsRoot, depth: 0 }];
-  let lastKnownPhase = '';
-  let lastHeartbeat = null;
-  let runtimeId = '';
-
-  while (queue.length > 0 && discovered.length < 200) {
-    const { filePath, depth } = queue.shift();
-    let stat;
-    try {
-      stat = fs.statSync(filePath);
-    } catch {
-      continue;
-    }
-
-    if (stat.isDirectory()) {
-      const manifestPath = path.join(filePath, 'manifest.json');
-      if (filePath !== artifactsRoot && fs.existsSync(manifestPath)) {
-        const manifest = readJsonIfAvailable(manifestPath);
-        if (!runtimeId && manifest && typeof manifest === 'object') {
-          runtimeId = manifest.runtime_id || manifest.runtimeId || manifest.runtime?.id || '';
-        }
-        discovered.push({
-          id: manifest?.id || manifest?.artifact_id || `codebox-artifact-bundle-${discovered.length + 1}`,
-          kind: 'codebox-artifact-bundle',
-          path: filePath,
-          size_bytes: directorySizeBytes(filePath),
-          metadata: manifest && typeof manifest === 'object' ? {
-            schema: manifest.schema,
-            phase: manifest.phase || manifest.last_phase || manifest.current_phase,
-            runtime_id: manifest.runtime_id || manifest.runtimeId || manifest.runtime?.id,
-          } : {},
-        });
-      }
-      if (depth < 4) {
-        for (const entry of fs.readdirSync(filePath).sort()) {
-          queue.push({ filePath: path.join(filePath, entry), depth: depth + 1 });
-        }
-      }
-      continue;
-    }
-
-    if (!stat.isFile()) {
-      continue;
-    }
-
-    const kind = fileArtifactKind(path.relative(artifactsRoot, filePath));
-    if (!kind) {
-      continue;
-    }
-    const payload = filePath.endsWith('.json') ? readJsonIfAvailable(filePath) : null;
-    if (!lastKnownPhase && payload && typeof payload === 'object') {
-      lastKnownPhase = payload.phase || payload.last_phase || payload.lastKnownPhase || payload.current_phase || '';
-    }
-    if (!runtimeId && payload && typeof payload === 'object') {
-      runtimeId = payload.runtime_id || payload.runtimeId || payload.runtime?.id || '';
-    }
-    if (!lastHeartbeat && payload && typeof payload === 'object' && /heartbeat|status/i.test(filePath)) {
-      lastHeartbeat = payload.heartbeat || payload.last_heartbeat || payload;
-    }
-    discovered.push({
-      id: `${kind}-${discovered.length + 1}`,
-      kind,
-      path: filePath,
-      size_bytes: stat.size,
-      metadata: payload && typeof payload === 'object' ? {
-        schema: payload.schema,
-        phase: payload.phase || payload.last_phase || payload.current_phase,
-      } : {},
-    });
-  }
-
-  return {
-    artifacts: discovered,
-    evidenceRefs: discovered.map((artifact) => ({
-      kind: artifact.kind,
-      uri: artifact.path,
-      label: artifact.kind.replace(/^codebox-/, 'WP Codebox ').replace(/-/g, ' '),
-    })),
-    runtimeId,
-    lastKnownPhase,
-    lastHeartbeat,
-  };
-}
-
 function timeoutPayload(timeoutMs, request = {}) {
   const artifacts = argValue('--artifacts') || request.executor?.config?.artifacts || '';
   const evidencePath = artifacts ? `${artifacts}/homeboy-codebox-task-runner.json` : '';
-  const discovered = discoverTimeoutArtifactRefs(artifacts);
   const knownArtifacts = [];
   if (artifacts) {
     knownArtifacts.push({
@@ -319,23 +230,11 @@ function timeoutPayload(timeoutMs, request = {}) {
       metadata: { artifacts },
     });
   }
-  for (const artifact of discovered.artifacts) {
-    if (!knownArtifacts.some((knownArtifact) => knownArtifact.path === artifact.path)) {
-      knownArtifacts.push(artifact);
-    }
-  }
-
   const evidenceRefs = evidencePath && fs.existsSync(evidencePath) ? [{
     kind: 'codebox-task-runner-preflight',
     uri: evidencePath,
     label: 'WP Codebox task runner preflight evidence',
   }] : [];
-  for (const ref of discovered.evidenceRefs) {
-    if (!evidenceRefs.some((knownRef) => knownRef.uri === ref.uri)) {
-      evidenceRefs.push(ref);
-    }
-  }
-
   return {
     success: false,
     timeout: true,
@@ -351,9 +250,6 @@ function timeoutPayload(timeoutMs, request = {}) {
         artifacts,
         evidence_path: evidencePath,
         artifact_ref_count: knownArtifacts.length,
-        runtime_id: discovered.runtimeId,
-        last_known_phase: discovered.lastKnownPhase,
-        last_heartbeat: discovered.lastHeartbeat,
       },
     }],
     metadata: {
@@ -362,9 +258,6 @@ function timeoutPayload(timeoutMs, request = {}) {
       artifacts,
       evidence_path: evidencePath,
       artifact_ref_count: knownArtifacts.length,
-      runtime_id: discovered.runtimeId,
-      last_known_phase: discovered.lastKnownPhase,
-      last_heartbeat: discovered.lastHeartbeat,
     },
   };
 }
@@ -430,14 +323,35 @@ function stderrFailurePayload(result) {
   };
 }
 
-function isRepoCookingRequest(request, taskInput) {
+function workspaceRequiredValue(value) {
+  if (value === true) {
+    return true;
+  }
+  if (typeof value === 'string') {
+    return ['1', 'true', 'yes', 'required'].includes(value.trim().toLowerCase());
+  }
+  return false;
+}
+
+function requiresWorkspace(request, taskInput) {
   const config = request.executor?.config || {};
   const parentConfig = taskInput.parent_request?.executor?.config || {};
-  return config.task_kind === 'repo-cooking' || config.taskKind === 'repo-cooking' || parentConfig.task_kind === 'repo-cooking' || parentConfig.taskKind === 'repo-cooking';
+  const materialization = request.workspace?.materialization || {};
+  return workspaceRequiredValue(config.workspace_required)
+    || workspaceRequiredValue(config.workspaceRequired)
+    || workspaceRequiredValue(parentConfig.workspace_required)
+    || workspaceRequiredValue(parentConfig.workspaceRequired)
+    || workspaceRequiredValue(materialization.required)
+    || workspaceRequiredValue(materialization.workspace_required)
+    || workspaceRequiredValue(materialization.workspaceRequired);
 }
 
 function workspaceMounts(taskInput) {
   return Array.isArray(taskInput.mounts) ? taskInput.mounts : [];
+}
+
+function workspaceMountKind(mount) {
+  return mount?.metadata?.kind;
 }
 
 function hasWorkspaceMount(taskInput) {
@@ -445,7 +359,7 @@ function hasWorkspaceMount(taskInput) {
     if (!mount || typeof mount !== 'object') {
       return false;
     }
-    if (mount.metadata?.kind === 'homeboy-dmc-workspace') {
+    if (workspaceMountKind(mount) === 'homeboy-runtime-workspace') {
       return Boolean(mount.source);
     }
     return Boolean(mount.source) && /^\/workspace(?:\/|$)/.test(String(mount.target || ''));
@@ -453,12 +367,12 @@ function hasWorkspaceMount(taskInput) {
 }
 
 function missingWorkspacePayload(request, taskInput) {
-  if (!isRepoCookingRequest(request, taskInput) || hasWorkspaceMount(taskInput)) {
+  if (!requiresWorkspace(request, taskInput) || hasWorkspaceMount(taskInput)) {
     return null;
   }
 
   const config = request.executor?.config || {};
-  const message = 'WP Codebox repo-cooking task has no mounted checkout/workspace.';
+  const message = 'WP Codebox task requires a mounted checkout/workspace, but none was provided.';
   return {
     success: false,
     status: 'failed',
@@ -470,7 +384,7 @@ function missingWorkspacePayload(request, taskInput) {
       data: {
         phase: 'codebox.preflight',
         repo: config.repo || request.group_key || request.workspace?.slug || '',
-        task_kind: config.task_kind || config.taskKind || '',
+        workspace_required: true,
         workspace_root: config.workspace_root || config.workspaceRoot || request.workspace?.root || '',
         mounts_count: workspaceMounts(taskInput).length,
         workspaces_count: Array.isArray(taskInput.workspaces) ? taskInput.workspaces.length : 0,
@@ -481,7 +395,7 @@ function missingWorkspacePayload(request, taskInput) {
       phase: 'codebox.preflight',
       missing_workspace: true,
       repo: config.repo || request.group_key || request.workspace?.slug || '',
-      task_kind: config.task_kind || config.taskKind || '',
+      workspace_required: true,
       workspace_root: config.workspace_root || config.workspaceRoot || request.workspace?.root || '',
       mounts_count: workspaceMounts(taskInput).length,
       workspaces_count: Array.isArray(taskInput.workspaces) ? taskInput.workspaces.length : 0,
@@ -526,7 +440,7 @@ function providerPluginInspection(providerPath, validation) {
     return { status: 'invalid', reason: 'opencode_provider_plugin' };
   }
   if (!fs.existsSync(providerPath)) {
-    return { status: 'unknown', reason: 'path_not_available_on_parent' };
+    return { status: 'invalid', reason: 'path_not_available_on_parent' };
   }
   for (const filePath of collectProviderProbeFiles(providerPath)) {
     let contents = '';
@@ -617,31 +531,18 @@ function missingModelPreflightPayload(taskInput) {
 }
 
 async function loadCodeboxCoreNormalizers() {
-  const configuredModule = process.env.HOMEBOY_WP_CODEBOX_CORE_MODULE;
-  const candidates = configuredModule ? [configuredModule] : [DEFAULT_CODEBOX_CORE_MODULE];
-
-  for (const candidate of candidates) {
-    try {
-      const module = await importModule(candidate);
-      if (typeof module.normalizeAgentTaskRunResult === 'function' || typeof module.normalizeRecipeRunSummary === 'function') {
-        return {
-          normalizeAgentTaskRunResult: typeof module.normalizeAgentTaskRunResult === 'function' ? module.normalizeAgentTaskRunResult : null,
-          normalizeRecipeRunSummary: typeof module.normalizeRecipeRunSummary === 'function' ? module.normalizeRecipeRunSummary : null,
-        };
-      }
-    } catch {
-      // Fall back to the local compatibility path when Codebox core is not installed yet.
-    }
-  }
-
-  return {};
-}
-
-function importModule(specifier) {
-  if (specifier.startsWith('.') || specifier.startsWith('/') || specifier.startsWith('file:')) {
-    return import(specifier.startsWith('file:') ? specifier : pathToFileURL(path.resolve(specifier)).href);
-  }
-  return import(specifier);
+  const module = await loadWpCodeboxCore(WP_CODEBOX_RUN_RESULTS_MODULE_OPTIONS);
+  return Object.fromEntries(Object.entries({
+    normalizeAgentTaskRunResult: module?.normalizeAgentTaskRunResult,
+    normalizeRecipeRunSummary: module?.normalizeRecipeRunSummary,
+    normalizeRuntimeProfile: module?.normalizeRuntimeProfile,
+    normalizeRuntimeProfilePayload: module?.normalizeRuntimeProfilePayload,
+    normalizeTypedArtifactEntry: module?.normalizeTypedArtifactEntry,
+    normalizeTypedArtifactDto: module?.normalizeTypedArtifactDto,
+    normalizeTypedArtifactDTO: module?.normalizeTypedArtifactDTO,
+    normalizeTypedArtifacts: module?.normalizeTypedArtifacts,
+    normalizeTypedArtifactMap: module?.normalizeTypedArtifactMap,
+  }).filter(([, value]) => typeof value === 'function'));
 }
 
 function runtimeOverlayConfigFailurePayload(error) {
@@ -660,19 +561,42 @@ function runtimeOverlayConfigFailurePayload(error) {
   };
 }
 
+function runtimeReadinessFailurePayload(taskInput) {
+  const diagnostics = wpCodeboxRuntimeReadinessDiagnostics(taskInput);
+  if (diagnostics.length === 0) {
+    return null;
+  }
+  return {
+    success: false,
+    status: 'failed',
+    failure_classification: 'provider',
+    summary: diagnostics[0].message || 'WP Codebox runtime readiness preflight failed.',
+    diagnostics,
+    metadata: {
+      phase: 'codebox.preflight',
+      owner_surface: 'wp-codebox-runtime-integration',
+      runtime_readiness_failed: true,
+    },
+  };
+}
+
 async function runTaskRunner(request) {
   const coreNormalizers = await loadCodeboxCoreNormalizers();
   const runner = argValue('--task-runner') || DEFAULT_TASK_RUNNER;
   const config = request.executor?.config || {};
   let taskInput;
   try {
-    taskInput = codeboxTaskRequestFromAgentTaskRequest(request);
+    taskInput = codeboxTaskRequestFromAgentTaskRequest(request, coreNormalizers);
   } catch (error) {
     const validationPayload = runtimeOverlayConfigFailurePayload(error);
     if (validationPayload) {
       return agentTaskOutcomeFromCodeboxResult(request, validationPayload, { exitStatus: 1, ...coreNormalizers });
     }
     throw error;
+  }
+  const runtimeReadinessPayload = runtimeReadinessFailurePayload(taskInput);
+  if (runtimeReadinessPayload) {
+    return agentTaskOutcomeFromCodeboxResult(request, runtimeReadinessPayload, { exitStatus: 1, ...coreNormalizers });
   }
   const missingModelPayload = missingModelPreflightPayload(taskInput);
   if (missingModelPayload) {
@@ -687,7 +611,6 @@ async function runTaskRunner(request) {
     return agentTaskOutcomeFromCodeboxResult(request, preflightPayload, { exitStatus: 1, ...coreNormalizers });
   }
   const configArgs = [
-    ['--agents-api', config.agents_api_path || config.agentsApiPath],
     ['--homeboy', config.homeboy_path || config.homeboyPath],
     ['--homeboy-extensions', config.homeboy_extensions_path || config.homeboyExtensionsPath],
   ].flatMap(([name, value]) => (value ? [name, value] : []));
@@ -697,12 +620,16 @@ async function runTaskRunner(request) {
     }
     return true;
   });
+  const debug = runtimeAgentDebugEnabled();
   const result = spawnSync(process.execPath, [runner, ...args, ...configArgs], {
     encoding: 'utf8',
     input: JSON.stringify(taskInput),
     env: { ...process.env, ...providerAuthEnv(taskInput) },
     maxBuffer: 1024 * 1024 * 20,
     timeout: requestTimeoutMs(request),
+    // In debug mode inherit the task-runner stderr so the wp-codebox CLI
+    // stderr streams live to this process's stderr (and onward to the job log).
+    ...(debug ? { stdio: ['pipe', 'pipe', 'inherit'] } : {}),
   });
 
   if (result.stderr) {

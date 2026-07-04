@@ -19,17 +19,6 @@ assert_contains() {
     fi
 }
 
-isolated_extension="${TMP_DIR}/isolated-extension/wordpress"
-mkdir -p "${isolated_extension}/scripts/lib"
-cp "${EXTENSION_DIR}/scripts/lib/resolve-context.sh" "${isolated_extension}/scripts/lib/resolve-context.sh"
-printf '{"id":"wordpress"}\n' > "${isolated_extension}/wordpress.json"
-
-HOMEBOY_COMPONENT_PATH="${TMP_DIR}/component" \
-HOMEBOY_RUNTIME_RESOLVE_CONTEXT="$RESOLVE_CONTEXT_CORE_HELPER" \
-SCRIPT_DIR="${isolated_extension}/scripts/lib" \
-bash -c 'source "$1"; homeboy_resolve_context --component-alias PLUGIN_PATH; test "$PLUGIN_PATH" = "$HOMEBOY_COMPONENT_PATH"' \
-    _ "${isolated_extension}/scripts/lib/resolve-context.sh"
-
 component_dir="${TMP_DIR}/react-19-plugin"
 fake_bin="${TMP_DIR}/bin"
 npm_log="${TMP_DIR}/npm.log"
@@ -168,5 +157,20 @@ printf 'package-lock.json\nnode_modules/\n' > "${ignored_dir}/.gitignore"
 run_build "$ignored_dir" "$ignored_log"
 assert_contains "$ignored_log" "install --no-audit --no-fund"
 assert_not_contains "$ignored_log" "ci --no-audit --no-fund"
+
+# Case 3: vendored dependency fixtures are ignored by nested frontend builds.
+vendor_fixture_dir="${TMP_DIR}/vendor-fixture"
+vendor_fixture_log="${TMP_DIR}/vendor-fixture-npm.log"
+make_lockfile_component "$vendor_fixture_dir"
+mkdir -p "${vendor_fixture_dir}/vendor/example/fixture"
+cat > "${vendor_fixture_dir}/vendor/example/fixture/package.json" <<'JSON'
+{
+  "scripts": {
+    "build": "node should-not-run.js"
+  }
+}
+JSON
+run_build "$vendor_fixture_dir" "$vendor_fixture_log"
+assert_not_contains "$vendor_fixture_log" "should-not-run.js"
 
 echo "WordPress build helper smoke passed."

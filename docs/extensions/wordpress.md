@@ -20,12 +20,40 @@ provider contract, task request mapping, runtime CLI, and normalized outcome
 conversion so the WordPress extension can depend on generic runtime capabilities
 instead of embedding the provider contract.
 
+Provider discovery lives in the runtime manifest's
+`provider_metadata` block. Operators and generic tooling should read that block to
+separate executor backend (`codebox`), runtime id (`wp-codebox`), provider id
+(`openai`, `codex`, `claude-code`, or another WordPress AI provider), and model
+selection (`executor.config.model` / `executor.model`). Homeboy core should treat
+provider ids and model names as opaque runtime metadata.
+
 Configure the Codex pair with task config, global settings, or environment variables:
 
-- `provider_plugin_paths` / `wp_codebox_provider_plugin_paths` / `HOMEBOY_WP_CODEBOX_PROVIDER_PLUGIN_PATH`: a Codex-capable provider plugin checkout, such as the Codex provider branch of `ai-provider-for-openai`.
-- `runtime_overlays` / `wp_codebox_runtime_overlays`, or `wp_codebox_php_ai_client_path` / `HOMEBOY_WP_CODEBOX_PHP_AI_CLIENT_PATH`: a prepared `php-ai-client` checkout mounted to `/wordpress/wp-includes/php-ai-client`. Explicit runtime overlay entries must use the canonical `kind` field, for example `{ "kind": "bundled-library", "library": "php-ai-client", "source": "/abs/path/to/php-ai-client" }`; legacy `type` entries are rejected before WP Codebox dispatch.
+- `provider_plugin_paths`: a Codex-capable provider plugin checkout, such as the Codex provider branch of `ai-provider-for-openai`. Legacy compatibility aliases: `wp_codebox_provider_plugin_paths`, `HOMEBOY_WP_CODEBOX_PROVIDER_PLUGIN_PATH`.
+- `chat_handler_plugin_paths`: one or more caller-owned WordPress plugin checkouts that expose a public chat/task handler expected by the selected WP Codebox runtime contract. Alias: `wp_codebox_chat_handler_plugin_paths`. Environment lists are accepted through `HOMEBOY_WP_CODEBOX_CHAT_HANDLER_PLUGIN_PATHS` or `WP_CODEBOX_CHAT_HANDLER_PLUGIN_PATHS`.
+- `runtime_overlays`: prepared runtime overlay checkouts mounted into the WP Codebox runtime, such as a `php-ai-client` checkout mounted to `/wordpress/wp-includes/php-ai-client`. Alias: `wp_codebox_runtime_overlays`. Entries must use the canonical `kind` field, for example `{ "kind": "bundled-library", "library": "php-ai-client", "source": "/abs/path/to/php-ai-client" }`; legacy `type` entries are rejected before WP Codebox dispatch. Pass the runner-materialized overlay source through `runtime_overlays`; ambient PHP AI Client path settings are not converted into overlays.
 
 The `php-ai-client` checkout must include bearer-token auth support (`RequestAuthenticationMethod::bearerToken`) and Composer vendor dependencies (`vendor/autoload.php`). If the stack is incomplete, the executor emits diagnostics for the missing Codex provider plugin, missing bearer-token auth, or missing Composer vendor preparation.
+
+Homeboy forwards provider credential environment variable names only. It does not
+refresh Codex OAuth tokens, read provider auth files, or persist rotated provider
+credentials. When a provider token is stale, WP Codebox or the provider plugin
+must expose a public credential-refresh primitive; until then the Homeboy
+preflight fails with guidance instead of calling provider internals.
+
+WP Codebox contract discovery uses public modules such as
+`@automattic/wp-codebox-core`, `@automattic/wp-codebox-core/contracts`, and
+`wp-codebox-workspace/*`, or an explicit `HOMEBOY_WP_CODEBOX_CORE_MODULE` path
+provided by the runner. Homeboy does not scan WP Codebox source/cache package
+layouts to discover private core files.
+
+WordPress extension setup accepts explicit WP Codebox runtime overrides through
+`WP_CODEBOX_CLI` or `HOMEBOY_WP_CODEBOX_CLI` for the built CLI entrypoint and
+`WP_CODEBOX_CORE_MODULE` or `HOMEBOY_WP_CODEBOX_CORE_MODULE` for the built
+runtime-core module. Explicit overrides replace previously persisted
+`HOMEBOY_WP_CODEBOX_BIN` and `HOMEBOY_WP_CODEBOX_CORE_MODULE` values during
+reinstall; persisted values are reused only when no explicit override is
+provided.
 
 ## WP Codebox Artifact Lookup
 
@@ -42,6 +70,64 @@ directory aliases including `artifacts.directory`, `artifacts.path`,
 This keeps extension helpers product-neutral: workloads and probes can name the
 artifact they need, while runtime-specific bundle layouts remain behind one
 lookup boundary.
+
+The generic `homeboy-extension-wordpress` root export does not flatten
+WP Codebox helpers into the public WordPress API. Compatibility consumers that
+need Codebox-owned helpers from the root export should access them through the
+explicit `wpCodebox` namespace; new imports should prefer the dedicated
+`homeboy-extension-wordpress/wp-codebox-*` subpath exports.
+
+## Static Visual Parity Runtime Boundary
+
+`wordpress/lib/static-visual-parity.js` keeps the static visual parity
+orchestration API stable while routing runtime-specific work through a provider
+object. The default provider is WP Codebox and is exposed explicitly through
+`createWpCodeboxStaticVisualParityRuntimeProvider()`,
+`buildWpCodeboxStaticVisualParityRecipe()`,
+`runWpCodeboxStaticVisualParity()`, and
+`normalizeWpCodeboxStaticVisualParityArtifacts()`.
+
+Existing callers can continue using `buildStaticVisualParityRecipe()`,
+`runStaticVisualParity()`, and `normalizeStaticVisualParityArtifacts()`; those
+aliases select the WP Codebox provider unless a caller passes `runtimeProvider`.
+The provider owns the `wp-codebox/workspace-recipe/v1` recipe shape, recipe file
+name, runtime output file name, dispatch function, and artifact normalization.
+
+## Audit Fanout Runtime Boundary
+
+Audit fanout extraction is split from runtime execution. Generic fanout planning
+and reconcile primitives live in `runtime-agent-ci/lib`; they group items,
+template opaque task requests, and match provider records back to groups. The exported
+`audit-fanout-runtime-provider` interface defines dispatch/apply operations
+without naming runtime package names, provider credentials, sandbox recipes, or
+provider task schemas.
+
+WP Codebox is the current runtime provider implementation for audit fanout. The
+quarantined `audit-wp-codebox-fanout` module and CLI map grouped audit findings
+to `wp-codebox/task-input/v1`, execute those requests through Codebox-owned task
+runner contracts, and normalize Codebox artifacts/outcomes back into fanout
+records. Keep new executor-neutral extraction behavior in
+`runtime-agent-ci/lib/generic-fanout-reconcile-workflow.js`; keep Codebox request/session/artifact
+details inside the Codebox audit fanout lane.
+
+## Product Adapter Boundaries
+
+Generic WordPress helpers keep default profiling and helper manifests scoped to
+WordPress itself. Product-specific fixtures and helper paths live in product rig
+packages, not in the generic WordPress extension manifest. Callers that need
+product waterfall attribution pass explicit adapter objects to
+`summarizeThirdPartyWaterfall()`.
+
+## WordPress Hook Surface Discovery
+
+`wordpress-hook-surface-discovery` statically extracts literal WordPress
+`add_action()`, `add_filter()`, `wp_schedule_event()`, and
+`wp_schedule_single_event()` calls for generic fuzz planning. The helper reports
+surface metadata and conservative invocation guidance without product-specific
+semantics. Zero-argument actions are emitted as automatic `do_action` candidates;
+filters, cron events, dynamic hook names, and callbacks that accept arguments are
+preserved as skipped planning records with explicit `skip_reason` metadata so
+callers can add fixtures before invoking them.
 
 ## Test failure sidecar
 
@@ -88,7 +174,7 @@ Configure dependencies in the component's WordPress extension settings:
   "extensions": {
     "wordpress": {
       "settings": {
-        "validation_dependencies": "data-machine"
+        "validation_dependencies": "example-dependency"
       }
     }
   }
@@ -97,10 +183,10 @@ Configure dependencies in the component's WordPress extension settings:
 
 Supported value shapes:
 
-- single component ID: `data-machine`
-- comma-separated list: `data-machine, other-plugin`
+- single component ID: `example-dependency`
+- comma-separated list: `example-dependency, other-plugin`
 - newline-separated list
-- JSON-array string: `["data-machine", "other-plugin"]`
+- JSON-array string: `["example-dependency", "other-plugin"]`
 
 Each dependency entry may be either:
 
@@ -109,11 +195,12 @@ Each dependency entry may be either:
 
 ## Configurable WP Codebox Bench Workloads
 
-WordPress bench runs can declare WP Codebox workloads in extension settings when
+WordPress bench runs can declare runtime workloads in extension settings when
 the workload should be configured by the repo instead of living under
-`tests/bench/*.php`. Configured workloads run after the existing WP Codebox
-bootstrap, `wp_codebox_blueprint`, dependency mounts, and component load through
-a generated WP Codebox recipe.
+`tests/bench/*.php`. Configured workloads run after the runtime bootstrap,
+blueprint, dependency mounts, and component load through a generated WP Codebox
+recipe. The current bench runner still consumes the legacy `wp_codebox_*`
+settings for recipe-specific fields.
 
 ### Portable workload profile helper
 
@@ -127,7 +214,8 @@ onto the reusable workflow inputs Homeboy Extensions already owns:
 - `wp_config_defines` becomes `extra_wp_config_defines` JSON.
 - `mounts` becomes `runtime_mounts` JSON.
 - `run_before` and `run_after` become workload lifecycle hook arrays.
-- `workloads` becomes `wp_codebox_workloads` JSON.
+- `workloads` becomes legacy `wp_codebox_workloads` JSON for the current WP
+  Codebox bench recipe generator.
 - `visual_comparisons` append generic `visual-compare` verifier steps to
   `workload_run_after`.
 
@@ -178,6 +266,296 @@ The profile is intentionally product-agnostic: import, fixture setup, crawling,
 and verification are ordinary WordPress recipe steps, while visual comparison is
 carried as a verifier step that a runtime can implement with its own browser
 capture and artifact policy.
+
+The workload profile also carries the generic setup and evidence vocabulary used
+by rigs before they select a concrete runtime:
+
+- `fixture_plugins` normalizes to `homeboy/wordpress-fixture-plugin/v1` entries
+  with `path`, `slug`, `plugin`, `copy`, and `activate` fields.
+- `fixture_site_seeds` normalizes to `homeboy/wordpress-fixture-site-seed/v1`
+  entries for parent-site or fixture-sourced content/options/theme/plugin seeds.
+- `fixtures` normalizes to `homeboy/wordpress-fixture-step/v1` entries for
+  `wp-cli` and `wp-eval-file` setup actions.
+- `artifact_declarations` normalizes to
+  `homeboy/wordpress-workload-artifact-declaration/v1` records keyed by artifact
+  id, each with `path`, `kind`, `required`, `role`, and `metadata`.
+
+`workflowInputsFromWordPressWorkloadProfile()` projects those fields to
+`wordpress_fixture_plugins`, `wordpress_fixture_site_seeds`,
+`wordpress_fixture_steps`, and `artifact_declarations` JSON strings. Rigs should
+pass these declarations through unchanged and let the chosen WordPress runtime
+own execution, artifact capture, and retention.
+
+### Portable fuzz manifest helper
+
+Fuzz callers that need one manifest across local scripts, CI, and agent runners
+can use schema `homeboy/wordpress-fuzz-manifest/v1` and normalize it through
+`wordpress/lib/wordpress-fuzz-manifest.js`. The manifest reuses the portable
+workload profile fields for setup/execution and embeds the generic WordPress
+fuzz discovery/plan contracts described below.
+
+The helper returns a stable manifest object with:
+
+- `workload_profile` normalized by `homeboy/wordpress-workload-profile/v1`.
+- `discovery` normalized by `wordpress-surface-discovery/v1`, when provided.
+- `plan` normalized by `wordpress-fuzz-plan/v1`, when provided.
+- `artifacts`, `budget`, and `metadata` copied as product-agnostic execution
+  hints.
+
+`workflowInputsFromWordPressFuzzManifest()` projects the same runtime inputs as
+the workload profile helper and adds JSON inputs for `wordpress_fuzz_manifest`,
+`wordpress_fuzz_discovery`, `wordpress_fuzz_plan`, and
+`wordpress_fuzz_artifacts`.
+
+Example manifest:
+
+```json
+{
+  "schema": "homeboy/wordpress-fuzz-manifest/v1",
+  "id": "generic-rest-fuzz",
+  "label": "Generic REST fuzz",
+  "dependencies": ["example/plugin-under-test@main"],
+  "run_before": [
+    { "type": "wp-cli", "command": "rewrite flush" }
+  ],
+  "workloads": [
+    {
+      "id": "execute-fuzz-plan",
+      "run": [
+        {
+          "type": "ability",
+          "ability": "wordpress/fuzz-run",
+          "input": { "plan_id": "generic-rest-plan" }
+        }
+      ]
+    }
+  ],
+  "discovery": {
+    "id": "generic-surfaces",
+    "surfaces": [
+      {
+        "type": "rest-route",
+        "id": "wp-v2-posts",
+        "method": "GET",
+        "route": "/wp/v2/posts"
+      }
+    ]
+  },
+  "plan": {
+    "id": "generic-rest-plan",
+    "discovery_id": "generic-surfaces",
+    "targets": [
+      {
+        "id": "posts-list",
+        "surface_id": "wp-v2-posts",
+        "cases": [
+          { "id": "per-page-boundary", "query": { "per_page": 100 } }
+        ]
+      }
+    ]
+  },
+  "artifacts": [
+    { "path": "artifacts/fuzz/result.json", "kind": "json" }
+  ],
+  "budget": { "max_cases": 25 }
+}
+```
+
+The manifest is intentionally product-agnostic. Product-specific target
+selection, fixture content, and assertions belong in caller-owned manifests or
+runtime inputs, not in the shared contract.
+
+Homeboy-level fuzz execution requests are composed by core `homeboy fuzz plan`,
+not by this extension. Use the core planner in workflows before handing the
+selected request to a runner:
+
+```bash
+homeboy fuzz plan my-wordpress-component \
+  --workload generic-rest-fuzz \
+  --run-id generic-rest-fuzz-20260702 \
+  --gate-profile evidence \
+  --case-budget 25 \
+  --output artifacts/fuzz/request.json
+```
+
+The WordPress extension boundary is the data contract: fuzz manifests, surface
+discovery, WordPress fuzz plans, runtime capabilities, the Codebox-owned
+`wp-codebox/fuzz-suite/v1` payload, and the product-agnostic campaign
+orchestrator API. The extension does not assemble `homeboy fuzz ...` shell
+commands for workflow callers.
+
+### Surface discovery and fuzz schemas
+
+The WordPress extension exposes product-agnostic data shapes for discovering
+WordPress surfaces and exchanging fuzz plans/results. These are schema contracts
+only; they do not select a runtime, generate cases, or execute fuzzing.
+
+- `wordpress-surface-discovery/v1` lists WordPress surfaces such as REST routes,
+  admin pages, post types, taxonomies, roles, capabilities, hooks, blocks,
+  options, cron events, database tables, frontend URLs, and WP-CLI commands.
+- `wordpress-fuzz-plan/v1` groups fuzz cases by discovered surface target.
+- `wordpress-fuzz-result/v1` reports normalized case outcomes and summaries.
+- `homeboy/wordpress-surface-family-contracts/v1` labels explicit WordPress
+  surface families and their executable state: `read_only_executable`,
+  `isolated_mutating_executable`, `discovered`, or `unsupported`.
+
+Surface family contracts are generic WordPress contracts. They cover REST, CRUD,
+admin pages/actions, frontend, blocks/editor, DB tables/queries, WP-CLI,
+hooks/cron, options/settings, and users/roles/media/taxonomies without feature
+checks or product-specific assumptions. A discovered surface with no executable
+runtime collector remains present as `discovered`; a planned case gated by the
+current contract is surfaced as `unsupported` rather than hidden as a skipped
+test.
+
+```json
+{
+  "schema": "wordpress-surface-discovery/v1",
+  "id": "site-surfaces",
+  "surfaces": [
+    {
+      "id": "wp-v2-posts",
+      "type": "rest-route",
+      "method": "GET",
+      "route": "/wp/v2/posts"
+    }
+  ]
+}
+```
+
+### WordPress fuzz campaign orchestrator
+
+`runWordPressFuzzCampaign()` is the reusable production WordPress fuzz campaign
+primitive for callers that need one API instead of hand-rolling discovery,
+planning, WP Codebox execution, result aggregation, artifact validation, and
+summary persistence.
+
+The orchestrator accepts either a normalized discovery artifact or live discovery
+configuration. It compiles the discovery through `compileWordPressFuzzCampaign()`,
+executes the generated `wp-codebox/fuzz-suite/v1` request, aggregates coverage
+and gaps, validates required artifacts, and optionally writes a JSON summary.
+Product-specific selection, fixtures, assertions, and runtime inputs remain
+caller-owned.
+
+```js
+const {
+  runWordPressFuzzCampaign,
+} = require('homeboy-extension-wordpress/wordpress-fuzz-campaign');
+
+const summary = await runWordPressFuzzCampaign({
+  id: 'production-fuzz-campaign',
+  destructive: true,
+  discovery,
+  target: { type: 'wordpress-plugin', slug: 'sample-plugin' },
+  summaryPath: 'artifacts/fuzz/campaign-summary.json',
+}, {
+  runFuzzSuite: wpCodeboxRunner,
+});
+```
+
+When destructive mode is requested, the campaign is treated as production-grade
+and the run summary fails validation unless the result exports all required
+guardrail artifacts: sandbox isolation proof, mutation isolation, delete
+boundary, external side-effect guardrail, runtime access, coverage, and hotspots.
+
+The returned summary uses `homeboy/wordpress-fuzz-campaign-run/v1` and includes
+the compiled campaign, normalized WP Codebox result, aggregate coverage/gap
+report, and `homeboy/wordpress-fuzz-campaign-artifact-validation/v1` validation
+block.
+
+### Live runtime surface discovery
+
+`wordpress-live-surface-discovery` is the generic live primitive for booted
+WordPress/Codebox runtimes. It uses public WordPress runtime APIs from a
+WP-CLI `eval-file` collector, then normalizes the result through
+`homeboy/wordpress-surface-discovery/v1` via
+`buildWordPressLiveSurfaceDiscoveryArtifact()` or
+`runWordPressLiveSurfaceDiscoveryWorkload()`.
+
+```bash
+wp eval-file wordpress/scripts/runtime/wordpress-live-surface-discovery.php > live-surfaces.raw.json
+```
+
+The raw collector covers REST routes, admin menu pages, database tables,
+frontend URLs, and registered blocks when those runtime surfaces are available.
+Unsupported surfaces are reported as structured rows in
+`metadata.unsupported_surfaces` on the normalized artifact instead of being
+silently omitted.
+
+```js
+const {
+  buildWordPressLiveSurfaceDiscoveryArtifact,
+} = require('homeboy-extension-wordpress/wordpress-live-surface-discovery');
+
+const discovery = buildWordPressLiveSurfaceDiscoveryArtifact(rawCollectorOutput);
+```
+
+```json
+{
+  "schema": "homeboy/wordpress-surface-discovery/v1",
+  "type": "wordpress-surface-discovery",
+  "id": "wordpress-live-surface-discovery",
+  "source": "wordpress-live-surface-discovery",
+  "surfaces": [
+    {
+      "id": "rest:/wp/v2/posts",
+      "type": "rest_route",
+      "label": "/wp/v2/posts",
+      "required": true,
+      "metadata": { "source": "rest", "value": "/wp/v2/posts" }
+    }
+  ],
+  "metadata": {
+    "collector_schema": "homeboy/wordpress-live-surface-discovery-raw/v1",
+    "unsupported_surfaces": [
+      {
+        "type": "db_table",
+        "label": "Database tables",
+        "supported": false,
+        "reason": "table_status_unavailable",
+        "message": "SHOW TABLE STATUS returned no rows."
+      }
+    ]
+  }
+}
+```
+
+```json
+{
+  "schema": "wordpress-fuzz-plan/v1",
+  "id": "rest-route-fuzz",
+  "discovery_id": "site-surfaces",
+  "targets": [
+    {
+      "id": "posts-list-query",
+      "surface_id": "wp-v2-posts",
+      "method": "GET",
+      "route": "/wp/v2/posts",
+      "cases": [
+        { "id": "per-page-max", "query": { "per_page": 100 } }
+      ]
+    }
+  ],
+  "budget": { "max_cases": 25 }
+}
+```
+
+```json
+{
+  "schema": "wordpress-fuzz-result/v1",
+  "id": "rest-route-fuzz-result",
+  "plan_id": "rest-route-fuzz",
+  "status": "passed",
+  "summary": { "total": 1, "passed": 1, "failed": 0, "errored": 0, "skipped": 0 },
+  "cases": [
+    {
+      "id": "per-page-max",
+      "target_id": "posts-list-query",
+      "status": "passed",
+      "duration_ms": 42
+    }
+  ]
+}
+```
 
 ```json
 {
@@ -356,48 +734,6 @@ state, serialized byte size, value type, array entry count when applicable, and
 sample context such as `sample_index`, `label`, and `sampled_at_unix_ms`. Pass
 `network => true` in the transient context to sample a site transient.
 
-### WordPress benchmark WooCommerce fixture profiles
-
-WooCommerce bench workloads can seed reusable store shapes by requiring the
-WooCommerce fixture helper mounted with the WordPress extension:
-
-```php
-<?php
-require_once '/homeboy-extension/scripts/bench/lib/woocommerce-fixtures.php';
-
-return homeboy_wordpress_bench_wc_apply_fixture_profile(
-    'small-shortcode-checkout',
-    [
-        'run_id' => getenv('HOMEBOY_RUN_ID') ?: 'local-checkout-run',
-        'product_count' => 150,
-    ]
-);
-```
-
-The helper returns the normal workload payload shape with numeric `metrics` and
-structured `metadata.woocommerce_fixture`. Fixture objects are scoped by a
-normalized run id and deterministic prefix so repeated workloads can explain the
-generated store shape in Homeboy artifacts.
-
-Built-in profiles:
-
-- `small-shortcode-checkout`: shortcode checkout, HPOS off, COD enabled, about
-  150 products and 125 variations by default.
-- `large-admin-catalog`: larger mixed virtual/physical catalog, categories,
-  Woo admin/onboarding options, coupons, customers, and historical orders.
-- `account-heavy-store`: many customers with repeat historical orders for account
-  and login workloads.
-- `shipping-package-matrix`: physical catalog with configurable shipping zones,
-  methods, package count, and items per package metadata.
-
-Common overrides include `run_id`, `product_count`, `variable_product_count`,
-`variations_per_product`, `category_count`, `customer_count`,
-`orders_per_customer`, `guest_order_count`, `coupon_count`,
-`shipping_zone_count`, `shipping_methods_per_zone`, `hpos`, and `checkout`.
-Profiles use WooCommerce APIs when WooCommerce is loaded; outside a WooCommerce
-runtime the helper returns a structured `woocommerce_unavailable` failure instead
-of fatalling, which keeps smoke tests and matrix diagnostics readable.
-
 Playground grader workloads may also return a normalized reward payload:
 
 ```json
@@ -514,6 +850,33 @@ The plugin helper backs up an existing plugin directory, installs each fixture
 plugin by symlink or copy, activates entries unless `activate: false`, and
 restores the original plugin tree in reverse order.
 
+Fuzz and coverage recipe builders can also pass a product-agnostic fixture
+profile. The WordPress extension maps the profile to WP Codebox
+`inputs.siteSeeds`; WP Codebox owns the actual seed import and validation:
+
+```json
+{
+  "fixture_profile": {
+    "siteSeeds": [
+      {
+        "type": "fixture",
+        "name": "generic-content",
+        "source": "fixtures/content.json",
+        "format": "json",
+        "scopes": {
+          "posts": { "slugs": ["home"] },
+          "options": { "names": ["blogname"] }
+        }
+      }
+    ]
+  }
+}
+```
+
+Profiles may also use a single seed object with top-level `posts`, `terms`,
+`options`, `users`, `media`, `activePlugins`, or `activeTheme` keys; the mapper
+collects those keys into the required `scopes` object.
+
 ## Reusable Block Quality Probes
 
 WordPress workloads can collect product-neutral block quality counts without
@@ -600,6 +963,32 @@ small stabilizing stylesheet by default so screenshots are less noisy.
 match counts, visible counts, nonzero bounding-box counts, first-match text, and
 group/totals summaries. Product-specific visual parity gates should stay in the
 rig or workload that owns those expectations.
+
+## WordPress/Codebox Visual Parity Workloads
+
+WordPress benchmark workloads can import
+`runWordPressCodeboxVisualParityWorkload()` from the WordPress extension when
+they need to run a Codebox `wordpress.visual-compare` recipe and emit a
+normalized `homeboy/VisualParityArtifact/v1` artifact.
+
+```js
+const { runWordPressCodeboxVisualParityWorkload } = await import('homeboy-extension-wordpress/wordpress-codebox-visual-parity-workload');
+
+export default async function () {
+  return runWordPressCodeboxVisualParityWorkload({
+    id: 'homepage-parity',
+    backend: { codeboxCli: process.env.CODEBOX_CLI },
+    source: { path: './dist/site', label: 'static-source', port: 4173 },
+    candidate: {
+      url: '/',
+      label: 'wordpress-candidate',
+      recipe: { runtime: { wp: 'latest' }, inputs: { mounts: [] } },
+    },
+    viewport: { width: 1280, height: 1600 },
+    threshold: 0.015,
+  });
+}
+```
 
 ## Block Theme Quality Probe
 
@@ -708,10 +1097,9 @@ Set `HOMEBOY_PLAYGROUND_RESULTS_ARTIFACT_DIR` to write these derived artifacts
 to a specific directory. Otherwise they are written beside
 `HOMEBOY_BENCH_RESULTS_FILE`.
 
-The same workload contract powers Data Machine agent CI on the WP Codebox
-WordPress substrate. See
-[`../../wordpress/docs/AGENT_CI_WP_CODEBOX.md`](../../wordpress/docs/AGENT_CI_WP_CODEBOX.md)
-for the dedicated agent sandbox guide.
+The same workload contract powers runtime-backed agent tasks on the WP Codebox
+WordPress substrate. See `.github/workflows/runtime-agent-full-run.yml` for the
+reusable runtime agent workflow contract.
 
 ## WP Codebox Validation Profile
 
@@ -746,12 +1134,33 @@ Evidence expectations:
   include the rerun commands above. Do not cite machine-local paths as PR
   evidence.
 
+Components that use npm for their canonical smoke gate can opt into an npm
+fallback when WP Codebox plugin activation succeeds but PHPUnit discovery finds
+no PHPUnit files:
+
+```json
+{
+  "extensions": {
+    "wordpress": {
+      "settings": {
+        "npm_test_script": "headless-preview-boot-smoke"
+      }
+    }
+  }
+}
+```
+
+The fallback runs `npm run <npm_test_script>` from the component checkout after
+empty PHPUnit discovery. Composer `scripts.test` remains the first fallback when
+present.
+
 ### Nested Plugin Source Roots
 
-WP Codebox bench runs normally treat the selected Homeboy component path as the
+Runtime bench runs normally treat the selected Homeboy component path as the
 plugin source. Monorepos can keep that component path scoped to the nested
 plugin while asking the runner to materialize a broader checkout for host-side
-prep and Composer path repositories:
+prep and Composer path repositories. These source-root settings are legacy
+WP Codebox bench aliases until the bench recipe generator grows generic names:
 
 ```json
 {
@@ -766,9 +1175,10 @@ prep and Composer path repositories:
 }
 ```
 
-For Lab offload, pass `wp_codebox_source_root` as a path-valued `--setting` when
-the root must be synced separately from the selected component snapshot. Homeboy
-remaps that setting to the runner path before the WordPress bench runner starts.
+For Lab offload, pass legacy `wp_codebox_source_root` as a path-valued
+`--setting` when the root must be synced separately from the selected component
+snapshot. Homeboy remaps that setting to the runner path before the WordPress
+bench runner starts.
 The bench runner keeps `HOMEBOY_COMPONENT_PATH` and the plugin slug scoped to the
 selected component, but uses the configured source root/subpath for prepare step
 cwd resolution, workload discovery, file mounts, and the WP Codebox plugin input.
@@ -776,8 +1186,9 @@ cwd resolution, workload discovery, file mounts, and the WP Codebox plugin input
 ## WP Codebox Scenario Manifests
 
 Repos can declare first-class scenario manifests and let the WordPress runner
-compile them into `wp_codebox_workloads`. This keeps eval/RL-style scenarios on
-the WP Codebox recipe execution path instead of adding a second runner.
+compile them into legacy `wp_codebox_workloads`. This keeps eval/RL-style
+scenarios on the WP Codebox recipe execution path instead of adding a second
+runner.
 
 ```json
 {
@@ -823,8 +1234,9 @@ Supported fields:
   references resolve relative to the manifest file.
 - `blueprint` or `blueprint_file`: inline object or JSON file passed to
   WP Codebox as part of the generated recipe runtime blueprint.
-- `run`: existing `wp_codebox_workloads` steps for the model or agent action
-  loop. The supported step types are still `php`, `ability`, and `wp-cli`.
+- `run`: existing legacy `wp_codebox_workloads` steps for the model or agent
+  action loop. The supported step types are still `php`, `ability`, and
+  `wp-cli`.
 - `grader` or `grader_file`: PHP file appended after `run`, so grading happens
   after the action loop.
 - `rules`, `general_rules`, `task_rules`, and `probes`: copied into scenario
@@ -833,7 +1245,7 @@ Supported fields:
 - `tags`, `metadata`, and `limits`: copied into the BenchResults scenario
   envelope for reports, filtering, and downstream eval tooling.
 
-Data Machine agent workloads also evaluate known general rules against available
+Runtime agent workloads also evaluate known general rules against available
 runner evidence and expose the results under
 `metadata.eval_artifact.general_rule_results`. Initial executable general rules
 cover editable block failures, raw HTML/shortcode failures, speculative plugin
@@ -854,7 +1266,7 @@ Example: drive a plugin's pipeline through an Abilities API entry point.
       "settings": {
         "wp_codebox_blueprint": {
           "steps": [
-            { "step": "installPlugin", "pluginData": { "resource": "wordpress.org/plugins", "slug": "data-machine" } }
+            { "step": "installPlugin", "pluginData": { "resource": "wordpress.org/plugins", "slug": "example-plugin" } }
           ]
         },
         "wp_codebox_workloads": [
@@ -863,7 +1275,7 @@ Example: drive a plugin's pipeline through an Abilities API entry point.
             "run": [
               {
                 "type": "ability",
-                "ability": "datamachine/run-pipeline",
+                "ability": "example/run-pipeline",
                 "input": { "pipeline_id": 42 }
               }
             ]
@@ -951,6 +1363,68 @@ installWordPressRequestProfiler(sitePath, {
 });
 ```
 
+## External HTTP Guardrail Helper
+
+The WordPress extension exports a generic Node helper for bench and request
+workloads that need deterministic control over outbound WordPress HTTP calls. It
+installs a temporary MU-plugin that observes `pre_http_request`, writes sanitized
+JSONL events, and can return a deterministic WordPress HTTP API response before
+network I/O occurs.
+
+```js
+const {
+  installWordPressExternalHttpGuardrail,
+  collectWordPressExternalHttpGuardrailEvents,
+  summarizeWordPressExternalHttpGuardrailEvents,
+  uninstallWordPressExternalHttpGuardrail,
+} = require('homeboy-extension-wordpress/external-http-guardrail');
+
+const sitePath = '/path/to/wordpress';
+
+installWordPressExternalHttpGuardrail(sitePath, {
+  allowlistDomains: ['api.wordpress.org', 'example.test'],
+  blockResponse: {
+    code: 599,
+    message: 'External HTTP blocked by Homeboy guardrail',
+    body: '',
+  },
+});
+
+// Run one or more browser, curl, WP-CLI, bench, or trace requests here.
+
+const events = collectWordPressExternalHttpGuardrailEvents(sitePath);
+const summary = summarizeWordPressExternalHttpGuardrailEvents(events);
+uninstallWordPressExternalHttpGuardrail(sitePath);
+
+console.log(summary.hosts);
+```
+
+Policies are generic WordPress HTTP policies:
+
+- `allowlistDomains` — exact host names or parent domains. `example.test` allows
+  `example.test` and `api.example.test`.
+- `blockNetwork` — when omitted, defaults to `true` if an allowlist is present
+  and `false` otherwise. Set `blockNetwork: true` to block every non-allowlisted
+  outbound call, or `false` to observe only.
+- `blockResponse` — deterministic response returned from `pre_http_request` for
+  blocked calls. Defaults to status `599`, an explanatory message, and an empty
+  body.
+- `redactUrls` — defaults to `true`. Stored event URLs preserve scheme, host,
+  port, and path while replacing query strings with `?redacted=1`, redacting URL
+  user info, and dropping fragments.
+
+By default the helper writes `wp-content/homeboy-external-http.jsonl` and
+installs `wp-content/mu-plugins/homeboy-external-http-guardrail.php`. The JSONL
+file is left in place during cleanup so benchmark and trace runners can preserve
+it as an artifact. Pass `{ removeArtifact: true }` to
+`uninstallWordPressExternalHttpGuardrail` when the raw event log should also be
+deleted.
+
+Captured entries use `http.allowed` and `http.blocked` events with host, method,
+redacted URL, hashed request ID, and block decision fields. The summary helper
+returns total allowed/blocked counts, per-host counts, and redacted samples for
+reviewable artifacts.
+
 ## WordPress Helper Discovery For Node Workloads
 
 Node.js rigs and bench workloads should discover WordPress helper files through
@@ -969,6 +1443,7 @@ const requestProfiler = require(manifest.helpers.requestProfiler);
 The manifest contract is versioned and currently exposes absolute paths for:
 
 - `helpers.requestProfiler` — `wordpress/lib/request-profiler.js`
+- `helpers.externalHttpGuardrail` — `wordpress/lib/external-http-guardrail.js`
 - `helpers.timingCorrelator` — `wordpress/lib/timing-correlator.js`
 - `helpers.bootstrapTimeline` — `wordpress/lib/wordpress-bootstrap-timeline.js`
 

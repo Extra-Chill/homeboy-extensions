@@ -18,7 +18,7 @@ extension scripts for these verbs:
 | `test` | PHPUnit and real-WordPress host smokes via WP Codebox | `scripts/test/test-runner.sh` |
 | `lint` | PHPCS + PHPStan (PHP) and ESLint (JS/TS) | `scripts/lint/lint-runner.sh` |
 | `build` | Production ZIP with composer `--no-dev`, asset build, syntax check | `scripts/build/build.sh` |
-| `bench` | Benchmark workloads via WP Codebox; optional browser handoff | `scripts/bench/bench-runner.sh` |
+| `bench` | Benchmark workloads via the WordPress bench runtime backend; optional browser handoff | `scripts/bench/bench-runner.sh` |
 | `trace` | Project-owned scenario traces | `scripts/trace/trace-runner.sh` |
 | `audit` | Detector rules over PHP for lifecycle / role tagging | `scripts/audit/setup-references.sh` + rules in `wordpress.json` |
 | `fingerprint` | File-shape fingerprinting for change detection | `scripts/fingerprint.sh` |
@@ -59,29 +59,39 @@ homeboy audit <component-id>
 
 ## Bench Helpers
 
+`scripts/bench/bench-runner.sh` selects the WordPress bench runtime backend.
+The default backend is `wp-codebox`, preserving the existing WP Codebox
+sandbox/artifact behavior. Set `HOMEBOY_WORDPRESS_BENCH_RUNTIME_BACKEND` to
+select a backend; currently supported value: `wp-codebox`.
+
 Reusable WordPress/WooCommerce workload helpers live under `scripts/bench/lib/`.
 Workloads can require them from the WP Codebox-mounted extension path.
 
-### Deterministic Expensive WooCommerce Shipping
+### WP Codebox Browser Coverage Primitive
 
-`/homeboy-extension/scripts/bench/lib/woocommerce-expensive-shipping.php`
-registers a local-only WooCommerce shipping method that simulates expensive rate
-calculation without external network calls. Supported knobs include:
+`lib/wp-codebox-browser-coverage.js` provides the shared declaration shape for
+WP Codebox browser request-coverage workloads. The helper normalizes
+`homeboy/wordpress-wp-codebox-browser-coverage/v1` declarations with:
 
-- `synthetic_rules` for deterministic rule count.
-- `cpu_iterations` for deterministic CPU work per rule.
-- `db_queries` for optional local database/query-heavy mode.
-- `delay_ms` for an optional per-package delay budget.
-- `rate_cost`, `rate_label`, and `method_id` for rate shape.
+- `component_id` for the Homeboy component under coverage.
+- `required_file` and `activation_file` for plugin/theme presence and activation.
+- `scenarios[]` with stable scenario ids and optional browser step files.
+- `profile` and `profile_metadata` for WP version, viewport, timeouts, inputs,
+  assumptions, and ownership metadata.
+- `trace_command` for the caller-owned trace entry point.
 
-The helper exposes counters through
-`homeboy_wordpress_woocommerce_expensive_shipping_metrics()` and a bench payload
-via `homeboy_wordpress_woocommerce_expensive_shipping_payload()`. Metrics include
-shipping calculate calls, packages seen, synthetic rules, CPU iterations, local
-DB queries, configured delay, elapsed milliseconds, and a deterministic digest.
+This is a contract helper only. WP Codebox still owns recipe execution and
+browser artifact semantics; product rigs own their scenario files and setup code.
 
-Store API and classic checkout request probes are intentionally left to follow-up
-issue #1091: https://github.com/Extra-Chill/homeboy-extensions/issues/1091
+### REST Route Discovery
+
+`lib/wordpress-rest-route-discovery.js` provides generic WordPress REST route
+discovery helpers for fuzz orchestration. Callers can pass a captured REST index
+plus optional per-route `OPTIONS` and schema snapshots, or provide a `fetch`
+implementation and `baseUrl` to collect the same metadata through the REST API.
+The normalized artifact uses `homeboy/wordpress-rest-route-discovery/v1` and
+records route, method, namespace, argument summary, response schema summary, and
+best-effort auth metadata without embedding product-specific endpoints.
 
 `<component-id>` matches the id Homeboy core uses for the component. Most
 verbs also accept a project id to fan out across all of its components.
@@ -132,8 +142,8 @@ Available factories from the WordPress test framework: `user`, `post`,
 ### Real-WordPress host smokes
 
 Standalone smoke files matching `tests/**/*-smoke.php` are diagnostic/operator
-targets, not default release gates. Run one explicitly through the same WP
-Codebox-backed real WordPress harness when you need it. The selected file is
+targets, not default release gates. Run one explicitly through the same selected
+real WordPress runtime harness when you need it. The selected file is
 mounted with the component and executed via `wordpress.run-php`, so WordPress
 functions and runtime dependencies are available.
 
@@ -148,6 +158,19 @@ Output preserves the machine-readable `HOST_SMOKE_BEGIN`,
 `HOST_SMOKE_PROGRESS`, `HOST_SMOKE_OK`, `HOST_SMOKE_FAIL`, and
 `HOST_SMOKE_SUMMARY` markers.
 
+### Test runtime backend
+
+`scripts/test/test-runner.sh` selects a generic real-WordPress runtime backend
+for PHPUnit and core-dev test runs. The current backend implementation is
+`wp-codebox`, and it remains the default:
+
+```bash
+HOMEBOY_WORDPRESS_TEST_RUNTIME_BACKEND=wp-codebox homeboy test <component-id>
+```
+
+The `test-runner-wp-codebox.sh` script name and existing WP Codebox settings are
+preserved for compatibility with the current implementation.
+
 ### Runtime dependencies
 
 If a plugin depends on other local plugins at runtime, declare them via
@@ -159,7 +182,7 @@ test and loaded during the `load_deps` bootstrap stage:
   "extensions": {
     "wordpress": {
       "settings": {
-        "validation_dependencies": "data-machine, other-plugin"
+        "validation_dependencies": "example-dependency, other-plugin"
       }
     }
   }
@@ -293,6 +316,44 @@ least one file. Included package artifacts are copied into the staging directory
 after the default rsync excludes and reported with SHA-256 values in the build
 output.
 
+### Local workspace dependency overrides
+
+A component can depend on a sibling workspace package that is intentionally not
+published — "cooked locally" on a branch (e.g. an `@scope/ui` package in a
+sibling pnpm monorepo built on `trunk`). An npm `file:` install symlinks the
+dependency's own `node_modules`, so its peer deps (React) resolve to a *second*
+copy → "Invalid hook call" → a blank app. Declare the dependency instead and the
+build will build it from source, pack it, and install the built tarball so peer
+deps dedupe to the consumer's single copy:
+
+```json
+{
+	"extensions": {
+		"wordpress": {
+			"local_workspace_dependencies": [
+				{
+					"name": "@automattic/agenttic-ui",
+					"path": "../agenttic",
+					"package_dir": "packages/agenttic-ui",
+					"build": "pnpm install --frozen-lockfile && pnpm --filter @automattic/agenttic-ui build",
+					"package_manager": "pnpm"
+				}
+			]
+		}
+	}
+}
+```
+
+Only `name` and `path` are required. `path` is resolved relative to the
+component (sibling repos via `..` are allowed) and `name` is validated against
+the resolved package. When `build` is omitted the dependency's own `build`
+script is run after installing its dependencies. The override runs after the
+consumer's own dependencies are installed and before the consumer build, and a
+declared override that fails is a fatal build error. The mechanism is generic
+Node.js behavior shared with the `nodejs` build runner
+(`nodejs/scripts/lib/local-workspace-deps.sh`); it carries no WordPress
+specifics.
+
 ## Bench runner
 
 Bench workloads run through WP Codebox. WP Codebox owns the disposable WordPress
@@ -300,15 +361,41 @@ runtime, component mount, command execution, and artifacts, and emits the same
 `BenchResults` envelope Homeboy core parses.
 
 Each file under `tests/bench/*.php` returns a callable. The callable may return
-numeric metrics directly or `{metrics, metadata, artifacts}`. Components may
-also declare configured workloads via `wp_codebox_workloads`; the WordPress
-runner maps those declarations into a temporary WP Codebox recipe alongside
-`validation_dependencies`, `wp_codebox_file_mounts`, `wp_config_defines`,
-`bench_env`, shared-state mounts, and browser handoff descriptors.
+numeric metrics directly or `{metrics, metadata, artifacts}`. Components may also
+declare configured workloads via the legacy `wp_codebox_workloads` setting; the
+WordPress runner maps those declarations into a temporary WP Codebox recipe
+alongside `validation_dependencies`, legacy `wp_codebox_file_mounts`,
+`wp_config_defines`, `bench_env`, shared-state mounts, and browser handoff
+descriptors.
 
-The generated recipe is the single WP Codebox entry point for benchmarks:
+The generated recipe is the single runtime entry point for benchmarks: legacy
 `wp_codebox_blueprint` becomes `runtime.blueprint`, dependencies become recipe
 plugin inputs, and scenario manifests compile into configured workloads.
+Fixture profiles can seed the sandbox through WP Codebox `inputs.siteSeeds`
+without product-specific recipe steps:
+
+```json
+{
+  "fixture_profile": {
+    "siteSeeds": [
+      {
+        "type": "fixture",
+        "name": "generic-content",
+        "source": "fixtures/content.json",
+        "format": "json",
+        "scopes": {
+          "posts": { "slugs": ["home"] },
+          "options": { "names": ["blogname"] }
+        }
+      }
+    ]
+  }
+}
+```
+
+The bridge also accepts `fixtureProfile` and `wp_codebox_fixture_profile` when
+building the recipe. Homeboy Extensions only maps and validates the profile
+shape; WP Codebox owns seed import behavior and runtime validation.
 
 Each run also emits `${HOMEBOY_BENCH_RESULTS_ARTIFACT_DIR}/bench-summary.json`
 when result artifacts are enabled. The summary is the canonical reviewer
@@ -549,17 +636,37 @@ extension handles the audit source with:
 homeboy refactor <component> \
   --from audit \
   --setting refactor.audit.extension=wordpress \
-  --setting wp_codebox_provider=provider-slug \
-  --setting wp_codebox_model=provider/model \
-  --setting wp_codebox_provider_plugin_paths=/components/ai-provider-example \
-  --setting wp_codebox_secret_env=PROVIDER_API_KEY
+  --setting provider=provider-slug \
+  --setting model=provider/model \
+  --setting provider_plugin_paths=/components/ai-provider-example \
+  --setting secret_env=PROVIDER_API_KEY
 ```
 
+Audit fanout has two boundaries. Generic extraction and reconcile mechanics live
+in `../runtime-agent-ci/lib/generic-fanout-reconcile-workflow.js` and
+`../runtime-agent-ci/lib/fanout-reconcile-runner.js`; use
+`../runtime-agent-ci/scripts/homeboy-generic-fanout-reconcile.cjs` for JSON-file
+planning/reconcile workflows. The old WordPress package re-export paths were
+removed; import the `runtime-agent-ci` modules or package exports directly. The generic
+runtime provider interface lives in `lib/audit-fanout-runtime-provider.js` and is
+exported from the WordPress package. Runtime providers own execution: they map
+generic grouped work into their provider task contract, run the task, and
+normalize records back for reconcile.
+
+The current provider implementation is WP Codebox.
 `scripts/agent/homeboy-audit-wp-codebox-fanout.cjs` turns a structured audit
 report into one `wp-codebox/task-input/v1` request per fix batch. With
 `--execute`, it streams each request to a WP Codebox task runner command such as
 `scripts/agent/homeboy-wp-codebox-task-runner.cjs`, which calls WP Codebox's
 stable `wp-codebox agent-task-run` parent contract.
+
+This audit fanout lane is intentionally quarantined as a WP Codebox-specific
+runtime provider implementation. Its direct module/CLI entrypoints remain
+available for existing callers, but it is not exported from `wordpress/index.js`
+and generic orchestration code must not import it inline. Executor-neutral fanout
+planning belongs in `../runtime-agent-ci/lib/generic-fanout-reconcile-workflow.js`; Codebox request
+schemas, sandbox session IDs, artifact lookup, partial-run discovery, and recipe
+details stay in this lane.
 
 ### WP Codebox agent-task executor
 
@@ -591,11 +698,18 @@ and runtime-path dispatch; it forwards to the WordPress payload so both monorepo
 and installed extension layouts use the same implementation.
 
 The generic provider boundary is documented in
-[`docs/AGENT_CI_WP_CODEBOX.md`](docs/AGENT_CI_WP_CODEBOX.md#agent-task-executor-provider).
+[`../docs/agent-runtime-package-contract.md`](../docs/agent-runtime-package-contract.md).
 Discovery exposes the required request fields, outcome status vocabulary,
 failure classifications, capability list, and metadata redaction keys so Lab
 offload and runner transport consumers can select providers without importing
 Codebox-specific request or recipe details.
+
+WordPress fuzz runtime actions use
+`homeboy/wordpress-fuzz-runtime-workload-operation/v1` descriptors. Mapping those
+actions to WP Codebox requires a public WP Codebox runtime action contract; the
+extension emits explicit blockers instead of guessing Codebox commands or ability
+names when that contract is absent. See
+[`docs/WP_CODEBOX_RUNTIME_ACTION_CONTRACTS.md`](docs/WP_CODEBOX_RUNTIME_ACTION_CONTRACTS.md).
 
 Discovery also exposes `secret_env_requirements`: generic env-name requirements
 activated by request/config selectors. Codex-backed requests declare the required
@@ -603,14 +717,20 @@ activated by request/config selectors. Codex-backed requests declare the require
 readiness before dispatch while keeping provider and runtime semantics in the
 extension and WP Codebox.
 
+Homeboy forwards those secret environment variable names only. It does not call
+provider OAuth endpoints, read local provider auth files, or persist rotated
+provider credentials. If a token is stale and the provider requires refresh,
+WP Codebox or the provider plugin needs to expose a public refresh primitive;
+without that primitive the preflight fails before sandbox launch.
+
 Provider stacks stay generic at the Homeboy boundary. Executor config, options,
 or `HOMEBOY_SETTINGS_JSON` may provide `runtime_env`, `runtime_state_mounts`,
-and `runtime_config_mounts` (or the settings names `wp_codebox_runtime_env`,
-`wp_codebox_runtime_state_mounts`, and `wp_codebox_runtime_config_mounts`). The
-executor forwards those values unchanged to the WP Codebox task input alongside
-`provider_plugin_paths`, `runtime_overlays`, `runtime_overlay_profiles`, and
-`secret_env`; provider plugins own any model/auth/config discovery inside the
-sandbox.
+and `runtime_config_mounts`. The executor forwards those values unchanged to the
+WP Codebox task input alongside `provider_plugin_paths`, `runtime_overlays`,
+`runtime_overlay_profiles`, and `secret_env`; provider plugins own any
+model/auth/config discovery inside the sandbox. The legacy
+`wp_codebox_runtime_env`, `wp_codebox_runtime_state_mounts`, and
+`wp_codebox_runtime_config_mounts` settings are still accepted for compatibility.
 
 The outcome preserves the Homeboy decision evidence needed for Codebox worker
 canaries: why the Codebox executor was selected, which capabilities were used,
@@ -640,11 +760,12 @@ Configure per-component in the component's homeboy/component config under
 | `user` | string | `""` | WP-CLI user (email/login/ID); appended as `--user` when set |
 | `wp_config_defines` | object | `{}` | `CONSTANT_NAME => value` map appended to the runtime `wp-tests-config.php`; PHP type preserved via `var_export` |
 | `bench_env` | object | `{}` | `NAME => value` env vars forwarded into the runtime (workloads/fixtures read via `getenv()`) |
-| `wp_codebox_core_module` | string | `""` | Host-side ESM module path or package specifier that exports WP Codebox recipe builders for bench recipe generation |
-| `wp_codebox_blueprint` | object | `{}` | Runtime blueprint merged into the generated WP Codebox bench recipe |
-| `wp_codebox_extra_plugins` | array | `[]` | Additional WP Codebox extra plugin entries for runtime prerequisites that are not Homeboy validation dependencies |
-| `wp_codebox_workloads` | array | `[]` | Declared bench workloads passed to `wordpress.bench` through the generated recipe after deps and component load |
-| `wp_codebox_file_mounts` | array | `[]` | Files from the component or validation dependencies mounted into explicit WordPress runtime paths |
+| `wp_codebox_core_module` | string | `""` | Legacy compatibility setting for the host-side ESM module path or package specifier that exports WP Codebox recipe builders for bench recipe generation |
+| `wp_codebox_blueprint` | object | `{}` | Legacy WP Codebox bench setting for the runtime blueprint merged into the generated recipe |
+| `wp_codebox_extra_plugins` | array | `[]` | Legacy WP Codebox bench setting for additional plugin entries that are not Homeboy validation dependencies |
+| `wp_codebox_workloads` | array | `[]` | Legacy WP Codebox bench setting for declared workloads passed to `wordpress.bench` through the generated recipe after deps and component load |
+| `wp_codebox_file_mounts` | array | `[]` | Legacy WP Codebox bench setting for files from the component or validation dependencies mounted into explicit WordPress runtime paths |
+| `fixture_profile` | object | `{}` | Product-agnostic fixture profile mapped to WP Codebox `inputs.siteSeeds` for sandbox setup before fuzz/coverage workloads run |
 | `bench_browser_target` | object | `{}` | Browser bench target descriptor (see Bench runner above) |
 
 ## Blueprint Validation
@@ -659,8 +780,8 @@ wordpress/scripts/validation/validate-playground-blueprint.sh \
 
 The script runs `wp-codebox validate-blueprint` and prints captured stdout/stderr
 on failure, including step-level Blueprint errors and PHP fatals surfaced by the
-WP Codebox Playground runtime. Set `HOMEBOY_WP_CODEBOX_BIN` to validate with a
-specific wp-codebox binary.
+WP Codebox Playground runtime. Set the legacy script-specific
+`HOMEBOY_WP_CODEBOX_BIN` override to validate with a specific wp-codebox binary.
 
 ## WP Codebox Doctor
 
@@ -672,8 +793,9 @@ wordpress/scripts/doctor/wp-codebox-doctor.sh doctor
 wordpress/scripts/doctor/wp-codebox-doctor.sh cleanup --stale-after-seconds 3600
 ```
 
-The script resolves `HOMEBOY_WP_CODEBOX_BIN` or `wp_codebox_bin` from Homeboy
-settings, then delegates to upstream `wp-codebox doctor` or `wp-codebox cleanup`.
+The script resolves `runtime_bin` first, then legacy `HOMEBOY_WP_CODEBOX_BIN` or
+`wp_codebox_bin` from Homeboy settings, before delegating to upstream
+`wp-codebox doctor` or `wp-codebox cleanup`.
 WP Codebox owns the health output, including JSON mode, binary/source checks,
 stale `recipe-run` process checks, and archive cache cleanup behavior.
 
@@ -776,6 +898,5 @@ at the root to grandfather pre-existing findings (see PHPStan above).
 ## Further reading
 
 - [`docs/TESTING.md`](docs/TESTING.md) — canonical test/lint/bench reference, debug markers, sanctioned suppressions, browser-target schema, known gaps
-- [`docs/AGENT_CI_WP_CODEBOX.md`](docs/AGENT_CI_WP_CODEBOX.md) — running Data Machine agents on the WP Codebox WordPress execution substrate
 - [`docs/PLAYGROUND_DROPIN.md`](docs/PLAYGROUND_DROPIN.md) — `db.php` coexistence with Playground SQLite
 - [`docs/CHANGELOG.md`](docs/CHANGELOG.md) — release history

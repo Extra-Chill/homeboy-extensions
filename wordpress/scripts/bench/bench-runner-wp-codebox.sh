@@ -14,6 +14,7 @@ DEPENDENCY_HELPER="${HOMEBOY_WORDPRESS_DEPENDENCY_HELPER:-${SCRIPT_DIR}/../lib/v
 BENCH_BROWSER_TARGET_HELPER="${SCRIPT_DIR}/browser-target.sh"
 WP_CODEBOX_PATHS_HELPER="${SCRIPT_DIR}/../lib/wp-codebox-paths.sh"
 BENCH_RECIPE_BUILDER="${SCRIPT_DIR}/build-wp-codebox-bench-recipe.mjs"
+BENCH_PRIMITIVE_CHECKER="${SCRIPT_DIR}/check-wp-codebox-bench-primitive.mjs"
 
 # shellcheck source=/dev/null
 source "$RESOLVE_CONTEXT_HELPER"
@@ -74,10 +75,16 @@ homeboy_wp_codebox_validate_bench_settings() {
         [
             ["bench_env", "object"],
             ["wp_config_defines", "object"],
+            ["wordpress_runtime_blueprint", "object"],
             ["wp_codebox_blueprint", "object"],
             ["playground_blueprint", "object"],
+            ["wordpress_runtime_workloads", "array"],
             ["wp_codebox_workloads", "array"],
             ["playground_workloads", "array"],
+            ["wordpress_runtime_prepare_steps", "array"],
+            ["wordpress_runtime_post_steps", "array"],
+            ["wp_codebox_recipe_prepare_steps", "array"],
+            ["wp_codebox_recipe_post_steps", "array"],
             ["wp_codebox_file_mounts", "array"],
             ["playground_file_mounts", "array"],
             ["wp_codebox_extra_plugins", "array"],
@@ -144,6 +151,26 @@ if [ -n "$WP_CODEBOX_SOURCE_ROOT" ]; then
         exit 1
     fi
 fi
+
+homeboy_wp_codebox_component_extra_plugin_json() {
+    local plugin_file="$1"
+
+    if [ -n "$WP_CODEBOX_SOURCE_ROOT" ]; then
+        jq -nc \
+            --arg source "$WP_CODEBOX_SOURCE_ROOT" \
+            --arg sourceSubpath "$WP_CODEBOX_SOURCE_SUBPATH" \
+            --arg slug "$PLUGIN_SLUG" \
+            --arg pluginFile "${PLUGIN_SLUG}/${plugin_file}" \
+            '[{source: $source, sourceRoot: $source, sourceSubpath: $sourceSubpath, slug: $slug, pluginFile: $pluginFile, activate: false}]'
+        return
+    fi
+
+    jq -nc \
+        --arg source "$WP_CODEBOX_PLUGIN_SOURCE_PATH" \
+        --arg slug "$PLUGIN_SLUG" \
+        --arg pluginFile "${PLUGIN_SLUG}/${plugin_file}" \
+        '[{source: $source, slug: $slug, pluginFile: $pluginFile, activate: false}]'
+}
 
 homeboy_wp_codebox_resolve_host_path() {
     local base_dir="$1"
@@ -454,6 +481,8 @@ homeboy_wp_codebox_workload_scenario_id() {
     local scenario_id
     if [[ "$workload_name" == *.bench.* ]]; then
         scenario_id="${workload_name%%.bench.*}"
+    elif [[ "$workload_name" == *.workload.* ]]; then
+        scenario_id="${workload_name%%.workload.*}"
     else
         scenario_id="${workload_name%.*}"
     fi
@@ -559,11 +588,18 @@ homeboy_wp_codebox_append_extra_bench_workloads_configured_json() {
         [ -n "$workload_path" ] || continue
         workload_name="$(basename "$workload_path")"
         scenario_id="$(homeboy_wp_codebox_workload_scenario_id "$workload_name")"
-        WP_CODEBOX_WORKLOADS_JSON=$(jq -nc \
-            --argjson workloads "$WP_CODEBOX_WORKLOADS_JSON" \
-            --arg id "$scenario_id" \
-            --arg file ".homeboy/bench-rig/${workload_name}" \
-            '$workloads + [{id: $id, source: "rig", overridesDiscovered: true, run: [{type: "php", file: $file}], metadata: {homeboy_bench_workload_source: "rig"}}]')
+        if [[ "$workload_name" == *.workload.json ]]; then
+            WP_CODEBOX_WORKLOADS_JSON=$(jq -nc \
+                --argjson workloads "$WP_CODEBOX_WORKLOADS_JSON" \
+                --slurpfile workload "$workload_path" \
+                '$workloads + [($workload[0] + {source: "rig", overridesDiscovered: true, metadata: (($workload[0].metadata // {}) + {homeboy_bench_workload_source: "rig"})})]')
+        else
+            WP_CODEBOX_WORKLOADS_JSON=$(jq -nc \
+                --argjson workloads "$WP_CODEBOX_WORKLOADS_JSON" \
+                --arg id "$scenario_id" \
+                --arg file ".homeboy/bench-rig/${workload_name}" \
+                '$workloads + [{id: $id, source: "rig", overridesDiscovered: true, run: [{type: "php", file: $file}], metadata: {homeboy_bench_workload_source: "rig"}}]')
+        fi
     done
 }
 
@@ -588,6 +624,52 @@ homeboy_wp_codebox_extra_workload_scenarios_json() {
             '$scenarios + [{id: $id, file: $file, source: "rig", iterations: 0, metrics: {}}]')
     done
     printf '%s\n' "$scenarios"
+}
+
+homeboy_wp_codebox_workloads_need_primitive() {
+    local primitive="$1"
+    local workloads_value="${HOMEBOY_BENCH_EXTRA_WORKLOADS:-}"
+    local workload_path workload_name
+
+    if printf '%s' "$WP_CODEBOX_WORKLOADS_JSON" | jq -e --arg primitive "$primitive" '
+        def walk(f):
+            . as $in
+            | if type == "object" then reduce keys[] as $key ({}; . + {($key): ($in[$key] | walk(f))}) | f
+              elif type == "array" then map(walk(f)) | f
+              else f
+              end;
+        walk(.) | any(.. | objects; .type? == $primitive)
+    ' >/dev/null 2>&1; then
+        return 0
+    fi
+
+    [ -n "$workloads_value" ] || return 1
+    IFS=':' read -r -a workload_paths <<< "$workloads_value"
+    for workload_path in "${workload_paths[@]}"; do
+        [ -n "$workload_path" ] || continue
+        workload_name="$(basename "$workload_path")"
+        if [[ "$workload_name" == *"$primitive"* ]]; then
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+homeboy_wp_codebox_require_bench_primitive() {
+    local primitive="$1"
+
+    if ! homeboy_wp_codebox_workloads_need_primitive "$primitive"; then
+        return 0
+    fi
+    if [ ! -f "$BENCH_PRIMITIVE_CHECKER" ]; then
+        return 0
+    fi
+
+    if ! node "$BENCH_PRIMITIVE_CHECKER" "$primitive" "$WP_CODEBOX_RESOLVED_BIN"; then
+        FAILED_STEP="WP Codebox bench primitive preflight"
+        exit 1
+    fi
 }
 
 homeboy_wp_codebox_component_workload_scenarios_json() {
@@ -829,7 +911,7 @@ homeboy_wp_codebox_filter_scoped_validation_dependencies
 
 WP_CODEBOX_WORDPRESS_VERSION=""
 if [ "$settings_json" != "{}" ]; then
-    extracted=$(printf '%s' "$settings_json" | jq -r '.wp_codebox_wordpress_version // empty' 2>/dev/null || true)
+    extracted=$(printf '%s' "$settings_json" | jq -r '.wordpress_runtime_version // .wp_codebox_wordpress_version // empty' 2>/dev/null || true)
     [ -n "$extracted" ] && [ "$extracted" != "null" ] && WP_CODEBOX_WORDPRESS_VERSION="$extracted"
 fi
 
@@ -863,6 +945,14 @@ if [ -z "$ARTIFACTS_DIR" ]; then
 fi
 mkdir -p "$ARTIFACTS_DIR"
 
+if type homeboy_export_validation_dependency_paths &>/dev/null; then
+    homeboy_export_validation_dependency_paths "$WP_CODEBOX_PLUGIN_SOURCE_PATH"
+fi
+DEPENDENCY_PATHS="${HOMEBOY_WORDPRESS_DEPENDENCY_PATHS:-}"
+if type homeboy_export_wordpress_dependencies_json &>/dev/null; then
+    homeboy_export_wordpress_dependencies_json "$DEPENDENCY_PATHS" "$ARTIFACTS_DIR"
+fi
+
 homeboy_wp_codebox_run_prepare_steps
 
 if type homeboy_preflight_declared_validation_dependency_paths &>/dev/null; then
@@ -876,12 +966,12 @@ homeboy_wp_codebox_set_command "$WP_CODEBOX_BIN"
 wp_codebox_command=("${HOMEBOY_WP_CODEBOX_COMMAND[@]}")
 WP_CODEBOX_RESOLVED_BIN="$(homeboy_wp_codebox_resolved_bin_path "$WP_CODEBOX_BIN")"
 
-if type homeboy_export_validation_dependency_paths &>/dev/null; then
-    homeboy_export_validation_dependency_paths "$WP_CODEBOX_PLUGIN_SOURCE_PATH"
-fi
-DEPENDENCY_PATHS="${HOMEBOY_WORDPRESS_DEPENDENCY_PATHS:-}"
 if [ -n "$DEPENDENCY_PATHS" ] && type homeboy_prepare_validation_dependency_paths_for_wp_codebox_bench &>/dev/null; then
     DEPENDENCY_PATHS=$(homeboy_prepare_validation_dependency_paths_for_wp_codebox_bench "$DEPENDENCY_PATHS" "$ARTIFACTS_DIR")
+    export HOMEBOY_WORDPRESS_DEPENDENCY_PATHS="$DEPENDENCY_PATHS"
+fi
+if type homeboy_export_wordpress_dependencies_json &>/dev/null; then
+    homeboy_export_wordpress_dependencies_json "$DEPENDENCY_PATHS" "$ARTIFACTS_DIR"
 fi
 if [ -n "$DEPENDENCY_PATHS" ] && type homeboy_preflight_wordpress_dependency_plugins &>/dev/null; then
     if ! homeboy_preflight_wordpress_dependency_plugins "$DEPENDENCY_PATHS" "$ARTIFACTS_DIR" "bench"; then
@@ -893,18 +983,23 @@ fi
 WP_CONFIG_DEFINES_JSON="{}"
 BENCH_ENV_JSON="{}"
 WP_CODEBOX_WORKLOADS_JSON="[]"
+WP_CODEBOX_RECIPE_PREPARE_STEPS_JSON="[]"
+WP_CODEBOX_RECIPE_POST_STEPS_JSON="[]"
 if [ "$settings_json" != "{}" ]; then
     WP_CONFIG_DEFINES_JSON=$(printf '%s' "$settings_json" | jq -c '.wp_config_defines // {}' 2>/dev/null || echo "{}")
     BENCH_ENV_JSON=$(printf '%s' "$settings_json" | jq -c '.bench_env // {}' 2>/dev/null || echo "{}")
-    WP_CODEBOX_WORKLOADS_JSON=$(printf '%s' "$settings_json" | jq -c '.wp_codebox_workloads // .playground_workloads // []' 2>/dev/null || echo "[]")
+    WP_CODEBOX_WORKLOADS_JSON=$(printf '%s' "$settings_json" | jq -c '.wordpress_runtime_workloads // .wp_codebox_workloads // .playground_workloads // []' 2>/dev/null || echo "[]")
+    WP_CODEBOX_RECIPE_PREPARE_STEPS_JSON=$(printf '%s' "$settings_json" | jq -c '.wordpress_runtime_prepare_steps // .wp_codebox_recipe_prepare_steps // []' 2>/dev/null || echo "[]")
+    WP_CODEBOX_RECIPE_POST_STEPS_JSON=$(printf '%s' "$settings_json" | jq -c '.wordpress_runtime_post_steps // .wp_codebox_recipe_post_steps // []' 2>/dev/null || echo "[]")
 fi
 WP_CODEBOX_WORKLOADS_JSON=$(jq -nc --argjson declared "$WP_CODEBOX_WORKLOADS_JSON" --argjson scenarios "$SCENARIO_MANIFEST_WORKLOADS_JSON" '$declared + $scenarios')
 homeboy_wp_codebox_append_extra_bench_workloads_configured_json
+homeboy_wp_codebox_require_bench_primitive "external-http-guardrail"
 
 MOUNTS_JSON="[]"
 COMPONENT_PLUGIN_FILE="$(homeboy_wp_codebox_find_plugin_file "$WP_CODEBOX_PLUGIN_SOURCE_PATH" || true)"
 if [ -n "$COMPONENT_PLUGIN_FILE" ]; then
-    EXTRA_PLUGINS_JSON=$(jq -nc --arg source "$WP_CODEBOX_PLUGIN_SOURCE_PATH" --arg slug "$PLUGIN_SLUG" --arg pluginFile "${PLUGIN_SLUG}/${COMPONENT_PLUGIN_FILE}" '[{source: $source, slug: $slug, pluginFile: $pluginFile, activate: false}]')
+    EXTRA_PLUGINS_JSON=$(homeboy_wp_codebox_component_extra_plugin_json "$COMPONENT_PLUGIN_FILE")
 else
     EXTRA_PLUGINS_JSON="[]"
     MOUNTS_JSON=$(jq -nc --arg source "$WP_CODEBOX_PLUGIN_SOURCE_PATH" --arg target "/wordpress/wp-content/plugins/${PLUGIN_SLUG}" '[{source: $source, target: $target, mode: "readonly"}]')
@@ -914,7 +1009,13 @@ DEPENDENCY_SLUGS=()
 if [ -n "$DEPENDENCY_PATHS" ]; then
     while IFS= read -r dep_path; do
         [ -n "$dep_path" ] || continue
-        dep_slug="$(homeboy_get_validation_dependency_slug "$dep_path" || basename "$dep_path")"
+        dep_slug=""
+        dep_slug_from_metadata=0
+        if type homeboy_get_prepared_validation_dependency_slug &>/dev/null; then
+            dep_slug="$(homeboy_get_prepared_validation_dependency_slug "$dep_path" "$ARTIFACTS_DIR" || true)"
+            [ -n "$dep_slug" ] && dep_slug_from_metadata=1
+        fi
+        [ -n "$dep_slug" ] || dep_slug="$(homeboy_get_validation_dependency_slug "$dep_path" || basename "$dep_path")"
         dep_plugin_file=""
         dep_plugin_relative_file=""
         dep_plugin_source="$dep_path"
@@ -924,7 +1025,7 @@ if [ -n "$DEPENDENCY_PATHS" ]; then
         if [ -n "$dep_plugin_file" ]; then
             dep_plugin_relative_file="${dep_plugin_file#"${dep_path%/}/"}"
             dep_plugin_basename="$(basename "$dep_plugin_file" .php)"
-            if [ -n "$dep_plugin_basename" ] && { [ "$dep_plugin_basename" != "$dep_slug" ] || [[ "$dep_plugin_relative_file" == packages/wordpress-plugin/* ]]; }; then
+            if [ "$dep_slug_from_metadata" -eq 0 ] && [ -n "$dep_plugin_basename" ] && { [ "$dep_plugin_basename" != "$dep_slug" ] || [[ "$dep_plugin_relative_file" == packages/wordpress-plugin/* ]]; }; then
                 dep_slug="$dep_plugin_basename"
             fi
             if [[ "$dep_plugin_relative_file" == packages/wordpress-plugin/* ]]; then
@@ -1063,7 +1164,7 @@ fi
 
 WP_CODEBOX_BLUEPRINT_JSON="{}"
 if [ "$settings_json" != "{}" ]; then
-    WP_CODEBOX_BLUEPRINT_JSON=$(printf '%s' "$settings_json" | jq -c '.wp_codebox_blueprint // .playground_blueprint // {}' 2>/dev/null || echo "{}")
+    WP_CODEBOX_BLUEPRINT_JSON=$(printf '%s' "$settings_json" | jq -c '.wordpress_runtime_blueprint // .wp_codebox_blueprint // .playground_blueprint // {}' 2>/dev/null || echo "{}")
 fi
 RUNTIME_BLUEPRINT_JSON=$(jq -nc \
     --argjson base "$WP_CODEBOX_BLUEPRINT_JSON" \
@@ -1077,6 +1178,10 @@ if [ -n "$WP_CODEBOX_PHP_MEMORY_LIMIT" ]; then
 fi
 if printf '%s' "$WP_CODEBOX_BOOTSTRAP_STEPS_JSON" | jq -e 'type == "array" and length > 0' >/dev/null 2>&1; then
     WP_CODEBOX_PLUGIN_RUNTIME_JSON=$(jq -nc --argjson runtime "$WP_CODEBOX_PLUGIN_RUNTIME_JSON" --argjson setup "$WP_CODEBOX_BOOTSTRAP_STEPS_JSON" '$runtime + {setup: $setup}')
+fi
+WP_CODEBOX_COMMAND_DIAGNOSTICS_JSON="null"
+if [ "$settings_json" != "{}" ]; then
+    WP_CODEBOX_COMMAND_DIAGNOSTICS_JSON=$(printf '%s' "$settings_json" | jq -c '.wp_codebox_command_diagnostics // .command_diagnostics // .diagnostics_capture // .diagnosticsCapture // null' 2>/dev/null || echo "null")
 fi
 
 homeboy_wp_codebox_emit_memory_fatal_diagnostic() {
@@ -1147,6 +1252,139 @@ homeboy_wp_codebox_emit_memory_fatal_diagnostic() {
     echo "  Raw output: $output_artifact" >&2
 }
 
+homeboy_wp_codebox_persist_child_bench_results() {
+    local output_file="$1"
+
+    if ! jq -e '(.benchResults | type) == "object"' "$output_file" >/dev/null 2>&1; then
+        return 1
+    fi
+
+    mkdir -p "$(dirname "$RESULTS_FILE")"
+    jq '.benchResults | del(.warmup_iterations)' "$output_file" > "$RESULTS_FILE"
+}
+
+homeboy_wp_codebox_attach_failure_artifacts_to_results() {
+    local diagnostics_file="$1"
+    local output_artifact="$2"
+    local exit_artifact="$3"
+    local enriched_results_file
+
+    [ -s "$RESULTS_FILE" ] || return 0
+    if ! jq -e '(.scenarios | type) == "array" and (.scenarios | length) > 0' "$RESULTS_FILE" >/dev/null 2>&1; then
+        return 0
+    fi
+
+    enriched_results_file=$(mktemp "${TMPDIR:-/tmp}/homeboy-wp-codebox-failure-artifacts.XXXXXX")
+    if jq \
+        --arg diagnosticsFile "$diagnostics_file" \
+        --arg outputArtifact "$output_artifact" \
+        --arg exitArtifact "$exit_artifact" \
+        '.scenarios[0].artifacts = ((.scenarios[0].artifacts // {}) + {
+            wp_codebox_run_diagnostics: {
+                path: $diagnosticsFile,
+                kind: "wp-codebox-bench-run-diagnostics",
+                label: "WP Codebox bench run diagnostics"
+            },
+            wp_codebox_raw_output: {
+                path: $outputArtifact,
+                kind: "wp-codebox-output",
+                label: "WP Codebox raw output"
+            },
+            wp_codebox_exit_code: {
+                path: $exitArtifact,
+                kind: "wp-codebox-exit-code",
+                label: "WP Codebox exit code"
+            }
+        })' "$RESULTS_FILE" > "$enriched_results_file"; then
+        mv "$enriched_results_file" "$RESULTS_FILE"
+    else
+        rm -f "$enriched_results_file"
+        echo "Warning: failed to attach WP Codebox failure artifacts to preserved bench results." >&2
+    fi
+}
+
+homeboy_wp_codebox_emit_run_failure_diagnostic() {
+    local output_file="$1"
+    local exit_code="$2"
+    local phase="$3"
+    local message="$4"
+    local persisted_results="$5"
+    local diagnostics_file="${ARTIFACTS_DIR}/wp-codebox-bench-run-diagnostics.json"
+    local output_artifact="${ARTIFACTS_DIR}/wp-codebox-output.txt"
+    local exit_artifact="${ARTIFACTS_DIR}/wp-codebox-exit-code.txt"
+    local response_json="{}"
+    local response_status=""
+    local failure_classification=""
+    local failure_message=""
+
+    mkdir -p "$ARTIFACTS_DIR"
+    cp "$output_file" "$output_artifact"
+    printf '%s\n' "$exit_code" > "$exit_artifact"
+
+    if jq -e 'type == "object"' "$output_file" >/dev/null 2>&1; then
+        response_json=$(jq -c '{success, status, failure_classification, failureClassification, error, message, summary, diagnostics, benchResults: (if (.benchResults | type) == "object" then {component_id: .benchResults.component_id, iterations: .benchResults.iterations, scenario_count: ((.benchResults.scenarios // []) | length)} else null end)}' "$output_file")
+        response_status=$(jq -r '.status // empty' "$output_file")
+        failure_classification=$(jq -r '.failure_classification // .failureClassification // empty' "$output_file")
+        failure_message=$(jq -r '[
+            (if (.error | type) == "object" then .error.message elif (.error | type) == "string" then .error else empty end),
+            .message,
+            .summary
+        ] | map(select(type == "string" and . != "")) | first // ""' "$output_file")
+    fi
+
+    jq -n \
+        --arg schema "homeboy/wordpress-bench-diagnostic/v1" \
+        --arg code "wp-codebox-bench-run-failed" \
+        --arg phase "$phase" \
+        --arg message "$message" \
+        --argjson exitCode "$exit_code" \
+        --arg status "$response_status" \
+        --arg failureClassification "$failure_classification" \
+        --arg failureMessage "$failure_message" \
+        --argjson persistedResults "$persisted_results" \
+        --arg resultsFile "$RESULTS_FILE" \
+        --arg artifactsDir "$ARTIFACTS_DIR" \
+        --arg outputArtifact "$output_artifact" \
+        --arg exitArtifact "$exit_artifact" \
+        --argjson response "$response_json" \
+        '{
+            schema: $schema,
+            diagnostics: [{
+                code: $code,
+                severity: "error",
+                phase: $phase,
+                message: $message,
+                exit_code: $exitCode,
+                status: (if $status == "" then null else $status end),
+                failure_classification: (if $failureClassification == "" then null else $failureClassification end),
+                failure_message: (if $failureMessage == "" then null else $failureMessage end),
+                persisted_child_bench_results: $persistedResults,
+                results_file: (if $persistedResults then $resultsFile else null end),
+                response: $response,
+                artifacts: {
+                    directory: $artifactsDir,
+                    output: $outputArtifact,
+                    exit_code: $exitArtifact
+                }
+            }]
+        }' > "$diagnostics_file"
+
+    if [ "$persisted_results" = "true" ]; then
+        homeboy_wp_codebox_attach_failure_artifacts_to_results "$diagnostics_file" "$output_artifact" "$exit_artifact"
+        homeboy_wordpress_emit_bench_results_artifacts "$RESULTS_FILE" || true
+    fi
+
+    echo "$message" >&2
+    [ -z "$failure_classification" ] || echo "  Failure classification: $failure_classification" >&2
+    [ -z "$failure_message" ] || echo "  Failure message: $failure_message" >&2
+    echo "  Exit code: $exit_code" >&2
+    if [ "$persisted_results" = "true" ]; then
+        echo "  Preserved child bench results: $RESULTS_FILE" >&2
+    fi
+    echo "  Diagnostics: $diagnostics_file" >&2
+    echo "  Raw output: $output_artifact" >&2
+}
+
 homeboy_wp_codebox_emit_dependency_provenance() {
     local provenance_file="${ARTIFACTS_DIR%/}/bench-dependency-provenance.json"
     local declared_dependency_paths_json
@@ -1160,6 +1398,7 @@ homeboy_wp_codebox_emit_dependency_provenance() {
         --arg wpCodeboxBin "$WP_CODEBOX_RESOLVED_BIN" \
         --arg artifactsDir "$ARTIFACTS_DIR" \
         --argjson declaredDependencyPaths "$declared_dependency_paths_json" \
+        --argjson wordpressDependencies "${HOMEBOY_WORDPRESS_DEPENDENCIES_JSON:-[]}" \
         --argjson dependencySlugs "$(printf '%s\n' "$DEPENDENCY_SLUGS_CSV" | jq -R 'split(",") | map(select(. != ""))')" \
         --argjson extraPlugins "$EXTRA_PLUGINS_JSON" \
         --argjson mounts "$MOUNTS_JSON" \
@@ -1175,6 +1414,7 @@ homeboy_wp_codebox_emit_dependency_provenance() {
             artifacts_dir: $artifactsDir,
             dependency_slugs: $dependencySlugs,
             declared_dependency_paths: $declaredDependencyPaths,
+            wordpress_dependencies: $wordpressDependencies,
             plugin_source_path: $pluginSourcePath,
             source_root: (if $sourceRoot == "" then null else $sourceRoot end),
             source_subpath: (if $sourceSubpath == "" then null else $sourceSubpath end),
@@ -1184,7 +1424,9 @@ homeboy_wp_codebox_emit_dependency_provenance() {
                 keys: ($settings | keys | sort),
                 has_bench_env: (($settings.bench_env // null) != null),
                 has_wp_config_defines: (($settings.wp_config_defines // null) != null),
-                has_configured_workloads: ((($settings.wp_codebox_workloads // $settings.playground_workloads // []) | length) > 0),
+                has_configured_workloads: ((($settings.wordpress_runtime_workloads // $settings.wp_codebox_workloads // $settings.playground_workloads // []) | length) > 0),
+                has_recipe_prepare_steps: ((($settings.wordpress_runtime_prepare_steps // $settings.wp_codebox_recipe_prepare_steps // []) | length) > 0),
+                has_recipe_post_steps: ((($settings.wordpress_runtime_post_steps // $settings.wp_codebox_recipe_post_steps // []) | length) > 0),
                 has_scenario_manifests: ((($settings.wp_codebox_scenario_manifests // $settings.scenario_manifests // []) | length) > 0)
             }
         }' > "$provenance_file"
@@ -1207,8 +1449,11 @@ jq -n \
     --argjson dependencySlugs "$(printf '%s\n' "$DEPENDENCY_SLUGS_CSV" | jq -R 'split(",") | map(select(. != ""))')" \
     --argjson bootstrapFiles "$WP_CODEBOX_BOOTSTRAP_FILES_JSON" \
     --argjson workloads "$WP_CODEBOX_WORKLOADS_JSON" \
+    --argjson prepareSteps "$WP_CODEBOX_RECIPE_PREPARE_STEPS_JSON" \
+    --argjson postSteps "$WP_CODEBOX_RECIPE_POST_STEPS_JSON" \
     --argjson pluginRuntime "$WP_CODEBOX_PLUGIN_RUNTIME_JSON" \
-    '{
+    --argjson diagnostics "$WP_CODEBOX_COMMAND_DIAGNOSTICS_JSON" \
+    '({
         wpCodeboxBin: $wpCodeboxBin,
         options: ({
             blueprint: $blueprint,
@@ -1223,9 +1468,11 @@ jq -n \
             wpConfigDefines: $wpConfigDefines,
             pluginRuntime: $pluginRuntime,
             bootstrapFiles: $bootstrapFiles,
-            workloads: $workloads
+            workloads: $workloads,
+            prepareSteps: $prepareSteps,
+            postSteps: $postSteps
         } + (if $wp == "" then {} else {wordpressVersion: $wp} end))
-    }' | node "$BENCH_RECIPE_BUILDER" > "$RECIPE_FILE"
+    } | .options += (if $diagnostics == null then {} else {diagnosticsCapture: $diagnostics} end))' | node "$BENCH_RECIPE_BUILDER" > "$RECIPE_FILE"
 
 WP_CODEBOX_TMPFILE=$(mktemp "${ARTIFACTS_DIR}/homeboy-wp-codebox-output.XXXXXX")
 set +e
@@ -1247,12 +1494,22 @@ if [ $wp_codebox_exit -ne 0 ]; then
     if fatal_line=$(grep -E '^(PHP Fatal error: |Fatal error: )?Allowed memory size of [0-9]+ bytes exhausted|^(PHP Fatal error: |Fatal error: ).*Allowed memory size of [0-9]+ bytes exhausted' "$WP_CODEBOX_TMPFILE" | head -1); then
         homeboy_wp_codebox_emit_memory_fatal_diagnostic "$WP_CODEBOX_TMPFILE" "$wp_codebox_exit" "$fatal_line"
     fi
+    persisted_results=false
+    if homeboy_wp_codebox_persist_child_bench_results "$WP_CODEBOX_TMPFILE"; then
+        persisted_results=true
+    fi
+    homeboy_wp_codebox_emit_run_failure_diagnostic "$WP_CODEBOX_TMPFILE" "$wp_codebox_exit" "run" "WP Codebox wordpress.bench failed before reporting success." "$persisted_results"
     FAILED_STEP="WP Codebox bench run"
     exit $wp_codebox_exit
 fi
 
 if ! jq -e '.success == true and (.benchResults | type == "object")' "$WP_CODEBOX_TMPFILE" >/dev/null 2>&1; then
     cat "$WP_CODEBOX_TMPFILE" >&2
+    persisted_results=false
+    if homeboy_wp_codebox_persist_child_bench_results "$WP_CODEBOX_TMPFILE"; then
+        persisted_results=true
+    fi
+    homeboy_wp_codebox_emit_run_failure_diagnostic "$WP_CODEBOX_TMPFILE" "1" "results-parse" "WP Codebox wordpress.bench did not return a successful bench result envelope." "$persisted_results"
     FAILED_STEP="WP Codebox bench results parse"
     exit 1
 fi
@@ -1264,7 +1521,8 @@ PREPARED_DEPENDENCIES_METADATA_FILE="${ARTIFACTS_DIR%/}/prepared-bench-dependenc
 if [ -f "$PREPARED_DEPENDENCIES_METADATA_FILE" ]; then
     PREPARED_RESULTS_FILE=$(mktemp "${TMPDIR:-/tmp}/homeboy-wp-codebox-prepared-dependencies.XXXXXX")
     if jq --slurpfile preparedDependencies "$PREPARED_DEPENDENCIES_METADATA_FILE" \
-        '. + {metadata: ((.metadata // {}) + {prepared_dependencies: ($preparedDependencies[0] // [])})}' \
+        --argjson wordpressDependencies "${HOMEBOY_WORDPRESS_DEPENDENCIES_JSON:-[]}" \
+        '. + {metadata: ((.metadata // {}) + {prepared_dependencies: ($preparedDependencies[0] // []), wordpress_dependencies: $wordpressDependencies})}' \
         "$RESULTS_FILE" > "$PREPARED_RESULTS_FILE"; then
         mv "$PREPARED_RESULTS_FILE" "$RESULTS_FILE"
     else

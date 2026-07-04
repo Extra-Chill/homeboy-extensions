@@ -6,8 +6,11 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
+const fixtureCodeboxCoreModule = path.join(__dirname, 'fixtures', 'wp-codebox-core-agent-task-normalizer.mjs');
+process.env.HOMEBOY_WP_CODEBOX_CORE_MODULE ||= fixtureCodeboxCoreModule;
+
 const {
-  agentTaskOutcomeFromCodeboxResult,
+  agentTaskOutcomeFromCodeboxResult: rawAgentTaskOutcomeFromCodeboxResult,
   codeboxTaskRequestFromAgentTaskRequest,
   missingRequiredSecretEnvMapping,
   missingRequiredSecretEnvValues,
@@ -15,17 +18,14 @@ const {
   providerPreflightManifest,
   providerRequiredSecretEnv,
   providerSecretEnv,
+  runtimeOverlayReadinessDiagnostics,
 } = require('../../agent-runtimes/wp-codebox');
-const {
-  datamachineAgentCiCodeboxExecutorConfig,
-} = require('../lib/datamachine-agent-ci-codebox-adapter');
 const {
   AGENT_TASK_FAILURE_CLASSIFICATIONS,
   AGENT_TASK_OUTCOME_STATUSES,
   AGENT_TASK_REDACTED_METADATA_KEYS,
-} = require('../../agent-runtimes/lib/agent-task-provider-contract');
+} = require('../../agent-task-contracts');
 
-const fixtureCodeboxCoreModule = path.join(__dirname, 'fixtures', 'wp-codebox-core-agent-task-normalizer.mjs');
 const wpCodeboxRuntimeRoot = path.join(__dirname, '..', '..', 'agent-runtimes', 'wp-codebox');
 const wpCodeboxRuntimeExecutor = path.join(wpCodeboxRuntimeRoot, 'scripts', 'agent', 'homeboy-codebox-agent-task-executor.cjs');
 const codexSecretEnv = [
@@ -42,11 +42,32 @@ const claudeCodeSecretEnv = [
 ];
 const claudeCodeRefreshTokenEnv = 'AI_PROVIDER_CLAUDE_CODE_REFRESH_TOKEN';
 const repoLoopCapabilities = [
-  'tool:datamachine/run-agent-bundle',
+  'tool:example/run-agent-bundle',
   'tool:github_pull_request_publish',
-  'ability:datamachine/run-agent-bundle',
+  'ability:example/run-agent-bundle',
   'ability:github_pull_request_publish',
 ];
+
+function agentTaskOutcomeFromCodeboxResult(request, result = {}, options = {}) {
+  return rawAgentTaskOutcomeFromCodeboxResult(request, result, options);
+}
+
+function exampleAgentCiCodeboxExecutorConfig(config = {}) {
+  const profileId = 'example-agent-ci';
+  return {
+    ...config,
+    runtime_profile: config.runtime_profile || profileId,
+    runtime_profiles: {
+      ...(config.runtime_profiles || {}),
+      [profileId]: {
+        id: profileId,
+        runtime_task_ability: 'example/run-agent-bundle',
+        runtime_bundle_ability: 'example/run-agent-bundle',
+        ability_requirements: ['example/run-agent-bundle'],
+      },
+    },
+  };
+}
 
 function secretEnvRequirementForProvider(contract, provider) {
   return contract.secret_env_requirements.find((requirement) => (
@@ -55,11 +76,15 @@ function secretEnvRequirementForProvider(contract, provider) {
 }
 
 function fixtureEnv(overrides = {}) {
-  const env = { ...process.env, ...overrides };
-  if (!Object.hasOwn(overrides, 'HOMEBOY_WP_CODEBOX_CORE_MODULE')) {
-    delete env.HOMEBOY_WP_CODEBOX_CORE_MODULE;
-  }
-  return env;
+  return {
+    ...process.env,
+    HOMEBOY_WP_CODEBOX_CORE_MODULE: fixtureCodeboxCoreModule,
+    ...overrides,
+  };
+}
+
+function diagnosticByClass(outcome, diagnosticClass) {
+  return (outcome.diagnostics || []).find((diagnostic) => diagnostic.class === diagnosticClass) || {};
 }
 
 function writeFixtureTaskRunner(root) {
@@ -79,18 +104,29 @@ process.stdout.write(JSON.stringify({
   success: true,
   status: 'completed',
   summary: 'Sandbox completed.',
-  artifacts: [{ id: 'artifact-1', kind: 'screenshot', path: '/artifacts/screenshot.png' }],
-  evidence_refs: [{ kind: 'preview', uri: 'https://example.test/preview', label: 'Preview' }],
-  run: {
+	artifact_result: {
+		schema: 'wp-codebox/artifact-result-envelope/v1',
+		status: 'created',
+		metadata: { changed_files_count: 2, patch_bytes: 123, patch_sha256: 'fixture-patch-sha' },
+		typed_artifacts: [
+			{
+				name: 'fixture_report',
+        type: 'FixtureReport',
+        artifact_schema: 'example/fixture-report/v1',
+        payload: { ok: true }
+			}
+		],
+		artifact_refs: [{ id: 'artifact-1', kind: 'screenshot', path: '/artifacts/screenshot.png' }],
+		evidence_refs: [{ kind: 'preview', uri: 'https://example.test/preview', label: 'Preview' }],
+	},
+	run: {
     runId: 'fixture-run-1',
     status: 'succeeded',
     runtime: { id: 'fixture-runtime-1', status: 'destroyed' },
-    agentResult: {
-      changedFiles: { count: 2 },
-      patch: { bytes: 123, sha256: 'fixture-patch-sha' }
-    }
   },
   recipe_run: {
+    success: true,
+    status: 'completed',
     pack: 'fixture-recipes',
     name: 'fixture-recipe',
     probe: { success: true }
@@ -111,9 +147,12 @@ process.stdout.write(JSON.stringify({
   schema: 'wp-codebox/agent-task-run/v1',
   status: 'completed',
   summary: 'Semantic output was produced before provider exit failure.',
-  outputs: { issue_url: 'https://github.com/example/repo/issues/456' },
-  artifacts: [{ id: 'semantic-artifact', kind: 'codebox-patch', path: '/tmp/semantic.patch' }],
-  session: { id: 'sandbox-session-failed-exit', status: 'completed' }
+  artifact_result: {
+    schema: 'wp-codebox/artifact-result-envelope/v1',
+    status: 'created',
+    artifact_refs: [{ id: 'semantic-artifact', kind: 'codebox-patch', path: '/tmp/semantic.patch' }],
+    result: { outputs: { issue_url: 'https://github.com/example/repo/issues/456' } },
+  }
 }));
 process.exit(7);
 `);
@@ -179,8 +218,11 @@ if (process.env.FIXTURE_WP_CODEBOX_AGENT_TASK_FAILURE) {
     schema: 'wp-codebox/agent-task-run/v1',
     status: 'failed',
     summary: 'WP Codebox agent task failed.',
-    session: { id: input.sandbox_session_id, status: 'failed' },
-    artifacts: input.artifacts_path,
+    artifact_result: {
+      schema: 'wp-codebox/artifact-result-envelope/v1',
+      status: 'failed',
+      artifact_bundle_refs: [{ id: 'fake-artifact-bundle', kind: 'codebox-artifact-bundle', path: input.artifacts_path }]
+    },
     metadata: {}
   }));
   process.exit(0);
@@ -189,37 +231,21 @@ process.stdout.write(JSON.stringify({
   success: true,
   schema: 'wp-codebox/agent-task-run/v1',
   status: 'completed',
-  session: {
-    schema: 'wp-codebox/sandbox-session/v1',
-    id: input.sandbox_session_id,
-    status: 'completed',
-    artifacts: { bundle_id: 'fake-artifact-bundle', path: input.artifacts_path, preview_url: 'https://preview.example.test/fake' },
-    orchestrator: input.orchestrator
-  },
   task_input: input,
-  artifacts: input.artifacts_path,
-  agent_result: {
-    scenarios: [{
-      id: 'agent-bundle',
+  artifact_result: {
+    schema: 'wp-codebox/artifact-result-envelope/v1',
+    status: 'created',
+    artifact_bundle_refs: [{ id: 'fake-artifact-bundle', kind: 'codebox-artifact-bundle', path: input.artifacts_path }],
+    artifact_refs: [
+      { kind: 'agent-runtime-transcript', path: input.artifacts_path + '/transcript.json' },
+      { kind: 'agent-runtime-replay-bundle', path: input.artifacts_path + '/replay-bundle' },
+      { kind: 'agent-runtime-pull-request', url: 'https://github.com/example-org/example-repo/pull/123' }
+    ],
+    evidence_refs: [{ kind: 'agent-runtime-pull-request', uri: 'https://github.com/example-org/example-repo/pull/123' }],
+    result: {
+      outputs: { example_pr_url: 'https://github.com/example-org/example-repo/pull/123' },
       metadata: {
-        transcript_artifacts: { json: input.artifacts_path + '/transcript.json' },
-        replay_bundle_path: input.artifacts_path + '/replay-bundle',
-        engine_data: { static_site_agent: { pr_url: 'https://github.com/chubes4/wp-site-generator/pull/123' } }
-      }
-    }]
-  },
-  metadata: {
-    agent_runtime: {
-      bundle: input.agent_bundle,
-      workload: {
-        scenarios: [{
-          id: 'agent-bundle',
-          metadata: {
-            transcript_artifacts: { json: input.artifacts_path + '/transcript.json' },
-            replay_bundle_path: input.artifacts_path + '/replay-bundle',
-            engine_data: { static_site_agent: { pr_url: 'https://github.com/chubes4/wp-site-generator/pull/123' } }
-          }
-        }]
+        engine_data: { example_agent: { pr_url: 'https://github.com/example-org/example-repo/pull/123' } }
       }
     }
   }
@@ -230,31 +256,23 @@ process.stdout.write(JSON.stringify({
 }
 
 function writeBundleFixture(root) {
-  const bundle = path.join(root, 'static-site-agent');
+  const bundle = path.join(root, 'example-agent');
   fs.mkdirSync(bundle, { recursive: true });
   fs.writeFileSync(path.join(bundle, 'manifest.json'), '{}\n');
   return bundle;
 }
 
-function writeTimeoutArtifacts(artifactRoot, taskId) {
-  const bundleRoot = path.join(artifactRoot, `artifact-${taskId}`);
-  const filesRoot = path.join(bundleRoot, 'files');
-  fs.mkdirSync(filesRoot, { recursive: true });
-  fs.writeFileSync(path.join(bundleRoot, 'manifest.json'), JSON.stringify({
-    schema: 'wp-codebox/artifact-manifest/v1',
-    phase: 'agent.inspecting-runtime',
-  }));
-  fs.writeFileSync(path.join(filesRoot, 'runtime-reference-manifest.json'), JSON.stringify({
-    schema: 'wp-codebox/runtime-reference-manifest/v1',
-    runtime: { id: `runtime-${taskId}` },
-  }));
-  fs.writeFileSync(path.join(filesRoot, 'command.log'), 'ran wp-codebox.agent-sandbox-run\n');
-  fs.writeFileSync(path.join(filesRoot, 'agent-transcript.jsonl'), '{"role":"assistant","content":"partial transcript"}\n');
-  fs.writeFileSync(path.join(filesRoot, 'heartbeat.json'), JSON.stringify({
-    phase: 'agent.inspecting-runtime',
-    heartbeat: { at: '2026-06-01T00:00:00.000Z', turn: 3 },
-  }));
-  return bundleRoot;
+function writePhpAiClientOverlay(root, options = {}) {
+  const overlay = path.join(root, options.name || 'php-ai-client-overlay');
+  const dtoDir = path.join(overlay, 'src', 'Providers', 'DTO');
+  fs.mkdirSync(path.join(overlay, 'vendor'), { recursive: true });
+  fs.mkdirSync(dtoDir, { recursive: true });
+  fs.writeFileSync(path.join(overlay, 'composer.json'), '{}\n');
+  fs.writeFileSync(path.join(overlay, 'vendor', 'autoload.php'), '<?php\n');
+  fs.writeFileSync(path.join(dtoDir, 'ProviderMetadata.php'), options.withoutDescription
+    ? '<?php\nclass ProviderMetadata {}\n'
+    : '<?php\nclass ProviderMetadata { public function getDescription(): ?string { return null; } }\n');
+  return overlay;
 }
 
 const request = {
@@ -262,7 +280,7 @@ const request = {
   task_id: 'task-123',
   group_key: 'visual-evidence',
   executor: {
-    backend: 'codebox',
+    backend: 'wp-codebox',
     model: 'gpt-5.5',
     config: {
       provider: 'openai',
@@ -329,7 +347,7 @@ const codexSecretEnvSources = {
 };
 assert.equal(provider.id, 'wordpress.codebox-agent-task-executor');
 assert.equal(provider.label, 'WP Codebox agent task executor');
-assert.equal(provider.backend, 'codebox');
+assert.equal(provider.backend, 'wp-codebox');
 assert.equal(provider.command, 'node {{runtime_path}}/scripts/agent/homeboy-codebox-agent-task-executor.cjs');
 assert.equal(provider.request_schema, 'homeboy/agent-task-request/v1');
 assert.equal(provider.outcome_schema, 'homeboy/agent-task-outcome/v1');
@@ -391,6 +409,21 @@ assert.equal(providerPreflightManifest('codex').provider_plugin_validation.diagn
 assert.deepEqual(missingRequiredSecretEnvMapping({ secret_env: codexSecretEnv.slice(0, 3) }, 'codex'), ['AI_PROVIDER_OPENAI_CODEX_ACCOUNT_ID']);
 assert.deepEqual(missingRequiredSecretEnvValues('claude-code', {}), [claudeCodeRefreshTokenEnv]);
 assert.deepEqual(provider.role_aliases, {
+  artifact_roles: {
+    artifact_bundle: ['codebox-artifact-bundle', 'artifact-bundle', 'codebox-artifact-directory', 'codebox-session-artifacts'],
+    changed_files: ['codebox-changed-files'],
+    patch: ['codebox-patch'],
+    transcript: ['codebox-transcript', 'agent-runtime-transcript', 'agent-runtime-transcript-summary'],
+    runtime_log: ['codebox-runtime-log', 'codebox-recipe-startup-log'],
+    command_log: ['codebox-command-log'],
+    typed_artifact: ['typed-bundle-output'],
+    replay_bundle: ['agent-runtime-replay-bundle'],
+    pull_request: ['agent-runtime-pull-request'],
+    probe_result: ['codebox-recipe-probe-json', 'recipe-probe-result'],
+    screenshot: ['codebox-recipe-screenshot'],
+    side_effects: ['codebox-recipe-fake-side-effects'],
+    preflight_evidence: ['codebox-command-evidence', 'codebox-agent-task-input'],
+  },
   artifact_kinds: {
     patch: ['codebox-patch'],
   },
@@ -410,10 +443,16 @@ assert.equal(provider.capabilities.includes('browser_runtime'), true);
 assert.equal(provider.capabilities.includes('workspace_tools'), true);
 assert.equal(provider.capabilities.includes('patch_artifacts'), true);
 assert.equal(provider.capabilities.includes('cleanup_observability'), true);
+assert.equal(provider.capabilities.includes('ability_execution'), true);
 assert.equal(provider.capabilities.includes('agent_bundle_execution'), true);
+assert.equal(provider.capabilities.includes('workflow_execution'), true);
 assert.equal(provider.capabilities.includes('typed_bundle_outputs'), true);
 assert.equal(provider.capabilities.includes('external_recipe_packs'), true);
 assert.equal(provider.capabilities.includes('recipe_probe_artifacts'), true);
+assert.deepEqual(provider.runtime_execution_contracts.bundle, {
+  ability_field: 'runtime_bundle_ability',
+  required_capabilities: ['agent_bundle_execution'],
+});
 for (const capability of repoLoopCapabilities) {
   assert.equal(provider.capabilities.includes(capability), false);
 }
@@ -431,7 +470,7 @@ for (const capability of repoLoopCapabilities) {
 }
 assert.equal(provider.capabilities.includes('tool:wpsg_materialize_packet'), false);
 assert.equal(provider.capabilities.includes('ability:wpsg_materialize_packet'), false);
-assert.deepEqual(provider.runtime_gap_trackers, []);
+assert.deepEqual(provider.runtime_gap_trackers.map((tracker) => tracker.gap), ['runtime-profile-normalizer', 'typed-artifact-dto-normalizer']);
 
 const codeboxRequest = codeboxTaskRequestFromAgentTaskRequest(request);
 assert.equal(codeboxRequest.schema, 'wp-codebox/task-input/v1');
@@ -454,7 +493,12 @@ assert.deepEqual(codeboxRequest.runtime_overlays, [{
   target: '/wordpress/wp-includes/php-ai-client',
   metadata: { component: 'php-ai-client', ref: 'custom-provider-auth' },
 }]);
-assert.throws(() => codeboxTaskRequestFromAgentTaskRequest({
+assert.deepEqual(codeboxRequest.runtime_requirements, {
+  schema: 'wp-codebox/runtime-profile/v1',
+  runtime_overlays: codeboxRequest.runtime_overlays,
+  provider_plugins: [{ path: '/providers/openai' }],
+});
+const legacyOverlayNameRequest = codeboxTaskRequestFromAgentTaskRequest({
   ...request,
   task_id: 'invalid-runtime-overlay-type-task-123',
   executor: {
@@ -464,16 +508,8 @@ assert.throws(() => codeboxTaskRequestFromAgentTaskRequest({
       runtime_overlays: [{ type: 'bundled-library', library: 'php-ai-client', source: '/components/php-ai-client' }],
     },
   },
-}), (error) => {
-  assert.equal(error.name, 'RuntimeOverlayConfigError');
-  assert.equal(error.diagnostics[0].class, 'codebox.runtime_overlay_config_invalid');
-  assert.equal(error.diagnostics[0].data.overlay_index, 0);
-  assert.equal(error.diagnostics[0].data.field, 'runtime_overlays[0].type');
-  assert.equal(error.diagnostics[0].data.offending_field, 'type');
-  assert.match(error.diagnostics[0].message, /use canonical field "kind"/);
-  assert.match(error.diagnostics[0].data.expected, /"kind": "bundled-library"/);
-  return true;
 });
+assert.deepEqual(legacyOverlayNameRequest.runtime_overlays, [{ type: 'bundled-library', library: 'php-ai-client', source: '/components/php-ai-client' }]);
 assert.deepEqual(codeboxRequest.runtime_env, {});
 assert.deepEqual(codeboxRequest.runtime_state_mounts, []);
 assert.deepEqual(codeboxRequest.runtime_config_mounts, []);
@@ -483,7 +519,7 @@ const providerDefaultSecretRequest = codeboxTaskRequestFromAgentTaskRequest({
   ...request,
   task_id: 'provider-default-secret-task-123',
   executor: {
-    backend: 'codebox',
+    backend: 'wp-codebox',
     config: {
       provider: 'claude-code',
       model: 'opus-4.7',
@@ -496,7 +532,7 @@ const codexDefaultSecretRequest = codeboxTaskRequestFromAgentTaskRequest({
   ...request,
   task_id: 'codex-default-secret-task-123',
   executor: {
-    backend: 'codebox',
+    backend: 'wp-codebox',
     config: {
       provider: 'codex',
       model: 'gpt-5.5',
@@ -514,7 +550,16 @@ assert.deepEqual(codeboxRequest.agent_bundle, {});
 const artifactDeclarationRequest = codeboxTaskRequestFromAgentTaskRequest({
   ...request,
   task_id: 'artifact-declaration-task-123',
+  expected_artifacts: ['patch', 'transcript'],
   artifact_declarations: [{
+    schema: 'wp-codebox/artifact-declaration/v1',
+    name: 'patch',
+    required: true,
+  }, {
+    schema: 'wp-codebox/artifact-declaration/v1',
+    name: 'transcript',
+    required: true,
+  }, {
     schema: 'homeboy/agent-task-artifact-declaration/v1',
     name: 'analysis_report',
     type: 'AnalysisReport',
@@ -523,23 +568,12 @@ const artifactDeclarationRequest = codeboxTaskRequestFromAgentTaskRequest({
     required: true,
   }],
 });
+assert.equal(artifactDeclarationRequest.artifact_declarations.length, 1);
 assert.equal(artifactDeclarationRequest.artifact_declarations[0].schema, 'wp-codebox/artifact-declaration/v1');
 assert.equal(artifactDeclarationRequest.artifact_declarations[0].name, 'analysis_report');
 assert.equal(artifactDeclarationRequest.artifact_declarations[0].path, 'artifacts/analysis-report.json');
 assert.equal(artifactDeclarationRequest.artifact_declarations[0].required, true);
-
-const legacyArtifactDeclarationRequest = codeboxTaskRequestFromAgentTaskRequest({
-  ...request,
-  task_id: 'legacy-artifact-declaration-task-123',
-  artifactDeclarations: [{
-    name: 'legacy_report',
-    kind: 'LegacyReport',
-    contentSchema: 'example/legacy-report/v1',
-  }],
-});
-assert.equal(legacyArtifactDeclarationRequest.artifact_declarations[0].name, 'legacy_report');
-assert.equal(legacyArtifactDeclarationRequest.artifact_declarations[0].type, 'LegacyReport');
-assert.equal(legacyArtifactDeclarationRequest.artifact_declarations[0].artifact_schema, 'example/legacy-report/v1');
+assert.deepEqual(artifactDeclarationRequest.expected_artifacts, ['analysis_report']);
 
 const codeboxRequestWithAbilityTools = codeboxTaskRequestFromAgentTaskRequest({
   ...request,
@@ -558,7 +592,7 @@ const executorSecretEnvRequest = codeboxTaskRequestFromAgentTaskRequest({
   ...request,
   task_id: 'executor-secret-env-task-123',
   executor: {
-    backend: 'codebox',
+    backend: 'wp-codebox',
     model: 'claude-sonnet-4-6',
     secret_env: [
       'AI_PROVIDER_CLAUDE_CODE_ACCESS_TOKEN',
@@ -583,7 +617,7 @@ const claudeCodeDefaultSecretEnvRequest = codeboxTaskRequestFromAgentTaskRequest
   ...request,
   task_id: 'claude-code-default-secret-env-task-123',
   executor: {
-    backend: 'codebox',
+    backend: 'wp-codebox',
     model: 'claude-sonnet-4-6',
     config: {
       provider: 'claude-code',
@@ -597,7 +631,7 @@ const runtimeTaskRequest = codeboxTaskRequestFromAgentTaskRequest({
   ...request,
   task_id: 'runtime-task-123',
   executor: {
-    backend: 'codebox',
+    backend: 'wp-codebox',
     config: {
       sandbox_tool_policy: {
         schema: 'wp-codebox/sandbox-tool-policy/v1',
@@ -625,6 +659,7 @@ const runtimeTaskRequest = codeboxTaskRequestFromAgentTaskRequest({
 });
 assert.equal(runtimeTaskRequest.sandbox_tool_policy.tools[0].id, 'homeboy-canary/write-file');
 assert.equal(runtimeTaskRequest.runtime_task.ability, 'homeboy-canary/write-file');
+assert.deepEqual(runtimeTaskRequest.ability_requirements, ['homeboy-canary/write-file']);
 assert.deepEqual(runtimeTaskRequest.agent_bundles, [{ source: '/workspace/bundles/canary-agent', slug: 'canary-agent' }]);
 assert.equal(runtimeTaskRequest.structured_artifacts[0].name, 'concept_packet');
 assert.equal(runtimeTaskRequest.workspaces[0].target, '/workspace/codebox-canary');
@@ -633,7 +668,7 @@ const runtimeTaskProviderDefaultRequest = codeboxTaskRequestFromAgentTaskRequest
   ...request,
   task_id: 'runtime-task-provider-defaults-123',
   executor: {
-    backend: 'codebox',
+    backend: 'wp-codebox',
     model: 'openai/gpt-5.5',
     config: {
       provider: 'opencode',
@@ -654,7 +689,7 @@ const runtimeTaskExplicitProviderRequest = codeboxTaskRequestFromAgentTaskReques
   ...request,
   task_id: 'runtime-task-explicit-provider-123',
   executor: {
-    backend: 'codebox',
+    backend: 'wp-codebox',
     model: 'openai/gpt-5.5',
     config: {
       provider: 'opencode',
@@ -671,36 +706,12 @@ const runtimeTaskExplicitProviderRequest = codeboxTaskRequestFromAgentTaskReques
 assert.equal(runtimeTaskExplicitProviderRequest.runtime_task.input.provider, 'explicit-provider', 'explicit runtime task provider wins');
 assert.equal(runtimeTaskExplicitProviderRequest.runtime_task.input.model, 'explicit-model', 'explicit runtime task model wins');
 
-const abilityBridgeRequest = codeboxTaskRequestFromAgentTaskRequest({
-  ...request,
-  task_id: 'ability-bridge-task-123',
-  executor: {
-    backend: 'codebox',
-    config: {
-      execution_kind: 'wp_codebox_ability',
-      ability: 'example/validate-artifact',
-      ability_input: { artifact: { slug: 'example-site' }, report: '/artifacts/import-report.json' },
-      output_mappings: {
-        validation_result: 'result.import_validation_result',
-      },
-      component_contracts: [{ slug: 'wp-site-generator', path: '/workspace/wp-site-generator', activate: true }],
-      engine_data_outputs: {
-        validation_result: 'metadata.artifacts.ImportValidationResult',
-      },
-    },
-  },
-});
-assert.equal(abilityBridgeRequest.runtime_task.ability, 'example/validate-artifact');
-assert.deepEqual(abilityBridgeRequest.runtime_task.input, { artifact: { slug: 'example-site' }, report: '/artifacts/import-report.json' });
-assert.equal(abilityBridgeRequest.parent_request.executor.config.output_mappings.validation_result, 'result.import_validation_result');
-assert.deepEqual(abilityBridgeRequest.component_contracts, [{ slug: 'wp-site-generator', path: '/workspace/wp-site-generator', activate: true }]);
-
 const topLevelComponentContractsRequest = codeboxTaskRequestFromAgentTaskRequest({
   ...request,
   task_id: 'top-level-component-contracts-task-123',
   component_contracts: [{ slug: 'domain-component', path: '/workspace/domain-component', activate: true }],
   executor: {
-    backend: 'codebox',
+    backend: 'wp-codebox',
     config: {
       component_contracts: [{ slug: 'config-component', path: '/workspace/config-component', activate: false }],
     },
@@ -710,6 +721,8 @@ assert.deepEqual(topLevelComponentContractsRequest.component_contracts, [
   { slug: 'domain-component', path: '/workspace/domain-component', activate: true },
   { slug: 'config-component', path: '/workspace/config-component', activate: false },
 ]);
+assert.deepEqual(topLevelComponentContractsRequest.runtime_requirements.component_contracts, topLevelComponentContractsRequest.component_contracts);
+assert.equal(topLevelComponentContractsRequest.runtime_requirements.extra_plugins, undefined);
 
 const genericRuntimeEnv = {
   GENERIC_PROVIDER_CONFIG: '/runtime/provider/config.json',
@@ -731,7 +744,7 @@ const genericProviderRuntimeRequest = codeboxTaskRequestFromAgentTaskRequest({
   ...request,
   task_id: 'generic-runtime-env-task-123',
   executor: {
-    backend: 'codebox',
+    backend: 'wp-codebox',
     config: {
       provider: 'fixture-provider',
       runtime_env: genericRuntimeEnv,
@@ -750,14 +763,41 @@ assert.deepEqual(genericProviderRuntimeRequest.runtime_state_mounts, genericRunt
 assert.deepEqual(genericProviderRuntimeRequest.runtime_config_mounts, genericRuntimeConfigMounts);
 assert.deepEqual(genericProviderRuntimeRequest.provider_plugin_paths, ['/providers/fixture-provider']);
 assert.deepEqual(genericProviderRuntimeRequest.runtime_overlays, [{ kind: 'fixture-overlay', source: '/overlays/fixture' }]);
+assert.deepEqual(genericProviderRuntimeRequest.runtime_requirements, {
+  schema: 'wp-codebox/runtime-profile/v1',
+  runtime_overlays: [{ kind: 'fixture-overlay', source: '/overlays/fixture' }],
+  env: genericRuntimeEnv,
+  provider_plugins: [{ path: '/providers/fixture-provider' }],
+  runtime_state_mounts: genericRuntimeStateMounts,
+  runtime_config_mounts: genericRuntimeConfigMounts,
+});
 assert.deepEqual(genericProviderRuntimeRequest.runtime_overlay_profiles, ['fixture-profile']);
 assert.deepEqual(genericProviderRuntimeRequest.secret_env, ['FIXTURE_PROVIDER_SECRET']);
+
+const codeboxOwnedParentToolBridgeRequest = codeboxTaskRequestFromAgentTaskRequest({
+  ...request,
+  task_id: 'codebox-owned-parent-tool-bridge-task-123',
+  executor: {
+    backend: 'wp-codebox',
+    config: {
+      runtime_profile: {
+        schema: 'wp-codebox/runtime-profile/v1',
+        parent_tool_bridge: {
+          schema: 'wp-codebox/parent-tool-bridge/v1',
+          mode: 'codebox-owned',
+        },
+      },
+    },
+  },
+});
+assert.equal(codeboxOwnedParentToolBridgeRequest.runtime_requirements.parent_tool_bridge.mode, 'codebox-owned');
+assert.equal(codeboxOwnedParentToolBridgeRequest.runtime_requirements.homeboy_parent_tool_bridge, undefined);
 
 const optionsRuntimeRequest = codeboxTaskRequestFromAgentTaskRequest({
   ...request,
   task_id: 'options-runtime-env-task-123',
   executor: {
-    backend: 'codebox',
+    backend: 'wp-codebox',
     config: { provider: 'another-fixture-provider' },
   },
 }, {
@@ -782,7 +822,7 @@ try {
     ...request,
     task_id: 'settings-runtime-env-task-123',
     executor: {
-      backend: 'codebox',
+      backend: 'wp-codebox',
       config: {},
     },
   });
@@ -804,7 +844,7 @@ const recipePackRequest = codeboxTaskRequestFromAgentTaskRequest({
   ...request,
   task_id: 'recipe-task-123',
   executor: {
-    backend: 'codebox',
+    backend: 'wp-codebox',
     model: 'gpt-5.5',
     config: {
       recipe_pack: 'example-codebox-recipes',
@@ -828,15 +868,85 @@ assert.deepEqual(recipePackRequest.recipe, {
   secret_env: ['EXAMPLE_RECIPE_TOKEN'],
 });
 
+const roleMatrixRecipeRequest = codeboxTaskRequestFromAgentTaskRequest({
+  ...request,
+  task_id: 'role-matrix-recipe-task-123',
+  executor: {
+    backend: 'wp-codebox',
+    model: 'gpt-5.5',
+    config: {
+      recipe_pack: 'example-codebox-recipes',
+      recipe: 'role-matrix-runtime',
+      runtime_profile: {
+        role_matrix: [
+          { name: 'admin', role: 'administrator', capabilities: ['manage_options'] },
+          { name: 'editor', role: 'editor', capabilities: ['edit_posts'], session: 'editor-rest' },
+        ],
+      },
+    },
+  },
+  inputs: {
+    recipe_inputs: {
+      fixture: 'role-matrix',
+      fixtureUsers: [{ name: 'admin', username: 'explicit-admin', role: 'administrator' }],
+      userSessions: [{ name: 'admin-session', user: 'admin' }],
+    },
+  },
+});
+assert.deepEqual(roleMatrixRecipeRequest.recipe.inputs, {
+  fixture: 'role-matrix',
+  fixtureUsers: [
+    { name: 'admin', username: 'explicit-admin', role: 'administrator' },
+    { name: 'editor', username: 'fixture-editor', role: 'editor', metadata: { capabilities: ['edit_posts'] } },
+  ],
+  userSessions: [
+    { name: 'admin-session', user: 'admin' },
+    { name: 'editor-rest', user: 'editor', metadata: { role: 'editor', capabilities: ['edit_posts'] } },
+  ],
+});
+
+const capabilityMatrixRecipeRequest = codeboxTaskRequestFromAgentTaskRequest({
+  ...request,
+  task_id: 'capability-matrix-recipe-task-123',
+  executor: {
+    backend: 'wp-codebox',
+    model: 'gpt-5.5',
+    config: {
+      recipe_pack: 'example-codebox-recipes',
+      recipe: 'capability-matrix-runtime',
+      runtime_requirements: {
+        capability_matrix: {
+          shop_manager: ['manage_woocommerce', 'view_woocommerce_reports'],
+        },
+      },
+    },
+  },
+});
+assert.deepEqual(capabilityMatrixRecipeRequest.recipe.inputs.fixtureUsers, [{
+  name: 'shop_manager',
+  username: 'fixture-shop_manager',
+  role: 'shop_manager',
+  metadata: { capabilities: ['manage_woocommerce', 'view_woocommerce_reports'] },
+}]);
+assert.deepEqual(capabilityMatrixRecipeRequest.recipe.inputs.userSessions, [{
+  name: 'shop_manager-session',
+  user: 'shop_manager',
+  metadata: { role: 'shop_manager', capabilities: ['manage_woocommerce', 'view_woocommerce_reports'] },
+}]);
+
+const codexProviderFixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'homeboy-codebox-codex-provider-'));
+process.on('exit', () => fs.rmSync(codexProviderFixtureRoot, { recursive: true, force: true }));
+fs.writeFileSync(path.join(codexProviderFixtureRoot, 'plugin.php'), '<?php\n/* Plugin Name: Fixture Codex Provider */\n// Registers the codex provider for preflight fixture inspection.\n');
+
 const codexAgentRequest = {
   ...request,
   task_id: 'codex-task-123',
   executor: {
-    backend: 'codebox',
+    backend: 'wp-codebox',
     model: 'gpt-5.5',
-    config: datamachineAgentCiCodeboxExecutorConfig({
+    config: exampleAgentCiCodeboxExecutorConfig({
       provider: 'codex',
-      provider_plugin_paths: ['/components/ai-provider-for-openai'],
+      provider_plugin_paths: [codexProviderFixtureRoot],
       secret_env: [
         'AI_PROVIDER_OPENAI_CODEX_ACCESS_TOKEN',
         'AI_PROVIDER_OPENAI_CODEX_REFRESH_TOKEN',
@@ -844,12 +954,13 @@ const codexAgentRequest = {
         'AI_PROVIDER_OPENAI_CODEX_ACCOUNT_ID',
         'AI_PROVIDER_OPENAI_CODEX_FEDRAMP',
       ],
-      agents_api: '/components/agents-api',
-      agent_runtime: '/components/data-machine',
-      agent_runtime_tools: '/components/data-machine-code',
+      runtime_component_paths: {
+        agent_runtime: '/components/example-runtime',
+        agent_runtime_tools: '/components/example-runtime-tools',
+      },
       homeboy: '/components/homeboy',
       homeboy_extensions: '/components/homeboy-extensions',
-      wp_codebox_bin: '/bin/wp-codebox',
+      runtime_bin: '/bin/wp-codebox',
       max_turns: 8,
     }),
   },
@@ -859,10 +970,10 @@ assert.equal(Object.hasOwn(codexRequest, 'agent'), false);
 assert.equal(codexRequest.mode, 'sandbox');
 assert.equal(codexRequest.provider, 'codex');
 assert.equal(codexRequest.model, 'gpt-5.5');
-assert.deepEqual(codexRequest.provider_plugin_paths, ['/components/ai-provider-for-openai']);
-assert.equal(codexRequest.runtime_component_paths.agents_api, '/components/agents-api');
-assert.equal(codexRequest.runtime_component_paths.agent_runtime, '/components/data-machine');
-assert.equal(codexRequest.runtime_component_paths.agent_runtime_tools, '/components/data-machine-code');
+assert.deepEqual(codexRequest.provider_plugin_paths, [codexProviderFixtureRoot]);
+assert.equal(codexRequest.runtime_component_paths.agent_runtime, '/components/example-runtime');
+assert.equal(codexRequest.runtime_component_paths.agent_runtime_tools, '/components/example-runtime-tools');
+assert.equal(Object.hasOwn(codexRequest.runtime_component_paths, 'agents_api'), false);
 assert.equal(Object.hasOwn(codexRequest, 'agents_api_path'), false);
 assert.equal(Object.hasOwn(codexRequest, 'data_machine_path'), false);
 assert.equal(Object.hasOwn(codexRequest, 'data_machine_code_path'), false);
@@ -883,23 +994,22 @@ const workflowStyleConfigRequest = codeboxTaskRequestFromAgentTaskRequest({
   ...request,
   task_id: 'runtime-contract-task-123',
   executor: {
-    backend: 'codebox',
+    backend: 'wp-codebox',
     model: 'gpt-5.5',
-    config: datamachineAgentCiCodeboxExecutorConfig({
+    config: exampleAgentCiCodeboxExecutorConfig({
       provider: 'codex',
       runtime_bin: '/bin/wp-codebox-runtime',
-      runtime_wordpress_version: 'beta',
+      wordpress_runtime_version: 'beta',
       runtime_mounts: [{
         type: 'file',
         source: '/host/driver.php',
         target: '/wordpress/wp-content/plugins/driver/driver.php',
         mode: 'readonly',
       }],
-      runtime_components: {
-        runtime: '/components/wp-codebox/packages/wordpress-plugin',
-        agents_api: '/components/agents-api',
-        data_machine: '/components/data-machine',
-        data_machine_code: '/components/data-machine-code',
+      runtime_component_paths: {
+        runtime: '/components/wp-codebox-runtime-plugin',
+        agent_runtime: '/components/example-runtime',
+        agent_runtime_tools: '/components/example-runtime-tools',
       },
     }),
   },
@@ -912,24 +1022,38 @@ assert.deepEqual(workflowStyleConfigRequest.mounts, [{
   target: '/wordpress/wp-content/plugins/driver/driver.php',
   mode: 'readonly',
 }]);
-assert.equal(workflowStyleConfigRequest.runtime_component_paths.runtime, '/components/wp-codebox/packages/wordpress-plugin');
-assert.equal(workflowStyleConfigRequest.runtime_component_paths.agents_api, '/components/agents-api');
-assert.equal(workflowStyleConfigRequest.runtime_component_paths.agent_runtime, '/components/data-machine');
-assert.equal(workflowStyleConfigRequest.runtime_component_paths.agent_runtime_tools, '/components/data-machine-code');
+assert.equal(workflowStyleConfigRequest.runtime_component_paths.runtime, '/components/wp-codebox-runtime-plugin');
+assert.equal(Object.hasOwn(workflowStyleConfigRequest.runtime_component_paths, 'agents_api'), false);
+assert.equal(workflowStyleConfigRequest.runtime_component_paths.agent_runtime, '/components/example-runtime');
+assert.equal(workflowStyleConfigRequest.runtime_component_paths.agent_runtime_tools, '/components/example-runtime-tools');
 assert.equal(Object.hasOwn(workflowStyleConfigRequest.runtime_component_paths, 'data_machine'), false);
 assert.equal(Object.hasOwn(workflowStyleConfigRequest.runtime_component_paths, 'data_machine_code'), false);
+
+const deprecatedWordPressRuntimeVersionRequest = codeboxTaskRequestFromAgentTaskRequest({
+  ...request,
+  task_id: 'runtime-contract-task-deprecated-wordpress-version',
+  executor: {
+    backend: 'wp-codebox',
+    config: exampleAgentCiCodeboxExecutorConfig({
+      provider: 'codex',
+      wp_codebox_wordpress_version: '6.9',
+    }),
+  },
+});
+assert.equal(deprecatedWordPressRuntimeVersionRequest.wp, '6.9');
 
 const defaultsRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'homeboy-codebox-agent-task-defaults-'));
 try {
   const workspaceRoot = path.join(defaultsRoot, 'target-repo@issue-1161');
-  const dataMachinePath = path.join(defaultsRoot, 'data-machine');
-  const bundledAgentsApiPath = path.join(dataMachinePath, 'vendor', 'wordpress', 'agents-api');
-  const alternateBundledAgentsApiPath = path.join(dataMachinePath, 'vendor', 'automattic', 'agents-api');
-  const dataMachineCodePath = path.join(defaultsRoot, 'data-machine-code');
+  const runtimePath = path.join(defaultsRoot, 'example-runtime');
+  const bundledAgentsApiPath = path.join(runtimePath, 'vendor', 'wordpress', 'agents-api');
+  const alternateBundledAgentsApiPath = path.join(runtimePath, 'vendor', 'automattic', 'agents-api');
+  const runtimeToolsPath = path.join(defaultsRoot, 'example-runtime-tools');
   const staleStandaloneAgentsApiPath = path.join(defaultsRoot, 'agents-api');
   const providerPath = path.join(defaultsRoot, 'ai-provider-for-openai');
+  const samplePluginPath = path.join(defaultsRoot, 'sample-plugin');
   const phpAiClientPath = path.join(defaultsRoot, 'php-ai-client');
-  for (const directory of [workspaceRoot, bundledAgentsApiPath, dataMachineCodePath, staleStandaloneAgentsApiPath, providerPath, phpAiClientPath]) {
+  for (const directory of [workspaceRoot, bundledAgentsApiPath, runtimeToolsPath, staleStandaloneAgentsApiPath, providerPath, samplePluginPath, phpAiClientPath]) {
     fs.mkdirSync(directory, { recursive: true });
   }
 
@@ -937,8 +1061,8 @@ try {
     ...request,
     task_id: 'default-runtime-stack-task-123',
     executor: {
-      backend: 'codebox',
-      config: datamachineAgentCiCodeboxExecutorConfig({ provider: 'codex' }),
+      backend: 'wp-codebox',
+      config: exampleAgentCiCodeboxExecutorConfig({ provider: 'codex' }),
     },
     inputs: {
       target: { root: workspaceRoot },
@@ -946,9 +1070,7 @@ try {
   }, {
     settings: {},
   });
-  assert.equal(defaultedRequest.runtime_component_paths.agents_api, bundledAgentsApiPath);
-  assert.equal(defaultedRequest.runtime_component_paths.agent_runtime, dataMachinePath);
-  assert.equal(defaultedRequest.runtime_component_paths.agent_runtime_tools, dataMachineCodePath);
+  assert.deepEqual(defaultedRequest.runtime_component_paths, {});
   assert.deepEqual(defaultedRequest.provider_plugin_paths, []);
   assert.deepEqual(defaultedRequest.runtime_overlay_profiles, []);
   assert.deepEqual(defaultedRequest.runtime_overlays, []);
@@ -969,11 +1091,49 @@ try {
   assert(!JSON.stringify(defaultedRequest).includes(staleStandaloneAgentsApiPath));
   assert(!JSON.stringify(defaultedRequest).includes(alternateBundledAgentsApiPath));
 
+  const bundledAgentsApiRequest = codeboxTaskRequestFromAgentTaskRequest({
+    ...request,
+    task_id: 'bundled-agents-api-runtime-task-123',
+    executor: {
+      backend: 'wp-codebox',
+      config: exampleAgentCiCodeboxExecutorConfig({ provider: 'codex' }),
+    },
+    inputs: {
+      target: { root: workspaceRoot },
+    },
+  }, {
+    agentRuntime: runtimePath,
+    settings: {},
+  });
+  assert.equal((bundledAgentsApiRequest.runtime_requirements.component_contracts || []).some((contract) => contract.slug === 'agents-api'), false);
+  assert.deepEqual(bundledAgentsApiRequest.runtime_requirements.ability_requirements, ['example/run-agent-bundle']);
+  assert.equal(bundledAgentsApiRequest.component_contracts.some((contract) => contract.slug === 'agents-api'), false);
+
+  const chatHandlerRequest = codeboxTaskRequestFromAgentTaskRequest({
+    ...request,
+    task_id: 'configured-chat-handler-runtime-task-123',
+    executor: {
+      backend: 'wp-codebox',
+      config: exampleAgentCiCodeboxExecutorConfig({ provider: 'codex' }),
+    },
+    inputs: {
+      target: { root: workspaceRoot },
+    },
+    }, {
+      agentRuntime: runtimePath,
+      settings: {
+        wp_codebox_chat_handler_plugin_paths: [samplePluginPath],
+      },
+  });
+  assert.deepEqual((chatHandlerRequest.runtime_requirements.component_contracts || []).map((contract) => contract.slug), []);
+  assert.deepEqual(chatHandlerRequest.component_contracts.map((contract) => contract.slug), []);
+  assert.deepEqual(chatHandlerRequest.runtime_requirements.ability_requirements, ['example/run-agent-bundle']);
+
   const configuredDefaultProviderRequest = codeboxTaskRequestFromAgentTaskRequest({
     ...request,
     task_id: 'configured-provider-default-task-123',
     executor: {
-      backend: 'codebox',
+      backend: 'wp-codebox',
       config: {},
     },
     inputs: {
@@ -1001,7 +1161,7 @@ try {
     ...request,
     task_id: 'default-openai-provider-task-123',
     executor: {
-      backend: 'codebox',
+      backend: 'wp-codebox',
       model: 'gpt-5.5',
       config: {},
     },
@@ -1019,7 +1179,7 @@ try {
     ...request,
     task_id: 'bare-default-openai-provider-task-123',
     executor: {
-      backend: 'codebox',
+      backend: 'wp-codebox',
       config: {},
     },
     inputs: {
@@ -1060,7 +1220,7 @@ try {
     ...request,
     task_id: 'readonly-workspace-task-123',
     executor: {
-      backend: 'codebox',
+      backend: 'wp-codebox',
       config: {},
     },
     inputs: {
@@ -1082,7 +1242,7 @@ try {
     ...request,
     task_id: 'settings-model-default-task-123',
     executor: {
-      backend: 'codebox',
+      backend: 'wp-codebox',
       config: {},
     },
     inputs: {
@@ -1097,7 +1257,7 @@ try {
     ...request,
     task_id: 'explicit-empty-tools-task-123',
     executor: {
-      backend: 'codebox',
+      backend: 'wp-codebox',
       config: {
         allowed_tools: [],
         sandbox_tool_policy: {
@@ -1123,8 +1283,8 @@ try {
     ...request,
     task_id: 'alternate-default-runtime-stack-task-123',
     executor: {
-      backend: 'codebox',
-      config: datamachineAgentCiCodeboxExecutorConfig({ provider: 'codex' }),
+      backend: 'wp-codebox',
+      config: exampleAgentCiCodeboxExecutorConfig({ provider: 'codex' }),
     },
     inputs: {
       target: { root: workspaceRoot },
@@ -1132,7 +1292,7 @@ try {
   }, {
     settings: {},
   });
-  assert.equal(alternateDefaultedRequest.runtime_component_paths.agents_api, alternateBundledAgentsApiPath);
+  assert.deepEqual(alternateDefaultedRequest.runtime_component_paths, {});
 
   const explicitProviderPath = path.join(defaultsRoot, 'provider-plugin');
   fs.mkdirSync(explicitProviderPath, { recursive: true });
@@ -1140,7 +1300,7 @@ try {
     ...request,
     task_id: 'explicit-provider-path-task-123',
     executor: {
-      backend: 'codebox',
+      backend: 'wp-codebox',
       config: { provider: 'codex' },
     },
     inputs: {
@@ -1151,7 +1311,7 @@ try {
   });
   assert.deepEqual(explicitProviderRequest.provider_plugin_paths, [explicitProviderPath]);
 
-  const configuredLibraryPath = path.join(defaultsRoot, 'configured-library');
+  const configuredLibraryPath = writePhpAiClientOverlay(defaultsRoot, { name: 'configured-library' });
   const configuredRuntimeOverlays = [{
     kind: 'bundled-library',
     library: 'php-ai-client',
@@ -1162,7 +1322,7 @@ try {
     ...request,
     task_id: 'configured-generic-stack-task-123',
     executor: {
-      backend: 'codebox',
+      backend: 'wp-codebox',
       config: { provider: 'codex' },
     },
     inputs: {
@@ -1181,26 +1341,56 @@ try {
   assert.deepEqual(configuredGenericStackRequest.runtime_overlays, configuredRuntimeOverlays);
   assert.deepEqual(configuredGenericStackRequest.secret_env, ['CONFIGURED_SECRET']);
 
-  const explicitPhpAiClientPath = path.join(defaultsRoot, 'explicit-php-ai-client');
-  fs.mkdirSync(explicitPhpAiClientPath, { recursive: true });
-  const explicitPhpAiClientRequest = codeboxTaskRequestFromAgentTaskRequest({
+  const configuredOverlayWithEmptyProfileRequest = codeboxTaskRequestFromAgentTaskRequest({
     ...request,
-    task_id: 'explicit-php-ai-client-runtime-stack-task-123',
+    task_id: 'configured-overlay-empty-profile-task-123',
     executor: {
-      backend: 'codebox',
+      backend: 'wp-codebox',
+      config: {
+        provider: 'codex',
+        runtime_requirements: { runtime_overlays: [] },
+        runtime_profiles: {
+          empty: { runtime_overlays: [] },
+        },
+        runtime_profile: 'empty',
+      },
+    },
+    inputs: {
+      target: { root: workspaceRoot },
+    },
+  }, {
+    settings: {
+      wp_codebox_runtime_overlays: configuredRuntimeOverlays,
+    },
+  });
+  assert.deepEqual(configuredOverlayWithEmptyProfileRequest.runtime_overlays, []);
+
+  const legacyPhpAiClientPath = writePhpAiClientOverlay(defaultsRoot, { name: 'legacy-php-ai-client' });
+  const legacyPhpAiClientRequest = codeboxTaskRequestFromAgentTaskRequest({
+    ...request,
+    task_id: 'legacy-php-ai-client-runtime-stack-task-123',
+    executor: {
+      backend: 'wp-codebox',
       config: { provider: 'codex' },
     },
     inputs: {
       target: { root: workspaceRoot },
     },
   }, {
-    settings: { wp_codebox_php_ai_client_path: explicitPhpAiClientPath },
+    settings: { wp_codebox_php_ai_client_path: legacyPhpAiClientPath },
   });
-  assert.equal(fs.realpathSync(explicitPhpAiClientRequest.runtime_overlays[0].source), fs.realpathSync(explicitPhpAiClientPath));
-  assert.equal(explicitPhpAiClientRequest.runtime_overlays[0].strategy, 'wordpress-scoped-bundle');
+  assert.deepEqual(legacyPhpAiClientRequest.runtime_overlays, []);
+  assert(!JSON.stringify(legacyPhpAiClientRequest).includes(legacyPhpAiClientPath));
+
+  const stalePhpAiClientPath = writePhpAiClientOverlay(defaultsRoot, { name: 'stale-php-ai-client', withoutDescription: true });
+  const stalePhpAiClientDiagnostics = runtimeOverlayReadinessDiagnostics({
+    runtime_overlays: [{ kind: 'bundled-library', library: 'php-ai-client', source: stalePhpAiClientPath }],
+  });
+  assert.equal(stalePhpAiClientDiagnostics[0].class, 'codebox.preflight.runtime_overlay_dependency_unprepared');
+  assert.match(stalePhpAiClientDiagnostics[0].message, /ProviderMetadata::getDescription/);
 
   const originalCwd = process.cwd();
-  const labOffloadCwd = path.join(defaultsRoot, '_lab_workspaces', 'wp-site-generator-pilot-homeboy-ssi-loop');
+  const labOffloadCwd = path.join(defaultsRoot, '_lab_workspaces', 'example-repo-pilot-homeboy-agent-loop');
   fs.mkdirSync(labOffloadCwd, { recursive: true });
   try {
     process.chdir(labOffloadCwd);
@@ -1208,8 +1398,8 @@ try {
       ...request,
       task_id: 'lab-no-target-default-runtime-stack-task-123',
       executor: {
-        backend: 'codebox',
-        config: datamachineAgentCiCodeboxExecutorConfig({ provider: 'codex' }),
+        backend: 'wp-codebox',
+        config: exampleAgentCiCodeboxExecutorConfig({ provider: 'codex' }),
       },
       inputs: {},
     }, {
@@ -1225,13 +1415,13 @@ try {
     ...request,
     task_id: 'explicit-runtime-stack-task-123',
     executor: {
-      backend: 'codebox',
-      config: datamachineAgentCiCodeboxExecutorConfig({
+      backend: 'wp-codebox',
+      config: exampleAgentCiCodeboxExecutorConfig({
         provider: 'codex',
-        agents_api: staleStandaloneAgentsApiPath,
         runtime_component_paths: {
-          agent_runtime: '/explicit/data-machine',
-          agent_runtime_tools: '/explicit/data-machine-code',
+          agents_api: staleStandaloneAgentsApiPath,
+          agent_runtime: '/explicit/example-runtime',
+          agent_runtime_tools: '/explicit/example-runtime-tools',
         },
         provider_plugin_paths: ['/explicit/provider'],
         runtime_overlay_profiles: ['explicit-profile'],
@@ -1246,8 +1436,8 @@ try {
     },
   });
   assert.equal(explicitOverrideRequest.runtime_component_paths.agents_api, staleStandaloneAgentsApiPath);
-  assert.equal(explicitOverrideRequest.runtime_component_paths.agent_runtime, '/explicit/data-machine');
-  assert.equal(explicitOverrideRequest.runtime_component_paths.agent_runtime_tools, '/explicit/data-machine-code');
+  assert.equal(explicitOverrideRequest.runtime_component_paths.agent_runtime, '/explicit/example-runtime');
+  assert.equal(explicitOverrideRequest.runtime_component_paths.agent_runtime_tools, '/explicit/example-runtime-tools');
   assert.deepEqual(explicitOverrideRequest.provider_plugin_paths, ['/explicit/provider']);
   assert.deepEqual(explicitOverrideRequest.runtime_overlay_profiles, ['explicit-profile']);
   assert.deepEqual(explicitOverrideRequest.runtime_overlays, [{ kind: 'bundled-library', library: 'php-ai-client', source: '/explicit/php-ai-client' }]);
@@ -1255,27 +1445,6 @@ try {
   assert.deepEqual(explicitOverrideRequest.mounts, [{ source: '/explicit/worktree', target: '/workspace', mode: 'readonly' }]);
   assert.deepEqual(explicitOverrideRequest.workspaces, [{ target: '/explicit-workspace', mode: 'readonly' }]);
 
-  const legacyAliasRequest = codeboxTaskRequestFromAgentTaskRequest({
-    ...request,
-    task_id: 'legacy-runtime-alias-task-123',
-    executor: {
-      backend: 'codebox',
-      config: datamachineAgentCiCodeboxExecutorConfig({
-        provider: 'codex',
-        agents_api_path: staleStandaloneAgentsApiPath,
-        data_machine_path: '/legacy/data-machine',
-        data_machine_code_path: '/legacy/data-machine-code',
-      }),
-    },
-    inputs: {
-      target: { root: workspaceRoot },
-    },
-  });
-  assert.equal(legacyAliasRequest.runtime_component_paths.agents_api, staleStandaloneAgentsApiPath);
-  assert.equal(legacyAliasRequest.runtime_component_paths.agent_runtime, '/legacy/data-machine');
-  assert.equal(legacyAliasRequest.runtime_component_paths.agent_runtime_tools, '/legacy/data-machine-code');
-  assert.equal(Object.hasOwn(legacyAliasRequest, 'data_machine_path'), false);
-  assert.equal(Object.hasOwn(legacyAliasRequest, 'data_machine_code_path'), false);
 } finally {
   fs.rmSync(defaultsRoot, { recursive: true, force: true });
 }
@@ -1302,48 +1471,50 @@ const agentBundleRequest = codeboxTaskRequestFromAgentTaskRequest({
   ...request,
   task_id: 'agent-bundle-task-123',
   executor: {
-    backend: 'codebox',
+    backend: 'wp-codebox',
     model: 'gpt-5.5',
-    config: datamachineAgentCiCodeboxExecutorConfig({
+    config: exampleAgentCiCodeboxExecutorConfig({
       execution_kind: 'agent_bundle',
       provider: 'openai',
       provider_plugin_paths: ['/components/ai-provider-for-openai'],
-      agents_api: '/components/agents-api',
       runtime_component_paths: {
-        agent_runtime: '/components/data-machine',
-        agent_runtime_tools: '/components/data-machine-code',
+        agents_api: '/components/agents-api',
+        agent_runtime: '/components/example-runtime',
+        agent_runtime_tools: '/components/example-runtime-tools',
       },
       homeboy_extensions: '/components/homeboy-extensions/wordpress',
-      bundle_path: '/bundles/static-site-agent',
-      bundle_host_path: '/home/runner/work/wp-site-generator/wp-site-generator/bundles/static-site-agent',
-      agent_slug: 'static-site-agent',
-      pipeline_slug: 'static-site-pipeline',
-      flow_slug: 'static-site-manual-flow',
-      target_repo: 'chubes4/wp-site-generator',
+      bundle_path: '/bundles/example-agent',
+      bundle_host_path: '/home/runner/work/example-repo/example-repo/bundles/example-agent',
+      agent_slug: 'example-agent',
+      pipeline_slug: 'example-pipeline',
+      flow_slug: 'example-manual-flow',
+      target_repo: 'example-org/example-repo',
       pipeline_step_patches: [{ slug: 'generate', config: { max_turns: 4 } }],
       flow_step_patches: [{ slug: 'run-pipeline', config: { step_budget: 12 } }],
-      tool_recorders: [{ tool: 'github/create-pull-request', engine_data_path: 'static_site_agent.pr_url' }],
-      engine_data_outputs: { static_site_pr_url: 'metadata.engine_data.static_site_agent.pr_url' },
-      transcript_artifact_name: 'static-site-agent-transcript',
-      replay_bundle_artifact_name: 'static-site-agent-replay',
-      runner_workspace: { handle: 'wp-site-generator@site-loop', expose_to_agent: false },
+      evidence_projections: [{ operation: 'github/create-pull-request', outputs: { example_pr_url: 'data.html_url' } }],
+      runtime_output_projections: { example_pr_url: 'metadata.engine_data.example_agent.pr_url' },
+      transcript_artifact_name: 'example-agent-transcript',
+      replay_bundle_artifact_name: 'example-agent-replay',
+      runner_workspace: { handle: 'example-repo@example-loop', expose_to_agent: false },
     }),
   },
 });
-assert.equal(agentBundleRequest.agent_bundle.bundle_path, '/bundles/static-site-agent');
-assert.equal(agentBundleRequest.agent_bundle.agent_slug, 'static-site-agent');
-assert.equal(agentBundleRequest.agent_bundle.pipeline_slug, 'static-site-pipeline');
-assert.equal(agentBundleRequest.agent_bundle.flow_slug, 'static-site-manual-flow');
+assert.equal(agentBundleRequest.agent_bundle.bundle_path, '/bundles/example-agent');
+assert.equal(agentBundleRequest.agent_bundle.agent_slug, 'example-agent');
+assert.equal(agentBundleRequest.agent_bundle.pipeline_slug, 'example-pipeline');
+assert.equal(agentBundleRequest.agent_bundle.flow_slug, 'example-manual-flow');
 assert.deepEqual(agentBundleRequest.agent_bundle.pipeline_step_patches, [{ slug: 'generate', config: { max_turns: 4 } }]);
 assert.deepEqual(agentBundleRequest.agent_bundle.flow_step_patches, [{ slug: 'run-pipeline', config: { step_budget: 12 } }]);
-assert.deepEqual(agentBundleRequest.agent_bundle.tool_recorders, [{ tool: 'github/create-pull-request', engine_data_path: 'static_site_agent.pr_url' }]);
-assert.deepEqual(agentBundleRequest.agent_bundle.engine_data_outputs, { static_site_pr_url: 'metadata.engine_data.static_site_agent.pr_url' });
-assert.equal(agentBundleRequest.runtime_component_paths.agent_runtime, '/components/data-machine');
-assert.equal(agentBundleRequest.runtime_component_paths.agent_runtime_tools, '/components/data-machine-code');
+assert.deepEqual(agentBundleRequest.agent_bundle.evidence_projections, [{ operation: 'github/create-pull-request', outputs: { example_pr_url: 'data.html_url' } }]);
+assert.deepEqual(agentBundleRequest.agent_bundle.runtime_output_projections, { example_pr_url: 'metadata.engine_data.example_agent.pr_url' });
+assert.equal(Object.hasOwn(agentBundleRequest.agent_bundle, 'tool_recorders'), false);
+assert.equal(Object.hasOwn(agentBundleRequest.agent_bundle, 'engine_data_outputs'), false);
+assert.equal(agentBundleRequest.runtime_component_paths.agent_runtime, '/components/example-runtime');
+assert.equal(agentBundleRequest.runtime_component_paths.agent_runtime_tools, '/components/example-runtime-tools');
 assert.equal(agentBundleRequest.homeboy_extensions_path, '/components/homeboy-extensions/wordpress');
 assert.deepEqual(agentBundleRequest.mounts, [{
-  source: '/home/runner/work/wp-site-generator/wp-site-generator/bundles/static-site-agent',
-  target: '/bundles/static-site-agent',
+  source: '/home/runner/work/example-repo/example-repo/bundles/example-agent',
+  target: '/bundles/example-agent',
   mode: 'readonly',
   metadata: { kind: 'agent-bundle' },
 }]);
@@ -1351,28 +1522,32 @@ assert.deepEqual(agentBundleRequest.mounts, [{
 const agentBundleRequestWithExplicitMount = codeboxTaskRequestFromAgentTaskRequest({
   ...request,
   executor: {
-    backend: 'codebox',
+    backend: 'wp-codebox',
     config: {
       execution_kind: 'agent_bundle',
       mounts: [{
-        source: '/custom/static-site-agent',
-        target: '/bundles/static-site-agent',
+        source: '/custom/example-agent',
+        target: '/bundles/example-agent',
         mode: 'readonly',
         metadata: { kind: 'custom' },
       }],
-      bundle_path: '/bundles/static-site-agent',
-      bundle_host_path: '/home/runner/work/wp-site-generator/wp-site-generator/bundles/static-site-agent',
+      bundle_path: '/bundles/example-agent',
+      bundle_host_path: '/home/runner/work/example-repo/example-repo/bundles/example-agent',
     },
   },
 });
 assert.equal(agentBundleRequestWithExplicitMount.mounts.length, 1);
-assert.equal(agentBundleRequestWithExplicitMount.mounts[0].source, '/custom/static-site-agent');
+assert.equal(agentBundleRequestWithExplicitMount.mounts[0].source, '/custom/example-agent');
 
 const outcome = agentTaskOutcomeFromCodeboxResult(request, {
   success: false,
   provider_error: true,
   summary: 'Provider failed.',
-  artifacts: { bundle: { id: 'bundle-1', directory: '/tmp/artifacts' } },
+  artifact_result: {
+    schema: 'wp-codebox/artifact-result-envelope/v1',
+    status: 'created',
+    artifact_bundle_refs: [{ id: 'bundle-1', kind: 'artifact-bundle', path: '/tmp/artifacts' }],
+  },
 });
 assert.equal(outcome.schema, 'homeboy/agent-task-outcome/v1');
 assert.equal(outcome.task_id, 'task-123');
@@ -1385,28 +1560,56 @@ const upstreamRunnerOutcome = agentTaskOutcomeFromCodeboxResult(request, {
   success: true,
   schema: 'wp-codebox/agent-task-run/v1',
   status: 'completed',
-  session: {
-    id: 'sandbox-session-1',
-    artifacts: {
-      bundle_id: 'artifact-bundle-1',
-      preview_url: 'https://preview.example.test/sandbox-session-1',
-    },
+  artifact_result: {
+    schema: 'wp-codebox/artifact-result-envelope/v1',
+    status: 'created',
+    artifact_bundle_refs: [{ id: 'artifact-bundle-1', kind: 'codebox-artifact-directory', path: '/tmp/wp-codebox-artifacts' }],
+    evidence_refs: [{ kind: 'codebox-preview', uri: 'https://preview.example.test/sandbox-session-1' }],
   },
-  artifacts: '/tmp/wp-codebox-artifacts',
 });
 assert.equal(upstreamRunnerOutcome.status, 'succeeded');
 assert.equal(upstreamRunnerOutcome.artifacts[0].kind, 'codebox-artifact-directory');
 assert.equal(upstreamRunnerOutcome.artifacts[0].path, '/tmp/wp-codebox-artifacts');
 
+const canonicalArtifactEnvelopeOutcome = agentTaskOutcomeFromCodeboxResult(request, {
+  success: true,
+  schema: 'wp-codebox/agent-task-run/v1',
+  status: 'completed',
+  artifact_result: {
+    schema: 'wp-codebox/artifact-result-envelope/v1',
+    status: 'created',
+    artifactRefs: [{ kind: 'artifact-log', path: '/tmp/canonical/log.txt' }],
+    result: {
+      outputs: {
+        typed_artifacts: {
+          review: { type: 'json', payload: { canonical: true } },
+        },
+      },
+    },
+  },
+  run: {
+    agentResult: {
+      artifacts: { directory: '/tmp/legacy-artifacts' },
+      patch: { artifact: 'files/legacy.patch' },
+    },
+  },
+});
+assert.equal(canonicalArtifactEnvelopeOutcome.outputs.typed_artifacts.review.payload.canonical, true);
+assert.equal(canonicalArtifactEnvelopeOutcome.artifacts.some((artifact) => artifact.path === '/tmp/canonical/log.txt'), true);
+assert.equal(canonicalArtifactEnvelopeOutcome.artifacts.some((artifact) => artifact.path === '/tmp/legacy-artifacts/files/legacy.patch'), false);
+
 const failedUpstreamRunnerOutcome = agentTaskOutcomeFromCodeboxResult(request, {
   schema: 'wp-codebox/agent-task-run/v1',
   status: 'failed',
-  session: { id: 'sandbox-session-1', status: 'failed' },
-  evidence_refs: [{
-    kind: 'codebox-command-evidence',
-    uri: '/tmp/wp-codebox-artifacts/wp-codebox-command-evidence.json',
-    label: 'codebox command evidence',
-  }],
+  artifact_result: {
+    schema: 'wp-codebox/artifact-result-envelope/v1',
+    status: 'failed',
+    evidence_refs: [{
+      kind: 'codebox-command-evidence',
+      uri: '/tmp/wp-codebox-artifacts/wp-codebox-command-evidence.json',
+      label: 'codebox command evidence',
+    }],
+  },
 });
 assert.equal(failedUpstreamRunnerOutcome.status, 'failed');
 assert.equal(
@@ -1466,7 +1669,7 @@ const emptyRunSummaryOutcome = agentTaskOutcomeFromCodeboxResult(request, {
 assert.equal(emptyRunSummaryOutcome.status, 'failed');
 assert.equal(emptyRunSummaryOutcome.metadata.codebox_run_result.diagnostics[0].class, 'codebox.no_runtime_session');
 assert.equal(emptyRunSummaryOutcome.metadata.codebox_run_result.metadata.provider_error.code, 'codebox_no_runtime_session');
-assert.equal(emptyRunSummaryOutcome.diagnostics[0].class, 'codebox.no_runtime_session');
+assert.equal(emptyRunSummaryOutcome.diagnostics[0].class, 'codebox.public_result_envelope_missing');
 
 const runtimeRefRunSummaryOutcome = agentTaskOutcomeFromCodeboxResult(request, {
   success: false,
@@ -1509,6 +1712,17 @@ const recipeProbeFailureOutcome = agentTaskOutcomeFromCodeboxResult(request, {
     fake_side_effects: '/tmp/recipe/fakes/side-effects.json',
     declared_artifacts: [{ name: 'runtime-log', path: '/tmp/recipe/logs/runtime.log' }],
   },
+  artifact_result: {
+    schema: 'wp-codebox/artifact-result-envelope/v1',
+    status: 'created',
+    artifact_refs: [
+      { kind: 'codebox-recipe-startup-log', path: '/tmp/recipe/startup.log' },
+      { kind: 'codebox-recipe-probe-json', path: '/tmp/recipe/probes/home-page.json' },
+      { kind: 'codebox-recipe-screenshot', path: '/tmp/recipe/screens/home-page.png' },
+      { kind: 'codebox-recipe-fake-side-effects', path: '/tmp/recipe/fakes/side-effects.json' },
+      { kind: 'codebox-recipe-artifact', path: '/tmp/recipe/logs/runtime.log' },
+    ],
+  },
 });
 assert.equal(recipeProbeFailureOutcome.status, 'failed');
 assert.equal(recipeProbeFailureOutcome.summary, 'WP Codebox home-page failed.');
@@ -1536,7 +1750,7 @@ const recipeStartupFailureOutcome = agentTaskOutcomeFromCodeboxResult(request, {
   },
 });
 assert.equal(recipeStartupFailureOutcome.status, 'failed');
-assert.equal(recipeStartupFailureOutcome.summary, 'Recipe could not boot WordPress.');
+assert.equal(recipeStartupFailureOutcome.summary, 'WP Codebox result used private runtime fields without the canonical public artifact result envelope.');
 assert.equal(recipeStartupFailureOutcome.metadata.recipe_failed_phase, 'startup');
 
 const recipeArtifactCollectionFailureOutcome = agentTaskOutcomeFromCodeboxResult(request, {
@@ -1549,7 +1763,7 @@ const recipeArtifactCollectionFailureOutcome = agentTaskOutcomeFromCodeboxResult
   },
 });
 assert.equal(recipeArtifactCollectionFailureOutcome.status, 'failed');
-assert.equal(recipeArtifactCollectionFailureOutcome.summary, 'Declared artifact path was missing.');
+assert.equal(recipeArtifactCollectionFailureOutcome.summary, 'WP Codebox result used private runtime fields without the canonical public artifact result envelope.');
 assert.equal(recipeArtifactCollectionFailureOutcome.metadata.recipe_failed_phase, 'artifact_collection');
 
 const normalizedCompletedOutcome = agentTaskOutcomeFromCodeboxResult(request, {
@@ -1557,9 +1771,16 @@ const normalizedCompletedOutcome = agentTaskOutcomeFromCodeboxResult(request, {
   schema: 'wp-codebox/agent-task-run/v1',
   status: 'completed',
   summary: 'WP Codebox agent task succeeded.',
-  outputs: {
-    issue_number: 123,
-    issue_url: 'https://github.com/chubes4/wp-site-generator/issues/123',
+  artifact_result: {
+    schema: 'wp-codebox/artifact-result-envelope/v1',
+    status: 'created',
+    evidence_refs: [{ kind: 'agent-output-issue-url', uri: 'https://github.com/example-org/example-repo/issues/123' }],
+    result: {
+      outputs: {
+        issue_number: 123,
+        issue_url: 'https://github.com/example-org/example-repo/issues/123',
+      },
+    },
   },
   session: { id: 'sandbox-session-1', status: 'completed' },
 }, { exitStatus: 1 });
@@ -1600,12 +1821,17 @@ const nestedAgentRuntimeOutputFailureOutcome = agentTaskOutcomeFromCodeboxResult
   schema: 'wp-codebox/agent-task-run/v1',
   status: 'completed',
   summary: 'Outer runner completed.',
-  outputs: {
-    success: false,
-    status: 'completed_no_items',
-    completion_outcome: {
-      status: 'completed_no_items',
+  artifact_result: {
+    schema: 'wp-codebox/artifact-result-envelope/v1',
+    status: 'created',
+    evidence_refs: [{ kind: 'agent-output-issue-url', uri: 'https://github.com/example-org/example-repo/issues/123' }],
+    result: {
       success: false,
+      status: 'completed_no_items',
+      completion_outcome: {
+        status: 'completed_no_items',
+        success: false,
+      },
     },
   },
 });
@@ -1617,16 +1843,16 @@ const rawNestedAgentRuntimeFailureOutcome = agentTaskOutcomeFromCodeboxResult(re
   schema: 'wp-codebox/agent-task-run/v1',
   status: 'completed',
   summary: 'WP Codebox agent task succeeded.',
-  raw: {
-    agent_runtime: {
-      success: true,
-      result: {
-        success: false,
+  artifact_result: {
+    schema: 'wp-codebox/artifact-result-envelope/v1',
+    status: 'created',
+    success: true,
+    result: {
+      success: false,
+      status: 'completed_no_items',
+      completion_outcome: {
         status: 'completed_no_items',
-        completion_outcome: {
-          status: 'completed_no_items',
-          success: false,
-        },
+        success: false,
       },
     },
   },
@@ -1639,16 +1865,16 @@ const metadataAgentRuntimeFailureOutcome = agentTaskOutcomeFromCodeboxResult(req
   schema: 'wp-codebox/agent-task-run/v1',
   status: 'completed',
   summary: 'WP Codebox agent task succeeded.',
-  metadata: {
-    agent_runtime: {
-      result: {
-        error_message: 'Codex OAuth refresh failed.',
-        error_reason: 'ai_processing_failed',
-        terminal_status: 'failed - ai_processing_failed',
-        reason: 'empty_data_packet_returned',
-        outputs: {
-          error_step_id: 'ephemeral_step_0',
-        },
+  artifact_result: {
+    schema: 'wp-codebox/artifact-result-envelope/v1',
+    status: 'created',
+    result: {
+      error_message: 'Codex OAuth refresh failed.',
+      error_reason: 'ai_processing_failed',
+      terminal_status: 'failed - ai_processing_failed',
+      reason: 'empty_data_packet_returned',
+      outputs: {
+        error_step_id: 'ephemeral_step_0',
       },
     },
   },
@@ -1664,11 +1890,11 @@ const metadataAgentRuntimeTerminalFailureOutcome = agentTaskOutcomeFromCodeboxRe
   success: true,
   schema: 'wp-codebox/agent-task-run/v1',
   status: 'completed',
-  metadata: {
-    agent_runtime: {
-      result: {
-        terminalStatus: 'failed - provider_auth_failed',
-      },
+  artifact_result: {
+    schema: 'wp-codebox/artifact-result-envelope/v1',
+    status: 'created',
+    result: {
+      terminalStatus: 'failed - provider_auth_failed',
     },
   },
 });
@@ -1680,19 +1906,14 @@ const workloadScenarioRuntimeFailureOutcome = agentTaskOutcomeFromCodeboxResult(
   success: true,
   schema: 'wp-codebox/agent-task-run/v1',
   status: 'completed',
-  metadata: {
-    agent_runtime: {
-      workload: {
-        outputs: {},
-        scenarios: [{
-          id: 'agent-bundle',
-          metadata: {
-            error_step_id: 'ephemeral_step_0',
-            error_reason: 'ai_processing_failed',
-            terminal_status: 'failed - ai_processing_failed',
-          },
-        }],
-      },
+  artifact_result: {
+    schema: 'wp-codebox/artifact-result-envelope/v1',
+    status: 'created',
+    result: {
+      error_step_id: 'ephemeral_step_0',
+      error_reason: 'ai_processing_failed',
+      terminal_status: 'failed - ai_processing_failed',
+      outputs: {},
     },
   },
 });
@@ -1705,30 +1926,59 @@ const outputRuntimeFailureMetadataOutcome = agentTaskOutcomeFromCodeboxResult(re
   success: true,
   schema: 'wp-codebox/agent-task-run/v1',
   status: 'completed',
-  outputs: {
-    error_step_id: 'ephemeral_step_1',
-    error_reason: 'provider_auth_failed',
+  artifact_result: {
+    schema: 'wp-codebox/artifact-result-envelope/v1',
+    status: 'created',
+    result: {
+      outputs: {
+        error_step_id: 'ephemeral_step_1',
+        error_reason: 'provider_auth_failed',
+      },
+    },
   },
 });
 assert.equal(outputRuntimeFailureMetadataOutcome.status, 'failed');
 assert.equal(outputRuntimeFailureMetadataOutcome.diagnostics[0].class, 'agent_runtime.failed');
 assert.equal(outputRuntimeFailureMetadataOutcome.diagnostics[0].data.reason, 'provider_auth_failed');
 
+const outputAgentRuntimeSuccessOutcome = agentTaskOutcomeFromCodeboxResult(request, {
+  success: true,
+  schema: 'wp-codebox/agent-task-run/v1',
+  status: 'completed',
+  artifact_result: {
+    schema: 'wp-codebox/artifact-result-envelope/v1',
+    status: 'created',
+    result: {
+      outputs: {
+        agent_runtime: {
+          success: true,
+          result: {
+            reply: 'Static site candidate produced.',
+            messages: [],
+            run_id: 'dm-chat-run-1',
+          },
+        },
+      },
+    },
+  },
+});
+assert.equal(outputAgentRuntimeSuccessOutcome.status, 'succeeded');
+assert.equal(outputAgentRuntimeSuccessOutcome.failure_classification, undefined);
+
 const outputAgentRuntimeFailureWithoutTypedArtifactsOutcome = agentTaskOutcomeFromCodeboxResult(request, {
   success: true,
   schema: 'wp-codebox/agent-task-run/v1',
   status: 'completed',
   summary: 'WP Codebox agent task succeeded.',
-  outputs: {
-    agent_runtime: {
+  artifact_result: {
+    schema: 'wp-codebox/artifact-result-envelope/v1',
+    status: 'created',
+    result: {
       success: false,
-      result: {
-        success: false,
-        error_reason: 'ai_processing_failed',
-        error_message: 'Embedded runtime failed before emitting typed artifacts.',
-        terminal_status: 'failed - ai_processing_failed',
-        outputs: {},
-      },
+      error_reason: 'ai_processing_failed',
+      error_message: 'Embedded runtime failed before emitting typed artifacts.',
+      terminal_status: 'failed - ai_processing_failed',
+      outputs: {},
     },
   },
 }, {
@@ -1748,65 +1998,105 @@ assert.equal(outputAgentRuntimeFailureWithoutTypedArtifactsOutcome.diagnostics[0
 assert.equal(outputAgentRuntimeFailureWithoutTypedArtifactsOutcome.diagnostics.some((diagnostic) => diagnostic.class === 'codebox.required_typed_artifacts_missing'), false);
 assert.deepEqual(outputAgentRuntimeFailureWithoutTypedArtifactsOutcome.metadata.typed_artifacts, {});
 
-const agentBundleOutcome = agentTaskOutcomeFromCodeboxResult({
+const synthesizedArtifactRuntimeFailureOutcome = agentTaskOutcomeFromCodeboxResult({
   ...request,
-  task_id: 'agent-bundle-task-123',
-  executor: { backend: 'codebox' },
+  artifact_declarations: [
+    { name: 'patch', required: true },
+    { name: 'agent_result', required: true },
+  ],
 }, {
   success: true,
   schema: 'wp-codebox/agent-task-run/v1',
-  artifacts: '/tmp/wp-codebox-artifacts',
+  status: 'completed',
+  summary: 'WP Codebox agent task succeeded.',
+  artifact_result: {
+    schema: 'wp-codebox/artifact-result-envelope/v1',
+    status: 'created',
+    artifact_refs: [{ id: 'codebox-patch', kind: 'codebox-patch', path: '/tmp/patch.diff' }],
+    result: {
+      success: false,
+      status: 'failed',
+      outputs: {
+        typed_artifacts: {
+          patch: { name: 'patch', type: 'file', payload: { path: '/tmp/patch.diff' } },
+          agent_result: { name: 'agent_result', type: 'json', payload: { status: 'failed' } },
+        },
+      },
+    },
+  },
+}, {
+  normalizeAgentTaskRunResult: () => ({
+    schema: 'wp-codebox/agent-task-run-result/v1',
+    status: 'succeeded',
+    artifacts: [],
+    diagnostics: [],
+    metadata: {},
+    refs: {},
+  }),
+});
+assert.equal(synthesizedArtifactRuntimeFailureOutcome.status, 'failed');
+assert.equal(synthesizedArtifactRuntimeFailureOutcome.failure_classification, 'execution_failed');
+assert.equal(synthesizedArtifactRuntimeFailureOutcome.diagnostics[0].class, 'agent_runtime.failed');
+
+const agentBundleOutcome = agentTaskOutcomeFromCodeboxResult({
+  ...request,
+  task_id: 'agent-bundle-task-123',
+  executor: { backend: 'wp-codebox' },
+}, {
+  success: true,
+  schema: 'wp-codebox/agent-task-run/v1',
+  artifact_result: {
+    schema: 'wp-codebox/artifact-result-envelope/v1',
+    status: 'created',
+    artifact_refs: [
+      { kind: 'typed-bundle-output', name: 'example_review', path: '/tmp/wp-codebox-artifacts/example-review.json' },
+      { kind: 'agent-runtime-transcript', path: '/tmp/transcript.json' },
+      { kind: 'agent-runtime-replay-bundle', path: '/tmp/replay-bundle' },
+      { kind: 'agent-runtime-pull-request', url: 'https://github.com/example-org/example-repo/pull/123' },
+    ],
+    result: {
+      metadata: {
+        engine_data: { example_agent: { pr_url: 'https://github.com/example-org/example-repo/pull/123' } },
+      },
+      outputs: {
+        typed_artifacts: {
+          example_review: {
+            schema: 'homeboy/agent-task-typed-artifact/v1',
+            type: 'ExampleReviewArtifact',
+            artifact_schema: 'example/review-artifact/v1',
+            payload: { slug: 'issue-1222-transformer-loop', review_ready: true },
+            provenance: { bundle_slug: 'example-agent', task_id: 'agent-bundle-task-123' },
+            file_refs: [{ path: '/tmp/wp-codebox-artifacts/example-review.json', mime: 'application/json' }],
+          },
+        },
+      },
+    },
+  },
   task_input: {
+    agent_bundle: agentBundleRequest.agent_bundle,
     policy: { write: 'sandbox', apply: 'review' },
     sandbox_tool_policy: {
       schema: 'wp-codebox/sandbox-tool-policy/v1',
       tools: [{ id: 'homeboy/no-runtime-tools', allowed: false }],
     },
   },
-  metadata: {
-    agent_runtime: {
-      bundle: agentBundleRequest.agent_bundle,
-      workload: {
-        outputs: {
-          typed_artifacts: {
-            static_site_candidate: {
-              schema: 'homeboy/agent-task-typed-artifact/v1',
-              type: 'StaticSiteCandidate',
-              artifact_schema: 'static-site-importer/static-site-candidate/v1',
-              payload: { slug: 'issue-1222-transformer-loop', import_ready: true },
-              provenance: { bundle_slug: 'static-site-agent', task_id: 'agent-bundle-task-123' },
-              file_refs: [{ path: '/tmp/wp-codebox-artifacts/static-site-candidate.json', mime: 'application/json' }],
-            },
-          },
-        },
-        scenarios: [{
-          id: 'agent-bundle',
-          metadata: {
-            transcript_artifacts: { json: '/tmp/transcript.json', summary: '/tmp/transcript.md' },
-            replay_bundle_path: '/tmp/replay-bundle',
-            engine_data: { static_site_agent: { pr_url: 'https://github.com/chubes4/wp-site-generator/pull/123' } },
-          },
-        }],
-      },
-    },
-  },
 });
 assert.equal(agentBundleOutcome.schema, 'homeboy/agent-task-outcome/v1');
 assert.equal(agentBundleOutcome.status, 'succeeded');
-assert.equal(agentBundleOutcome.outputs.static_site_pr_url, 'https://github.com/chubes4/wp-site-generator/pull/123');
-assert.equal(agentBundleOutcome.outputs.typed_artifacts.static_site_candidate.type, 'StaticSiteCandidate');
-assert.equal(agentBundleOutcome.outputs.typed_artifacts.static_site_candidate.artifact_schema, 'static-site-importer/static-site-candidate/v1');
-assert.equal(agentBundleOutcome.outputs.typed_artifacts.static_site_candidate.payload.import_ready, true);
-assert.equal(agentBundleOutcome.artifacts.some((artifact) => artifact.kind === 'typed-bundle-output' && artifact.name === 'static_site_candidate' && artifact.path === '/tmp/wp-codebox-artifacts/static-site-candidate.json'), true);
+assert.equal(agentBundleOutcome.outputs.example_pr_url, 'https://github.com/example-org/example-repo/pull/123');
+assert.equal(agentBundleOutcome.outputs.typed_artifacts.example_review.type, 'ExampleReviewArtifact');
+assert.equal(agentBundleOutcome.outputs.typed_artifacts.example_review.artifact_schema, 'example/review-artifact/v1');
+assert.equal(agentBundleOutcome.outputs.typed_artifacts.example_review.payload.review_ready, true);
+assert.equal(agentBundleOutcome.artifacts.some((artifact) => artifact.kind === 'typed-bundle-output' && artifact.name === 'example_review' && artifact.path === '/tmp/wp-codebox-artifacts/example-review.json'), true);
 assert.equal(agentBundleOutcome.artifacts.some((artifact) => artifact.kind === 'agent-runtime-transcript' && artifact.path === '/tmp/transcript.json'), true);
 assert.equal(agentBundleOutcome.artifacts.some((artifact) => artifact.kind === 'agent-runtime-replay-bundle' && artifact.path === '/tmp/replay-bundle'), true);
-assert.equal(agentBundleOutcome.evidence_refs.some((ref) => ref.uri === 'https://github.com/chubes4/wp-site-generator/pull/123'), true);
-assert.equal(agentBundleOutcome.evidence_refs.some((ref) => ref.uri === '/tmp/wp-codebox-artifacts/static-site-candidate.json'), true);
+assert.equal(agentBundleOutcome.evidence_refs.some((ref) => ref.uri === 'https://github.com/example-org/example-repo/pull/123'), true);
+assert.equal(agentBundleOutcome.evidence_refs.some((ref) => ref.uri === '/tmp/wp-codebox-artifacts/example-review.json'), true);
 assert.equal(agentBundleOutcome.metadata.sandbox_policy.policy.apply, 'review');
 assert.equal(agentBundleOutcome.metadata.sandbox_policy.sandbox_tool_policy.tools[0].allowed, false);
-assert.equal(upstreamRunnerOutcome.artifacts[1].kind, 'codebox-session-artifacts');
-assert.equal(upstreamRunnerOutcome.evidence_refs[0].uri, 'https://preview.example.test/sandbox-session-1');
-assert.equal(upstreamRunnerOutcome.evidence_refs[1].uri, '/tmp/wp-codebox-artifacts');
+assert.equal(upstreamRunnerOutcome.artifacts[0].kind, 'codebox-artifact-directory');
+assert.equal(upstreamRunnerOutcome.evidence_refs.some((ref) => ref.uri === 'https://preview.example.test/sandbox-session-1'), true);
+assert.equal(upstreamRunnerOutcome.evidence_refs.some((ref) => ref.uri === '/tmp/wp-codebox-artifacts'), true);
 
 const missingRequiredTypedArtifactOutcome = agentTaskOutcomeFromCodeboxResult({
   ...request,
@@ -1818,17 +2108,17 @@ const missingRequiredTypedArtifactOutcome = agentTaskOutcomeFromCodeboxResult({
     artifact_schema: 'example/required-report/v1',
     required: true,
   }],
-  executor: { backend: 'codebox' },
+  executor: { backend: 'wp-codebox' },
 }, {
   success: true,
   schema: 'wp-codebox/agent-task-run/v1',
   status: 'completed',
-  metadata: {
-    agent_runtime: {
-      workload: {
-        outputs: {},
-        scenarios: [{ id: 'agent-bundle', metadata: {} }],
-      },
+  artifact_result: {
+    schema: 'wp-codebox/artifact-result-envelope/v1',
+    status: 'created',
+    success: true,
+    result: {
+      outputs: {},
     },
   },
 });
@@ -1837,28 +2127,68 @@ assert.equal(missingRequiredTypedArtifactOutcome.failure_classification, 'execut
 assert.equal(missingRequiredTypedArtifactOutcome.diagnostics[0].class, 'codebox.required_typed_artifacts_missing');
 assert.equal(missingRequiredTypedArtifactOutcome.diagnostics[0].data.missing[0].name, 'required_report');
 
-const missingGenericRepoLoopArtifactOutcome = agentTaskOutcomeFromCodeboxResult({
+const inputBackfilledTypedArtifactOutcome = agentTaskOutcomeFromCodeboxResult({
   ...request,
-  task_id: 'missing-generic-repo-loop-artifact-task-123',
-  artifacts: {
-    outputs: {
-      concept_packet: {
-        type: 'ConceptPacket',
-        schema: 'static-site-generator/concept-packet/v1',
-      },
-    },
+  task_id: 'input-backfilled-typed-artifact-task-123',
+  inputs: {
+    required_report: { review_ready: true },
   },
-  executor: { backend: 'codebox' },
+  artifact_declarations: [{
+    schema: 'wp-codebox/artifact-declaration/v1',
+    name: 'required_report',
+    type: 'RequiredReport',
+    artifact_schema: 'example/required-report/v1',
+    required: true,
+  }],
+  executor: { backend: 'wp-codebox' },
 }, {
   success: true,
   schema: 'wp-codebox/agent-task-run/v1',
   status: 'completed',
-  metadata: {
-    agent_runtime: {
-      workload: {
-        outputs: {},
-        scenarios: [{ id: 'agent-bundle', metadata: {} }],
+  artifact_result: {
+    schema: 'wp-codebox/artifact-result-envelope/v1',
+    status: 'created',
+    success: true,
+    result: {
+      outputs: {
+        typed_artifacts: {
+          required_report: {
+            schema: 'homeboy/agent-task-typed-artifact/v1',
+            name: 'required_report',
+            type: 'RequiredReport',
+            artifact_schema: 'example/required-report/v1',
+            payload: { review_ready: true },
+          },
+        },
       },
+    },
+  },
+});
+assert.equal(inputBackfilledTypedArtifactOutcome.status, 'succeeded');
+assert.equal(inputBackfilledTypedArtifactOutcome.outputs.typed_artifacts.required_report.artifact_schema, 'example/required-report/v1');
+assert.equal(inputBackfilledTypedArtifactOutcome.outputs.typed_artifacts.required_report.payload.review_ready, true);
+assert.equal(inputBackfilledTypedArtifactOutcome.diagnostics.some((diagnostic) => diagnostic.class === 'codebox.required_typed_artifacts_missing'), false);
+
+const missingGenericRepoLoopArtifactOutcome = agentTaskOutcomeFromCodeboxResult({
+  ...request,
+  task_id: 'missing-generic-repo-loop-artifact-task-123',
+  artifact_declarations: [{
+    schema: 'wp-codebox/artifact-declaration/v1',
+    name: 'concept_packet',
+    type: 'ConceptPacket',
+    artifact_schema: 'example/concept-packet/v1',
+    required: true,
+  }],
+  executor: { backend: 'wp-codebox' },
+}, {
+  success: true,
+  schema: 'wp-codebox/agent-task-run/v1',
+  status: 'completed',
+  artifact_result: {
+    schema: 'wp-codebox/artifact-result-envelope/v1',
+    status: 'created',
+    result: {
+      outputs: {},
     },
   },
 });
@@ -1866,121 +2196,198 @@ assert.equal(missingGenericRepoLoopArtifactOutcome.status, 'failed');
 assert.equal(missingGenericRepoLoopArtifactOutcome.failure_classification, 'execution_failed');
 assert.equal(missingGenericRepoLoopArtifactOutcome.diagnostics[0].class, 'codebox.required_typed_artifacts_missing');
 assert.equal(missingGenericRepoLoopArtifactOutcome.diagnostics[0].data.missing[0].name, 'concept_packet');
-assert.equal(missingGenericRepoLoopArtifactOutcome.diagnostics[0].data.missing[0].artifact_schema, 'static-site-generator/concept-packet/v1');
+assert.equal(missingGenericRepoLoopArtifactOutcome.diagnostics[0].data.missing[0].artifact_schema, 'example/concept-packet/v1');
 
 const canonicalTopLevelAgentBundleOutcome = agentTaskOutcomeFromCodeboxResult({
   ...request,
   task_id: 'canonical-top-level-agent-bundle-task-123',
-  executor: { backend: 'codebox' },
+  executor: { backend: 'wp-codebox' },
 }, {
   success: true,
   schema: 'wp-codebox/agent-task-run/v1',
-  artifacts: '/tmp/wp-codebox-artifacts',
-  metadata: {
-    agent_runtime: {
-      bundle: {
+  task_input: {
+    agent_bundle: {
         engine_data_outputs: {
-          static_site_branch: 'metadata.engine_data.static_site_agent.branch',
-          static_site_pr_url: 'metadata.engine_data.static_site_agent.pr_url',
-          static_site_slug: 'metadata.engine_data.static_site_agent.slug',
+          example_branch: 'metadata.engine_data.example_agent.branch',
+          example_pr_url: 'metadata.engine_data.example_agent.pr_url',
+          example_slug: 'metadata.engine_data.example_agent.slug',
         },
       },
-      workload: {
-        outputs: [],
-      },
-    },
   },
-  outputs: {
-    engine_data: {
-      static_site_agent: {
-        branch: 'static/issue-451-design-direction',
-        pr_url: 'https://github.com/chubes4/wp-site-generator/pull/453',
-        slug: 'issue-451-design-direction',
+  artifact_result: {
+    schema: 'wp-codebox/artifact-result-envelope/v1',
+    status: 'created',
+    success: true,
+    evidence_refs: [{ kind: 'agent-runtime-pull-request', uri: 'https://github.com/example-org/example-repo/pull/453' }],
+    result: {
+      metadata: {
+        engine_data: {
+          example_agent: {
+            branch: 'example/issue-451-design-direction',
+            pr_url: 'https://github.com/example-org/example-repo/pull/453',
+            slug: 'issue-451-design-direction',
+          },
+        },
       },
     },
   },
 });
 assert.equal(canonicalTopLevelAgentBundleOutcome.status, 'succeeded');
-assert.equal(canonicalTopLevelAgentBundleOutcome.outputs.static_site_branch, 'static/issue-451-design-direction');
-assert.equal(canonicalTopLevelAgentBundleOutcome.outputs.static_site_pr_url, 'https://github.com/chubes4/wp-site-generator/pull/453');
-assert.equal(canonicalTopLevelAgentBundleOutcome.outputs.static_site_slug, 'issue-451-design-direction');
-assert.equal(canonicalTopLevelAgentBundleOutcome.evidence_refs.some((ref) => ref.uri === 'https://github.com/chubes4/wp-site-generator/pull/453'), true);
+assert.equal(canonicalTopLevelAgentBundleOutcome.outputs.example_branch, 'example/issue-451-design-direction');
+assert.equal(canonicalTopLevelAgentBundleOutcome.outputs.example_pr_url, 'https://github.com/example-org/example-repo/pull/453');
+assert.equal(canonicalTopLevelAgentBundleOutcome.outputs.example_slug, 'issue-451-design-direction');
+assert.equal(canonicalTopLevelAgentBundleOutcome.evidence_refs.some((ref) => ref.uri === 'https://github.com/example-org/example-repo/pull/453'), true);
 
 const projectedTypedArtifactBundleOutcome = agentTaskOutcomeFromCodeboxResult({
   ...request,
   task_id: 'projected-typed-artifact-bundle-task-123',
   artifact_declarations: [{
     schema: 'wp-codebox/artifact-declaration/v1',
-    name: 'static_site_candidate',
-    type: 'StaticSiteCandidate',
-    artifact_schema: 'static-site-importer/static-site-candidate/v1',
+    name: 'example_review',
+    type: 'ExampleReviewArtifact',
+    artifact_schema: 'example/review-artifact/v1',
     required: true,
   }],
-  executor: { backend: 'codebox' },
+  executor: { backend: 'wp-codebox' },
 }, {
   success: true,
   schema: 'wp-codebox/agent-task-run/v1',
-  artifacts: '/tmp/wp-codebox-artifacts',
-  metadata: {
-    agent_runtime: {
-      bundle: {
+  task_input: {
+    agent_bundle: {
         engine_data_outputs: {
-          static_site_candidate: 'outputs.typed_artifacts.static_site_candidate.payload',
+          example_review: 'outputs.typed_artifacts.example_review.payload',
         },
       },
-      workload: {
-        scenarios: [{
-          id: 'agent-bundle',
-          metadata: {
-            schema: 'datamachine/agent-bundle-run/v1',
-            outputs: {
-              typed_artifacts: {
-                static_site_candidate: {
-                  schema: 'homeboy/agent-task-typed-artifact/v1',
-                  type: 'StaticSiteCandidate',
-                  artifact_schema: 'static-site-importer/static-site-candidate/v1',
-                  payload: { slug: 'projected-candidate', import_ready: true },
-                  provenance: { bundle_slug: 'static-site-agent' },
-                  file_refs: [{ path: '/tmp/wp-codebox-artifacts/projected-candidate.json', mime: 'application/json' }],
-                },
-              },
-            },
+  },
+  artifact_result: {
+    schema: 'wp-codebox/artifact-result-envelope/v1',
+    status: 'created',
+    artifact_refs: [{ kind: 'typed-bundle-output', path: '/tmp/wp-codebox-artifacts/projected-review.json' }],
+    result: {
+      outputs: {
+        typed_artifacts: {
+          example_review: {
+            schema: 'homeboy/agent-task-typed-artifact/v1',
+            type: 'ExampleReviewArtifact',
+            artifact_schema: 'example/review-artifact/v1',
+            payload: { slug: 'projected-review', review_ready: true },
+            provenance: { bundle_slug: 'example-agent' },
+            file_refs: [{ path: '/tmp/wp-codebox-artifacts/projected-review.json', mime: 'application/json' }],
           },
-        }],
+        },
       },
     },
   },
 });
 assert.equal(projectedTypedArtifactBundleOutcome.status, 'succeeded');
-assert.equal(projectedTypedArtifactBundleOutcome.outputs.static_site_candidate.import_ready, true);
-assert.equal(projectedTypedArtifactBundleOutcome.outputs.typed_artifacts.static_site_candidate.type, 'StaticSiteCandidate');
-assert.equal(projectedTypedArtifactBundleOutcome.outputs.typed_artifacts.static_site_candidate.payload.slug, 'projected-candidate');
+assert.equal(projectedTypedArtifactBundleOutcome.outputs.example_review.review_ready, true);
+assert.equal(projectedTypedArtifactBundleOutcome.outputs.typed_artifacts.example_review.type, 'ExampleReviewArtifact');
+assert.equal(projectedTypedArtifactBundleOutcome.outputs.typed_artifacts.example_review.payload.slug, 'projected-review');
 assert.equal(projectedTypedArtifactBundleOutcome.diagnostics.some((diagnostic) => diagnostic.class === 'codebox.required_typed_artifacts_missing'), false);
-assert.equal(projectedTypedArtifactBundleOutcome.artifacts.some((artifact) => artifact.kind === 'typed-bundle-output' && artifact.path === '/tmp/wp-codebox-artifacts/projected-candidate.json'), true);
+assert.equal(projectedTypedArtifactBundleOutcome.artifacts.some((artifact) => artifact.kind === 'typed-bundle-output' && artifact.path === '/tmp/wp-codebox-artifacts/projected-review.json'), true);
+
+const engineDataTypedArtifactBundleOutcome = agentTaskOutcomeFromCodeboxResult({
+  ...request,
+  task_id: 'engine-data-typed-artifact-bundle-task-123',
+  artifact_declarations: [{
+    schema: 'wp-codebox/artifact-declaration/v1',
+    name: 'concept_packet',
+    type: 'ConceptPacket',
+    artifact_schema: 'example/concept-packet/v1',
+    required: true,
+  }],
+  executor: { backend: 'wp-codebox' },
+}, {
+  success: true,
+  schema: 'wp-codebox/agent-task-run/v1',
+  artifact_result: {
+    schema: 'wp-codebox/artifact-result-envelope/v1',
+    status: 'created',
+    result: {
+      outputs: {
+        typed_artifacts: {
+          concept_packet: {
+            schema: 'example/concept-packet/v1',
+            artifact: 'ConceptPacket',
+            payload: { title: 'Projected concept' },
+            },
+          },
+      },
+    },
+  },
+});
+assert.equal(engineDataTypedArtifactBundleOutcome.status, 'succeeded');
+assert.equal(engineDataTypedArtifactBundleOutcome.outputs.typed_artifacts.concept_packet.artifact_schema, 'example/concept-packet/v1');
+assert.equal(engineDataTypedArtifactBundleOutcome.outputs.typed_artifacts.concept_packet.payload.title, 'Projected concept');
+assert.equal(engineDataTypedArtifactBundleOutcome.diagnostics.some((diagnostic) => diagnostic.class === 'codebox.required_typed_artifacts_missing'), false);
+
+const replyTypedArtifactBundleOutcome = agentTaskOutcomeFromCodeboxResult({
+  ...request,
+  task_id: 'reply-typed-artifact-bundle-task-123',
+  artifact_declarations: [{
+    schema: 'wp-codebox/artifact-declaration/v1',
+    name: 'concept_packet',
+    type: 'ConceptPacket',
+    artifact_schema: 'example/concept-packet/v1',
+    required: true,
+  }],
+  executor: { backend: 'wp-codebox' },
+}, {
+  success: true,
+  schema: 'wp-codebox/agent-task-run/v1',
+  artifact_result: {
+    schema: 'wp-codebox/artifact-result-envelope/v1',
+    status: 'created',
+    success: true,
+    result: {
+      reply: '## Commerce Concept Packet\n\nA focused commerce concept packet.',
+      outputs: {
+        typed_artifacts: {
+          concept_packet: {
+            schema: 'homeboy/agent-task-typed-artifact/v1',
+            name: 'concept_packet',
+            type: 'ConceptPacket',
+            artifact_schema: 'example/concept-packet/v1',
+            payload: { content: '## Commerce Concept Packet\n\nA focused commerce concept packet.' },
+            metadata: { artifact_id: 'concept_packet', kind: 'example/concept-packet/v1' },
+          },
+        },
+      },
+      },
+  },
+});
+assert.equal(replyTypedArtifactBundleOutcome.status, 'succeeded');
+assert.equal(replyTypedArtifactBundleOutcome.outputs.typed_artifacts.concept_packet.artifact_schema, 'example/concept-packet/v1');
+assert.equal(replyTypedArtifactBundleOutcome.outputs.typed_artifacts.concept_packet.artifact_id, 'concept_packet');
+assert.equal(replyTypedArtifactBundleOutcome.outputs.typed_artifacts.concept_packet.kind, 'example/concept-packet/v1');
+assert.match(replyTypedArtifactBundleOutcome.outputs.typed_artifacts.concept_packet.payload.content, /Commerce Concept Packet/);
+assert.equal(replyTypedArtifactBundleOutcome.diagnostics.some((diagnostic) => diagnostic.class === 'codebox.required_typed_artifacts_missing'), false);
+assert.equal(replyTypedArtifactBundleOutcome.typed_artifacts.some((artifact) => artifact.name === 'concept_packet'), true);
+assert.equal(replyTypedArtifactBundleOutcome.typed_artifacts.find((artifact) => artifact.name === 'concept_packet').artifact_id, 'concept_packet');
+assert.equal(replyTypedArtifactBundleOutcome.typed_artifacts.find((artifact) => artifact.name === 'concept_packet').kind, 'example/concept-packet/v1');
 
 const failedProjectedTypedArtifactBundleOutcome = agentTaskOutcomeFromCodeboxResult({
   ...request,
   task_id: 'failed-projected-typed-artifact-bundle-task-123',
-  executor: { backend: 'codebox' },
+  executor: { backend: 'wp-codebox' },
 }, {
   success: true,
   schema: 'wp-codebox/agent-task-run/v1',
   status: 'completed',
-  outputs: {
-    agent_runtime: {
+  artifact_result: {
+    schema: 'wp-codebox/artifact-result-envelope/v1',
+    status: 'created',
+    result: {
       success: false,
-      result: {
-        success: false,
-        error_reason: 'empty_data_packet_returned',
-        error_message: 'Data Machine bundle returned an empty data packet.',
-        terminal_status: 'failed - empty_data_packet_returned',
-        outputs: {
-          typed_artifacts: {
-            failure_report: {
-              type: 'FailureReport',
-              artifact_schema: 'example/failure-report/v1',
-              payload: { reason: 'empty_data_packet_returned' },
-            },
+      error_reason: 'empty_data_packet_returned',
+      error_message: 'Runtime bundle returned an empty data packet.',
+      terminal_status: 'failed - empty_data_packet_returned',
+      outputs: {
+        typed_artifacts: {
+          failure_report: {
+            type: 'FailureReport',
+            artifact_schema: 'example/failure-report/v1',
+            payload: { reason: 'empty_data_packet_returned' },
           },
         },
       },
@@ -1996,34 +2403,40 @@ assert.equal(failedProjectedTypedArtifactBundleOutcome.metadata.typed_artifacts.
 const singleResultAgentBundleOutcome = agentTaskOutcomeFromCodeboxResult({
   ...request,
   task_id: 'single-result-agent-bundle-task-123',
-  executor: { backend: 'codebox' },
+  executor: { backend: 'wp-codebox' },
 }, {
   success: true,
   schema: 'wp-codebox/agent-task-run/v1',
-  artifacts: '/tmp/wp-codebox-artifacts',
-  metadata: {
-    agent_runtime: {
-      bundle: {
+  task_input: {
+    agent_bundle: {
         engine_data_outputs: {
-          issue_number: 'metadata.engine_data.store_idea_agent.issue_number',
-          issue_url: 'metadata.engine_data.store_idea_agent.issue_url',
+          issue_number: 'metadata.engine_data.example_agent.issue_number',
+          issue_url: 'metadata.engine_data.example_agent.issue_url',
         },
       },
-      workload: {
-        outputs: {
-          issue_number: 123,
-          issue_url: 'https://github.com/chubes4/wp-site-generator/issues/123',
+  },
+  artifact_result: {
+    schema: 'wp-codebox/artifact-result-envelope/v1',
+    status: 'created',
+    evidence_refs: [{ kind: 'agent-output-issue-url', uri: 'https://github.com/example-org/example-repo/issues/123' }],
+    result: {
+      metadata: {
+        engine_data: {
+          example_agent: {
+            issue_number: 123,
+            issue_url: 'https://github.com/example-org/example-repo/issues/123',
+          },
         },
-        diagnostics: [{ class: 'agent_runtime.output', message: 'Semantic outputs captured.' }],
       },
+      diagnostics: [{ class: 'agent_runtime.output', message: 'Semantic outputs captured.' }],
     },
   },
 });
 assert.equal(singleResultAgentBundleOutcome.schema, 'homeboy/agent-task-outcome/v1');
 assert.equal(singleResultAgentBundleOutcome.status, 'succeeded');
 assert.equal(singleResultAgentBundleOutcome.outputs.issue_number, 123);
-assert.equal(singleResultAgentBundleOutcome.outputs.issue_url, 'https://github.com/chubes4/wp-site-generator/issues/123');
-assert.equal(singleResultAgentBundleOutcome.evidence_refs.some((ref) => ref.uri === 'https://github.com/chubes4/wp-site-generator/issues/123'), true);
+assert.equal(singleResultAgentBundleOutcome.outputs.issue_url, 'https://github.com/example-org/example-repo/issues/123');
+assert.equal(singleResultAgentBundleOutcome.evidence_refs.some((ref) => ref.uri === 'https://github.com/example-org/example-repo/issues/123'), true);
 
 const canaryRunOutcome = agentTaskOutcomeFromCodeboxResult(request, {
   success: true,
@@ -2040,6 +2453,24 @@ const canaryRunOutcome = agentTaskOutcomeFromCodeboxResult(request, {
     runtimeLogPath: '/tmp/canary/runtime/logs/runtime.log',
     commandsLogPath: '/tmp/canary/runtime/logs/commands.log',
   },
+  artifact_result: {
+    schema: 'wp-codebox/artifact-result-envelope/v1',
+    status: 'created',
+    metadata: {
+      no_op_reason: 'no_file_changes',
+      changed_files_count: 0,
+      patch_bytes: 0,
+      patch_sha256: 'empty-patch-sha',
+    },
+    artifact_refs: [
+      { id: 'artifact-bundle-sha256-canary', kind: 'artifact-bundle', path: '/tmp/canary/runtime', sha256: 'canary-digest' },
+      { id: 'codebox-changed-files', kind: 'codebox-changed-files', path: '/tmp/canary/runtime/files/changed-files.json', metadata: { artifact: 'files/changed-files.json' } },
+      { id: 'codebox-patch', kind: 'codebox-patch', path: '/tmp/canary/runtime/files/patch.diff', sha256: 'empty-patch-sha', metadata: { artifact: 'files/patch.diff' } },
+      { id: 'codebox-transcript', kind: 'codebox-transcript', path: '/tmp/canary/runtime/files/transcript.json', metadata: { artifact: 'files/transcript.json', executionCount: 1 } },
+      { id: 'codebox-runtime-log', kind: 'codebox-runtime-log', path: '/tmp/canary/runtime/logs/runtime.log' },
+      { id: 'codebox-command-log', kind: 'codebox-command-log', path: '/tmp/canary/runtime/logs/commands.log' },
+    ],
+  },
   run: {
     runId: 'run-canary',
     status: 'succeeded',
@@ -2051,14 +2482,6 @@ const canaryRunOutcome = agentTaskOutcomeFromCodeboxResult(request, {
       id: 'artifact-bundle-sha256-canary',
       digest: { algorithm: 'sha256', value: 'canary-digest' },
     }],
-    agentResult: {
-      summary: 'Agent sandbox completed without actionable file changes.',
-      changedFiles: { count: 0, paths: [], artifact: 'files/changed-files.json' },
-      patch: { bytes: 0, sha256: 'empty-patch-sha', artifact: 'files/patch.diff' },
-      transcript: { artifact: 'files/transcript.json', executionCount: 1 },
-      artifacts: { directory: '/tmp/canary/runtime' },
-      noOpReason: 'no_file_changes',
-    },
   },
   completionOutcome: {
     status: 'partial',
@@ -2075,16 +2498,95 @@ assert.equal(canaryRunOutcome.artifacts.some((artifact) => artifact.kind === 'ar
 assert.equal(canaryRunOutcome.artifacts.some((artifact) => artifact.kind === 'codebox-changed-files' && artifact.path === '/tmp/canary/runtime/files/changed-files.json'), true);
 assert.equal(canaryRunOutcome.artifacts.some((artifact) => artifact.kind === 'codebox-patch' && artifact.path === '/tmp/canary/runtime/files/patch.diff'), true);
 assert.equal(canaryRunOutcome.artifacts.some((artifact) => artifact.kind === 'codebox-transcript' && artifact.path === '/tmp/canary/runtime/files/transcript.json'), true);
+assert.equal(canaryRunOutcome.artifacts.some((artifact) => artifact.role === 'patch' && artifact.metadata.wp_codebox.kind === 'codebox-patch' && artifact.path === '/tmp/canary/runtime/files/patch.diff'), true);
+assert.equal(canaryRunOutcome.artifacts.some((artifact) => artifact.role === 'transcript' && artifact.metadata.wp_codebox.kind === 'codebox-transcript'), true);
 assert.equal(canaryRunOutcome.artifacts.some((artifact) => artifact.kind === 'codebox-runtime-log'), true);
 assert.equal(canaryRunOutcome.artifacts.some((artifact) => artifact.kind === 'codebox-command-log'), true);
 assert.equal(canaryRunOutcome.evidence_refs.some((ref) => ref.uri === '/tmp/canary/runtime/files/patch.diff'), true);
-assert.equal(canaryRunOutcome.metadata.decision_evidence.selected_backend, 'codebox');
+assert.equal(canaryRunOutcome.metadata.decision_evidence.selected_backend, 'wp-codebox');
 assert.equal(canaryRunOutcome.metadata.decision_evidence.run_id, 'run-canary');
 assert.equal(canaryRunOutcome.metadata.decision_evidence.runtime_status, 'destroyed');
 assert.equal(canaryRunOutcome.metadata.decision_evidence.cleanup_observed, 'runtime_destroyed');
 assert.equal(canaryRunOutcome.metadata.decision_evidence.no_op_reason, 'no_file_changes');
 assert.equal(canaryRunOutcome.metadata.decision_evidence.patch_bytes, 0);
-assert.deepEqual(canaryRunOutcome.metadata.decision_evidence.runtime_gap_trackers, []);
+assert.deepEqual(canaryRunOutcome.metadata.decision_evidence.runtime_gap_trackers.map((tracker) => tracker.gap), ['runtime-profile-normalizer', 'typed-artifact-dto-normalizer']);
+
+const canaryTranscriptRequiredOutcome = agentTaskOutcomeFromCodeboxResult({
+  ...request,
+  artifact_declarations: [{
+    name: 'datamachine-transcript',
+    type: 'transcript',
+    required: true,
+  }],
+}, {
+  success: true,
+  schema: 'wp-codebox/agent-task-run/v1',
+  artifact_result: {
+    schema: 'wp-codebox/artifact-result-envelope/v1',
+    status: 'created',
+    metadata: { no_op_reason: 'no_file_changes', changed_files_count: 0, patch_bytes: 0 },
+    transcript_refs: [{ kind: 'codebox-transcript', path: '/tmp/canary/runtime/files/transcript.json' }],
+    result: {
+      outputs: {
+        typed_artifacts: {
+          'datamachine-transcript': {
+            schema: 'homeboy/agent-task-typed-artifact/v1',
+            name: 'datamachine-transcript',
+            type: 'transcript',
+            file_refs: [{ path: '/tmp/canary/runtime/files/transcript.json' }],
+          },
+        },
+      },
+    },
+  },
+  run: {
+    runId: 'run-canary-transcript-required',
+    status: 'succeeded',
+  },
+});
+assert.equal(canaryTranscriptRequiredOutcome.status, 'no_op');
+assert.equal(canaryTranscriptRequiredOutcome.outputs.typed_artifacts['datamachine-transcript'].file_refs[0].path, '/tmp/canary/runtime/files/transcript.json');
+assert.equal(canaryTranscriptRequiredOutcome.diagnostics.some((diagnostic) => diagnostic.class === 'codebox.required_typed_artifacts_missing'), false);
+
+const labArtifactRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'homeboy-codebox-lab-artifacts-'));
+const labRuntimeRoot = path.join(labArtifactRoot, 'runtime-fixture-123');
+fs.mkdirSync(path.join(labRuntimeRoot, 'files'), { recursive: true });
+fs.writeFileSync(path.join(labRuntimeRoot, 'files', 'transcript.json'), '{"schema":"wp-codebox/agent-transcript/v1"}\n');
+const labTranscriptRequiredOutcome = agentTaskOutcomeFromCodeboxResult({
+  ...request,
+  artifact_declarations: [{
+    name: 'datamachine-transcript',
+    type: 'transcript',
+    required: true,
+  }],
+}, {
+  success: true,
+  schema: 'wp-codebox/agent-task-run/v1',
+  artifact_result: {
+    schema: 'wp-codebox/artifact-result-envelope/v1',
+    status: 'created',
+    transcript_refs: [{
+      id: 'lab-codebox-transcript',
+      kind: 'codebox-transcript',
+      path: path.join(labRuntimeRoot, 'files', 'transcript.json'),
+      mime: 'application/json',
+    }],
+    result: {
+      outputs: {
+        typed_artifacts: {
+          'datamachine-transcript': {
+            schema: 'homeboy/agent-task-typed-artifact/v1',
+            name: 'datamachine-transcript',
+            type: 'transcript',
+            file_refs: [{ path: path.join(labRuntimeRoot, 'files', 'transcript.json') }],
+          },
+        },
+      },
+    },
+  },
+});
+assert.equal(labTranscriptRequiredOutcome.outputs.typed_artifacts['datamachine-transcript'].file_refs[0].path, path.join(labRuntimeRoot, 'files', 'transcript.json'));
+assert.equal(labTranscriptRequiredOutcome.diagnostics.some((diagnostic) => diagnostic.class === 'codebox.required_typed_artifacts_missing'), false);
 
 const codexOutcome = agentTaskOutcomeFromCodeboxResult(request, {
   success: true,
@@ -2126,7 +2628,7 @@ const codexProviderNotRegisteredOutcome = agentTaskOutcomeFromCodeboxResult({
   ...request,
   task_id: 'codex-provider-not-registered-task-123',
   executor: {
-    backend: 'codebox',
+    backend: 'wp-codebox',
     config: {
       provider: 'codex',
       provider_plugin_paths: ['/components/ai-provider-for-openai'],
@@ -2154,7 +2656,7 @@ const codexMissingProviderPluginOutcome = agentTaskOutcomeFromCodeboxResult({
   ...request,
   task_id: 'codex-missing-provider-plugin-task-123',
   executor: {
-    backend: 'codebox',
+    backend: 'wp-codebox',
     config: { provider: 'codex' },
   },
 }, {
@@ -2172,6 +2674,41 @@ assert(missingProviderPluginDiagnostic);
 assert.equal(missingProviderPluginDiagnostic.data.missing_provider_plugin_path, true);
 assert.deepEqual(missingProviderPluginDiagnostic.data.provider_plugin_paths, []);
 
+const installedLayoutRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'homeboy-codebox-agent-runtime-install-'));
+try {
+  const installedRuntime = path.join(installedLayoutRoot, 'agent-runtimes', 'wp-codebox');
+  fs.mkdirSync(path.join(installedRuntime, 'scripts', 'agent'), { recursive: true });
+  fs.mkdirSync(path.join(installedRuntime, 'lib'), { recursive: true });
+  fs.mkdirSync(path.join(installedLayoutRoot, 'extensions', 'wordpress', 'lib'), { recursive: true });
+  fs.copyFileSync(wpCodeboxRuntimeExecutor, path.join(installedRuntime, 'scripts', 'agent', 'homeboy-codebox-agent-task-executor.cjs'));
+  fs.writeFileSync(path.join(installedRuntime, 'lib', 'codebox-agent-task-executor.js'), `module.exports = {
+  agentTaskOutcomeFromCodeboxResult() { return {}; },
+  codeboxTaskRequestFromAgentTaskRequest() { return {}; },
+  providerContract() { return {}; },
+};\n`);
+  fs.writeFileSync(path.join(installedRuntime, 'lib', 'provider-preflight-manifest.js'), `module.exports = {
+  normalizeStringArray(value) { return Array.isArray(value) ? value : []; },
+  providerAuthEnvSources() { return {}; },
+  providerDiagnosticClass() { return 'fixture'; },
+  providerLabel() { return 'fixture'; },
+  providerPluginValidation() { return null; },
+  providerSecretEnv() { return []; },
+};\n`);
+  fs.writeFileSync(path.join(installedRuntime, 'lib', 'wp-codebox-runtime-readiness.js'), `module.exports = {
+  wpCodeboxRuntimeReadinessDiagnostics() { return []; },
+};\n`);
+  fs.writeFileSync(path.join(installedLayoutRoot, 'extensions', 'wordpress', 'lib', 'wp-codebox-core-loader.js'), `module.exports = { async loadWpCodeboxCore() { return {}; } };\n`);
+  const installedLayoutResult = spawnSync(process.execPath, [path.join(installedRuntime, 'scripts', 'agent', 'homeboy-codebox-agent-task-executor.cjs')], {
+    encoding: 'utf8',
+    env: fixtureEnv(),
+  });
+  assert.equal(installedLayoutResult.status, 1);
+  assert.match(installedLayoutResult.stderr, /AgentTaskRequest JSON is required/);
+  assert.doesNotMatch(installedLayoutResult.stderr, /wp-codebox-core-loader|MODULE_NOT_FOUND/);
+} finally {
+  fs.rmSync(installedLayoutRoot, { recursive: true, force: true });
+}
+
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'homeboy-codebox-agent-task-executor-'));
 try {
   const { fixture, capture } = writeFixtureTaskRunner(root);
@@ -2186,7 +2723,7 @@ try {
       ...request,
       task_id: 'missing-model-cli-task-123',
       executor: {
-        backend: 'codebox',
+        backend: 'wp-codebox',
         config: {
           provider: 'claude-code',
           provider_plugin_paths: ['/providers/claude-code'],
@@ -2198,11 +2735,13 @@ try {
   const missingModelOutcome = JSON.parse(missingModelResult.stdout);
   assert.equal(missingModelOutcome.status, 'failed');
   assert.equal(missingModelOutcome.failure_classification, 'provider');
-  assert.equal(missingModelOutcome.diagnostics[0].class, 'codebox.preflight.missing_model');
-  assert.match(missingModelOutcome.summary, /--model/);
-  assert.match(missingModelOutcome.summary, /provider-config\.model/);
+  const missingModelDiagnostic = missingModelOutcome.diagnostics.find((diagnostic) => diagnostic.class === 'codebox.preflight.missing_model');
+  assert(missingModelDiagnostic);
+  assert.match(missingModelDiagnostic.message, /--model/);
+  assert.match(missingModelDiagnostic.message, /provider-config\.model/);
   assert.equal(fs.existsSync(capture), false);
 
+  fs.rmSync(capture, { force: true });
   const invalidOverlayResult = spawnSync(process.execPath, [
     wpCodeboxRuntimeExecutor,
     '--task-runner',
@@ -2222,23 +2761,14 @@ try {
       },
     }),
   });
-  assert.equal(invalidOverlayResult.status, 1, invalidOverlayResult.stderr || invalidOverlayResult.stdout);
-  const invalidOverlayOutcome = JSON.parse(invalidOverlayResult.stdout);
-  assert.equal(invalidOverlayOutcome.status, 'failed');
-  assert.equal(invalidOverlayOutcome.failure_classification, 'provider');
-  assert.equal(invalidOverlayOutcome.diagnostics[0].class, 'codebox.runtime_overlay_config_invalid');
-  assert.equal(invalidOverlayOutcome.diagnostics[0].data.overlay_index, 0);
-  assert.equal(invalidOverlayOutcome.diagnostics[0].data.field, 'runtime_overlays[0].type');
-  assert.match(invalidOverlayOutcome.diagnostics[0].message, /legacy field "type"/);
-  assert.match(invalidOverlayOutcome.diagnostics[0].data.expected, /"kind": "bundled-library"/);
-  assert.equal(fs.existsSync(capture), false);
+  assert.equal(invalidOverlayResult.status, 0, invalidOverlayResult.stderr || invalidOverlayResult.stdout);
+  const invalidOverlayCapture = JSON.parse(fs.readFileSync(capture, 'utf8'));
+  assert.deepEqual(invalidOverlayCapture.request.runtime_overlays, [{ type: 'bundled-library', library: 'php-ai-client', source: '/components/php-ai-client' }]);
 
   const result = spawnSync(process.execPath, [
     wpCodeboxRuntimeExecutor,
     '--task-runner',
     fixture,
-    '--agents-api',
-    '/components/agents-api',
   ], {
     encoding: 'utf8',
     env: fixtureEnv(),
@@ -2247,8 +2777,8 @@ try {
   assert.equal(result.status, 0, result.stderr || result.stdout);
   const cliOutcome = JSON.parse(result.stdout);
   assert.equal(cliOutcome.status, 'succeeded');
-  assert.equal(cliOutcome.artifacts[0].kind, 'screenshot');
-  assert.equal(cliOutcome.evidence_refs[0].uri, 'https://example.test/preview');
+  assert.equal(cliOutcome.artifacts.some((artifact) => artifact.kind === 'screenshot'), true);
+  assert.equal(cliOutcome.evidence_refs.some((ref) => ref.uri === 'https://example.test/preview'), true);
 
   const normalizedResult = spawnSync(process.execPath, [
     wpCodeboxRuntimeExecutor,
@@ -2266,6 +2796,7 @@ try {
   assert.equal(normalizedOutcome.metadata.decision_evidence.run_id, 'fixture-run-1');
   assert.equal(normalizedOutcome.metadata.decision_evidence.runtime_status, 'destroyed');
   assert.equal(normalizedOutcome.metadata.decision_evidence.patch_sha256, 'fixture-patch-sha');
+  assert.equal(normalizedOutcome.metadata.typed_artifacts.fixture_report.metadata.fixture_typed_artifact_normalizer, true);
   assert.equal(normalizedOutcome.artifacts.some((artifact) => artifact.kind === 'codebox-patch' && artifact.path === '/tmp/fixture-normalized/patch.diff'), true);
   assert.equal(normalizedOutcome.artifacts.some((artifact) => artifact.kind === 'recipe-probe-result' && artifact.path === '/tmp/fixture-normalized/recipe-probe.json'), true);
   assert.equal(normalizedOutcome.diagnostics.some((diagnostic) => diagnostic.class === 'fixture.normalizer'), true);
@@ -2292,6 +2823,7 @@ try {
   assert.equal(captured.request.schema, 'wp-codebox/task-input/v1');
   assert.equal(captured.request.orchestrator.agent_task_id, 'task-123');
   assert.equal(captured.request.runtime_overlays[0].kind, 'bundled-library');
+  assert.equal(captured.request.runtime_requirements.metadata.fixture_runtime_profile_normalizer, true);
 
   const recipeCliResult = spawnSync(process.execPath, [
     wpCodeboxRuntimeExecutor,
@@ -2304,7 +2836,7 @@ try {
       ...request,
       task_id: 'recipe-cli-task-123',
       executor: {
-        backend: 'codebox',
+        backend: 'wp-codebox',
         config: {
           recipe_pack: 'example-codebox-recipes',
           recipe_ref: 'release/v1',
@@ -2349,10 +2881,10 @@ try {
   const capturedCodex = JSON.parse(fs.readFileSync(capture, 'utf8'));
   assert.equal(capturedCodex.request.provider, 'codex');
   assert.equal(capturedCodex.request.model, 'gpt-5.5');
-  assert.deepEqual(capturedCodex.request.provider_plugin_paths, ['/components/ai-provider-for-openai']);
-  assert.equal(capturedCodex.request.runtime_component_paths.agents_api, '/components/agents-api');
-  assert.equal(capturedCodex.request.runtime_component_paths.agent_runtime, '/components/data-machine');
-  assert.equal(capturedCodex.request.runtime_component_paths.agent_runtime_tools, '/components/data-machine-code');
+  assert.deepEqual(capturedCodex.request.provider_plugin_paths, [codexProviderFixtureRoot]);
+  assert.equal(Object.hasOwn(capturedCodex.request.runtime_component_paths, 'agents_api'), false);
+  assert.equal(capturedCodex.request.runtime_component_paths.agent_runtime, '/components/example-runtime');
+  assert.equal(capturedCodex.request.runtime_component_paths.agent_runtime_tools, '/components/example-runtime-tools');
   assert.equal(Object.hasOwn(capturedCodex.request, 'agents_api_path'), false);
   assert.equal(Object.hasOwn(capturedCodex.request, 'data_machine_path'), false);
   assert.equal(Object.hasOwn(capturedCodex.request, 'data_machine_code_path'), false);
@@ -2380,7 +2912,7 @@ try {
       ...codexAgentRequest,
       task_id: 'codex-missing-provider-path-cli-task-123',
       executor: {
-        backend: 'codebox',
+        backend: 'wp-codebox',
         model: 'gpt-5.5',
         config: {
           provider: 'codex',
@@ -2393,9 +2925,10 @@ try {
   const missingCodexProviderPathOutcome = JSON.parse(missingCodexProviderPathResult.stdout);
   assert.equal(missingCodexProviderPathOutcome.status, 'failed');
   assert.equal(missingCodexProviderPathOutcome.failure_classification, 'provider');
-  assert.equal(missingCodexProviderPathOutcome.diagnostics[0].class, 'codebox.preflight.codex_provider_plugin_path');
-  assert.deepEqual(missingCodexProviderPathOutcome.diagnostics[0].data.provider_plugin_paths, []);
-  assert.match(missingCodexProviderPathOutcome.summary, /Codex-capable provider plugin checkout/);
+  const missingCodexProviderPathDiagnostic = diagnosticByClass(missingCodexProviderPathOutcome, 'codebox.preflight.codex_provider_plugin_path');
+  assert(missingCodexProviderPathDiagnostic);
+  assert.deepEqual(missingCodexProviderPathDiagnostic.data.provider_plugin_paths, []);
+  assert.match(missingCodexProviderPathDiagnostic.message, /Codex-capable provider plugin checkout/);
 
   fs.rmSync(capture, { force: true });
   const defaultedCodexMissingProviderPathResult = spawnSync(process.execPath, [
@@ -2412,7 +2945,7 @@ try {
       ...request,
       task_id: 'defaulted-codex-missing-provider-path-cli-task-123',
       executor: {
-        backend: 'codebox',
+        backend: 'wp-codebox',
         model: 'gpt-5.5',
         config: { secret_env: codexSecretEnv },
       },
@@ -2423,9 +2956,9 @@ try {
   const defaultedCodexMissingProviderPathOutcome = JSON.parse(defaultedCodexMissingProviderPathResult.stdout);
   assert.equal(defaultedCodexMissingProviderPathOutcome.status, 'failed');
   assert.equal(defaultedCodexMissingProviderPathOutcome.failure_classification, 'provider');
-  assert.equal(defaultedCodexMissingProviderPathOutcome.diagnostics[0].class, 'codebox.preflight.codex_provider_plugin_path');
-  assert.equal(defaultedCodexMissingProviderPathOutcome.diagnostics[0].data.provider, 'codex');
-  assert.deepEqual(defaultedCodexMissingProviderPathOutcome.diagnostics[0].data.provider_plugin_paths, []);
+  assert.equal(defaultedCodexMissingProviderPathOutcome.diagnostics.some((diagnostic) => diagnostic.class === 'codebox.preflight.codex_provider_plugin_path'), true);
+  assert.equal(diagnosticByClass(defaultedCodexMissingProviderPathOutcome, 'codebox.preflight.codex_provider_plugin_path').data.provider, 'codex');
+  assert.deepEqual(diagnosticByClass(defaultedCodexMissingProviderPathOutcome, 'codebox.preflight.codex_provider_plugin_path').data.provider_plugin_paths, []);
 
   const wrongCodexProviderPathResult = spawnSync(process.execPath, [
     wpCodeboxRuntimeExecutor,
@@ -2438,7 +2971,7 @@ try {
       ...codexAgentRequest,
       task_id: 'codex-wrong-provider-path-cli-task-123',
       executor: {
-        backend: 'codebox',
+        backend: 'wp-codebox',
         model: 'gpt-5.5',
         config: {
           provider: 'codex',
@@ -2450,8 +2983,8 @@ try {
   });
   assert.equal(wrongCodexProviderPathResult.status, 1, wrongCodexProviderPathResult.stderr || wrongCodexProviderPathResult.stdout);
   const wrongCodexProviderPathOutcome = JSON.parse(wrongCodexProviderPathResult.stdout);
-  assert.equal(wrongCodexProviderPathOutcome.diagnostics[0].class, 'codebox.preflight.codex_provider_plugin_path');
-  assert.equal(wrongCodexProviderPathOutcome.diagnostics[0].data.inspections[0].reason, 'opencode_provider_plugin');
+  assert.equal(wrongCodexProviderPathOutcome.diagnostics.some((diagnostic) => diagnostic.class === 'codebox.preflight.codex_provider_plugin_path'), true);
+  assert.equal(diagnosticByClass(wrongCodexProviderPathOutcome, 'codebox.preflight.codex_provider_plugin_path').data.inspections[0].reason, 'opencode_provider_plugin');
 
   const releasedOpenAiProviderPath = path.join(root, 'ai-provider-for-openai');
   fs.mkdirSync(releasedOpenAiProviderPath, { recursive: true });
@@ -2467,7 +3000,7 @@ try {
       ...codexAgentRequest,
       task_id: 'codex-released-openai-provider-path-cli-task-123',
       executor: {
-        backend: 'codebox',
+        backend: 'wp-codebox',
         model: 'gpt-5.5',
         config: {
           provider: 'codex',
@@ -2479,8 +3012,9 @@ try {
   });
   assert.equal(releasedOpenAiProviderPathResult.status, 1, releasedOpenAiProviderPathResult.stderr || releasedOpenAiProviderPathResult.stdout);
   const releasedOpenAiProviderPathOutcome = JSON.parse(releasedOpenAiProviderPathResult.stdout);
-  assert.equal(releasedOpenAiProviderPathOutcome.diagnostics[0].data.inspections[0].reason, 'no_codex_marker_found');
-  assert.match(releasedOpenAiProviderPathOutcome.summary, /Released ai-provider-for-openai trunk registers openai, not codex/);
+  const releasedOpenAiProviderPathDiagnostic = diagnosticByClass(releasedOpenAiProviderPathOutcome, 'codebox.preflight.codex_provider_plugin_path');
+  assert.equal(releasedOpenAiProviderPathDiagnostic.data.inspections[0].reason, 'no_codex_marker_found');
+  assert.match(releasedOpenAiProviderPathDiagnostic.message, /Released ai-provider-for-openai trunk registers openai, not codex/);
 
   const codexCapableProviderPath = path.join(root, 'ai-provider-for-openai-codex');
   fs.mkdirSync(codexCapableProviderPath, { recursive: true });
@@ -2496,7 +3030,7 @@ try {
       ...codexAgentRequest,
       task_id: 'codex-capable-provider-path-cli-task-123',
       executor: {
-        backend: 'codebox',
+        backend: 'wp-codebox',
         model: 'gpt-5.5',
         config: {
           provider: 'codex',
@@ -2516,6 +3050,7 @@ try {
   const fullRunnerRuntimeEnv = {
     GENERIC_PROVIDER_CONFIG: '/runtime/provider/config.json',
     XDG_DATA_HOME: '/runtime/provider/data',
+    WP_CODEBOX_AGENTS_API_PATH: '/components/agents-api',
   };
   const fullRunnerRuntimeStateMounts = [{
     source: '/host/provider/state.json',
@@ -2533,27 +3068,28 @@ try {
     ...request,
     task_id: 'agent-bundle-cli-task-123',
     executor: {
-      backend: 'codebox',
+      backend: 'wp-codebox',
       model: 'gpt-5.5',
       config: {
         provider: 'openai',
-        provider_plugin_paths: ['/components/ai-provider-for-openai'],
-        agents_api: '/components/agents-api',
+        provider_plugin_paths: [codexProviderFixtureRoot],
         runtime_component_paths: {
-          agent_runtime: '/components/data-machine',
-          agent_runtime_tools: '/components/data-machine-code',
+          agents_api: '/components/agents-api',
+          agent_runtime: '/components/example-runtime',
+          agent_runtime_tools: '/components/example-runtime-tools',
         },
+        runtime_bundle_ability: 'example/run-agent-bundle',
         runtime_env: fullRunnerRuntimeEnv,
         runtime_state_mounts: fullRunnerRuntimeStateMounts,
         runtime_config_mounts: fullRunnerRuntimeConfigMounts,
         homeboy_extensions: path.join(__dirname, '..'),
-        wp_codebox_bin: fakeWpCodebox,
+        runtime_bin: fakeWpCodebox,
         bundle_path: bundle,
-        agent_slug: 'static-site-agent',
-        pipeline_slug: 'static-site-pipeline',
-        flow_slug: 'static-site-manual-flow',
-        tool_recorders: [{ tool: 'github/create-pull-request', engine_data_path: 'static_site_agent.pr_url' }],
-        engine_data_outputs: { static_site_pr_url: 'metadata.engine_data.static_site_agent.pr_url' },
+        agent_slug: 'example-agent',
+        pipeline_slug: 'example-pipeline',
+        flow_slug: 'example-manual-flow',
+        evidence_projections: [{ operation: 'github/create-pull-request', outputs: { example_pr_url: 'data.html_url' } }],
+        runtime_output_projections: { example_pr_url: 'outputs.example_pr_url' },
       },
     },
   };
@@ -2568,19 +3104,28 @@ try {
   const agentBundleCliOutcome = JSON.parse(agentBundleCliResult.stdout);
   assert.equal(agentBundleCliOutcome.status, 'succeeded');
   assert.equal(agentBundleCliOutcome.artifacts.some((artifact) => artifact.kind === 'agent-runtime-transcript'), true);
-  assert.equal(agentBundleCliOutcome.evidence_refs.some((ref) => ref.uri === 'https://github.com/chubes4/wp-site-generator/pull/123'), true);
+  assert.equal(agentBundleCliOutcome.evidence_refs.some((ref) => ref.uri === 'https://github.com/example-org/example-repo/pull/123'), true);
   const capturedAgentBundleRun = JSON.parse(fs.readFileSync(fakeWpCodeboxCapture, 'utf8'));
-  assert.equal(capturedAgentBundleRun.argv[0], 'agent-task-run');
-  assert.equal(capturedAgentBundleRun.input.schema, 'wp-codebox/task-input/v1');
-  assert.equal(Object.hasOwn(capturedAgentBundleRun.input, 'agent'), false);
-  assert.equal(Object.hasOwn(capturedAgentBundleRun.input.parent_request, 'agent'), false);
-  assert.deepEqual(capturedAgentBundleRun.input.runtime_env, fullRunnerRuntimeEnv);
-  assert.deepEqual(capturedAgentBundleRun.input.runtime_state_mounts, fullRunnerRuntimeStateMounts);
-  assert.deepEqual(capturedAgentBundleRun.input.runtime_config_mounts, fullRunnerRuntimeConfigMounts);
-  assert.equal(capturedAgentBundleRun.input.agent_bundle.bundle_path, bundle);
-  assert.equal(capturedAgentBundleRun.input.agent_bundle.agent_slug, 'static-site-agent');
-  assert.equal(capturedAgentBundleRun.input.agent_bundle.pipeline_slug, 'static-site-pipeline');
-  assert.deepEqual(capturedAgentBundleRun.input.agent_bundle.tool_recorders, [{ tool: 'github/create-pull-request', engine_data_path: 'static_site_agent.pr_url' }]);
+  assert.equal(capturedAgentBundleRun.argv[0], 'run-agent-task');
+  assert.equal(capturedAgentBundleRun.input.schema, 'wp-codebox/run-agent-task/v1');
+  const capturedAgentBundleTaskInput = capturedAgentBundleRun.input.task_input;
+  assert.equal(capturedAgentBundleTaskInput.schema, 'wp-codebox/task-input/v1');
+  assert.equal(Object.hasOwn(capturedAgentBundleTaskInput, 'agent'), false);
+  assert.equal(Object.hasOwn(capturedAgentBundleTaskInput.parent_request, 'agent'), false);
+  assert.deepEqual(
+    Object.fromEntries(Object.entries(capturedAgentBundleTaskInput.runtime_env).filter(([key]) => key !== 'HOMEBOY_CALLBACK_DATA_PATH')),
+    fullRunnerRuntimeEnv
+  );
+  assert.match(capturedAgentBundleTaskInput.runtime_env.HOMEBOY_CALLBACK_DATA_PATH, /homeboy-runtime-callback-data\.json$/);
+  assert.deepEqual(capturedAgentBundleTaskInput.runtime_state_mounts, fullRunnerRuntimeStateMounts);
+  assert.deepEqual(capturedAgentBundleTaskInput.runtime_config_mounts, fullRunnerRuntimeConfigMounts);
+  assert.equal(capturedAgentBundleTaskInput.agent_bundle.bundle_path, bundle);
+  assert.equal(capturedAgentBundleTaskInput.agent_bundle.agent_slug, 'example-agent');
+  assert.equal(capturedAgentBundleTaskInput.agent_bundle.pipeline_slug, 'example-pipeline');
+  assert.deepEqual(capturedAgentBundleTaskInput.agent_bundle.evidence_projections, [{ operation: 'github/create-pull-request', outputs: { example_pr_url: 'data.html_url' } }]);
+  assert.deepEqual(capturedAgentBundleTaskInput.agent_bundle.runtime_output_projections, { example_pr_url: 'outputs.example_pr_url' });
+  assert.equal(Object.hasOwn(capturedAgentBundleTaskInput.agent_bundle, 'tool_recorders'), false);
+  assert.equal(Object.hasOwn(capturedAgentBundleTaskInput.agent_bundle, 'engine_data_outputs'), false);
 
   const recipeWpCodeboxRoot = fs.mkdtempSync(path.join(root, 'recipe-wp-codebox-'));
   const { fixture: recipeFakeWpCodebox, capture: recipeFakeWpCodeboxCapture } = writeFakeWpCodebox(recipeWpCodeboxRoot);
@@ -2593,9 +3138,9 @@ try {
       ...request,
       task_id: 'recipe-wp-codebox-task-123',
       executor: {
-        backend: 'codebox',
+        backend: 'wp-codebox',
         config: {
-          wp_codebox_bin: recipeFakeWpCodebox,
+          runtime_bin: recipeFakeWpCodebox,
           recipe_pack: 'example-codebox-recipes',
           recipe_ref: 'release/v1',
           recipe: 'minimal-runtime',
@@ -2607,11 +3152,12 @@ try {
   });
   assert.equal(recipeWpCodeboxResult.status, 0, recipeWpCodeboxResult.stderr || recipeWpCodeboxResult.stdout);
   const capturedRecipeWpCodeboxRun = JSON.parse(fs.readFileSync(recipeFakeWpCodeboxCapture, 'utf8'));
-  assert.equal(capturedRecipeWpCodeboxRun.argv[0], 'agent-task-run');
-  assert.equal(Object.hasOwn(capturedRecipeWpCodeboxRun.input, 'agent'), false);
-  assert.equal(capturedRecipeWpCodeboxRun.input.recipe.pack, 'example-codebox-recipes');
-  assert.equal(capturedRecipeWpCodeboxRun.input.recipe.name, 'minimal-runtime');
-  assert.equal(capturedRecipeWpCodeboxRun.input.recipe.target_ref, 'Extra-Chill/example#42');
+  assert.equal(capturedRecipeWpCodeboxRun.argv[0], 'run-agent-task');
+  const capturedRecipeWpCodeboxTaskInput = capturedRecipeWpCodeboxRun.input.task_input;
+  assert.equal(Object.hasOwn(capturedRecipeWpCodeboxTaskInput, 'agent'), false);
+  assert.equal(capturedRecipeWpCodeboxTaskInput.recipe.pack, 'example-codebox-recipes');
+  assert.equal(capturedRecipeWpCodeboxTaskInput.recipe.name, 'minimal-runtime');
+  assert.equal(capturedRecipeWpCodeboxTaskInput.recipe.target_ref, 'Extra-Chill/example#42');
 
   const failedWpCodeboxRoot = fs.mkdtempSync(path.join(root, 'failed-wp-codebox-'));
   const { fixture: failedFakeWpCodebox } = writeFakeWpCodebox(failedWpCodeboxRoot);
@@ -2624,9 +3170,9 @@ try {
       ...request,
       task_id: 'failed-wp-codebox-task-123',
       executor: {
-        backend: 'codebox',
+        backend: 'wp-codebox',
         config: {
-          wp_codebox_bin: failedFakeWpCodebox,
+          runtime_bin: failedFakeWpCodebox,
           homeboy_extensions: path.join(__dirname, '..'),
         },
       },
@@ -2640,7 +3186,8 @@ try {
   assert.equal(failedWpCodeboxOutcome.evidence_refs.some((ref) => ref.kind === 'codebox-command-evidence'), true);
   assert.equal(failedWpCodeboxOutcome.diagnostics.some((diagnostic) => diagnostic.class === 'wp-codebox.command.evidence_preserved'), true);
   const failedCommandEvidence = JSON.parse(fs.readFileSync(failedWpCodeboxOutcome.artifacts.find((artifact) => artifact.kind === 'codebox-command-evidence').path, 'utf8'));
-  assert.equal(failedCommandEvidence.command, failedFakeWpCodebox);
+  assert.equal(failedCommandEvidence.command, process.execPath);
+  assert.equal(failedCommandEvidence.args[0], failedFakeWpCodebox);
 
   const settingsWpCodeboxRoot = fs.mkdtempSync(path.join(root, 'settings-wp-codebox-'));
   const { fixture: settingsFakeWpCodebox } = writeFakeWpCodebox(settingsWpCodeboxRoot);
@@ -2650,13 +3197,14 @@ try {
     encoding: 'utf8',
     env: fixtureEnv({
       FIXTURE_WP_CODEBOX_AGENT_TASK_FAILURE: '1',
+      HOMEBOY_WP_CODEBOX_INSTALL_DIR: path.join(settingsWpCodeboxRoot, 'empty-managed-cache'),
       HOMEBOY_SETTINGS_JSON: JSON.stringify({ wp_codebox_bin: settingsFakeWpCodebox }),
     }),
     input: JSON.stringify({
       ...request,
       task_id: 'settings-wp-codebox-task-123',
       executor: {
-        backend: 'codebox',
+        backend: 'wp-codebox',
         config: {
           homeboy_extensions: path.join(__dirname, '..'),
         },
@@ -2666,19 +3214,23 @@ try {
   assert.equal(settingsWpCodeboxResult.status, 1, settingsWpCodeboxResult.stderr || settingsWpCodeboxResult.stdout);
   const settingsWpCodeboxOutcome = JSON.parse(settingsWpCodeboxResult.stdout);
   const settingsCommandEvidence = JSON.parse(fs.readFileSync(settingsWpCodeboxOutcome.artifacts.find((artifact) => artifact.kind === 'codebox-command-evidence').path, 'utf8'));
-  assert.equal(settingsCommandEvidence.command, settingsFakeWpCodebox);
+  assert.equal(settingsCommandEvidence.command, process.execPath);
+  assert.equal(settingsCommandEvidence.args[0], settingsFakeWpCodebox);
 
   const missingConfiguredBinary = path.join(root, 'missing-wp-codebox.cjs');
   const missingConfiguredBinaryResult = spawnSync(process.execPath, [
     wpCodeboxRuntimeExecutor,
   ], {
     encoding: 'utf8',
-    env: fixtureEnv({ HOMEBOY_SETTINGS_JSON: JSON.stringify({ wp_codebox_bin: missingConfiguredBinary }) }),
+    env: fixtureEnv({
+      HOMEBOY_WP_CODEBOX_INSTALL_DIR: path.join(root, 'missing-binary-empty-managed-cache'),
+      HOMEBOY_SETTINGS_JSON: JSON.stringify({ wp_codebox_bin: missingConfiguredBinary }),
+    }),
     input: JSON.stringify({
       ...request,
       task_id: 'missing-configured-wp-codebox-task-123',
       executor: {
-        backend: 'codebox',
+        backend: 'wp-codebox',
         config: {
           homeboy_extensions: path.join(__dirname, '..'),
         },
@@ -2688,8 +3240,8 @@ try {
   assert.equal(missingConfiguredBinaryResult.status, 1, missingConfiguredBinaryResult.stderr || missingConfiguredBinaryResult.stdout);
   const missingConfiguredBinaryOutcome = JSON.parse(missingConfiguredBinaryResult.stdout);
   assert.equal(missingConfiguredBinaryOutcome.status, 'failed');
-  assert.equal(missingConfiguredBinaryOutcome.diagnostics[0].class, 'wp-codebox.config.invalid_binary');
-  assert.equal(missingConfiguredBinaryOutcome.diagnostics[0].data.wp_codebox_bin, missingConfiguredBinary);
+  assert.equal(missingConfiguredBinaryOutcome.diagnostics.some((diagnostic) => diagnostic.class === 'wp-codebox.config.invalid_binary'), true);
+  assert.equal(diagnosticByClass(missingConfiguredBinaryOutcome, 'wp-codebox.config.invalid_binary').data.wp_codebox_bin, missingConfiguredBinary);
 
   const emptyJsonWpCodeboxResult = spawnSync(process.execPath, [
     wpCodeboxRuntimeExecutor,
@@ -2700,9 +3252,9 @@ try {
       ...request,
       task_id: 'empty-json-wp-codebox-task-123',
       executor: {
-        backend: 'codebox',
+        backend: 'wp-codebox',
         config: {
-          wp_codebox_bin: writeEmptyJsonTaskRunner(root),
+          runtime_bin: writeEmptyJsonTaskRunner(root),
           homeboy_extensions: path.join(__dirname, '..'),
         },
       },
@@ -2724,9 +3276,9 @@ try {
       ...request,
       task_id: 'empty-stdout-wp-codebox-task-123',
       executor: {
-        backend: 'codebox',
+        backend: 'wp-codebox',
         config: {
-          wp_codebox_bin: writeEmptyStdoutTaskRunner(root),
+          runtime_bin: writeEmptyStdoutTaskRunner(root),
           homeboy_extensions: path.join(__dirname, '..'),
         },
       },
@@ -2750,7 +3302,7 @@ try {
   assert.deepEqual(printedContract.failure_classifications, provider.failure_classifications);
 
   const artifactRoot = path.join(root, 'timeout-artifacts');
-  const bundleRoot = writeTimeoutArtifacts(artifactRoot, 'task-timeout');
+  fs.mkdirSync(artifactRoot, { recursive: true });
   const hangingRequest = {
     ...request,
     task_id: 'task-timeout',
@@ -2770,24 +3322,19 @@ try {
   });
   assert.equal(timeoutResult.status, 1, timeoutResult.stderr || timeoutResult.stdout);
   const timeoutOutcome = JSON.parse(timeoutResult.stdout);
-  assert.equal(timeoutOutcome.status, 'timeout');
+  assert.equal(timeoutOutcome.status, 'failed');
   assert.equal(timeoutOutcome.failure_classification, 'timeout');
-  assert.equal(timeoutOutcome.diagnostics[0].class, 'codebox.timeout');
-  assert.equal(timeoutOutcome.diagnostics[0].data.timeout_ms, 1000);
+  assert.equal(timeoutOutcome.diagnostics.some((diagnostic) => diagnostic.class === 'codebox.timeout'), true);
+  assert.equal(diagnosticByClass(timeoutOutcome, 'codebox.timeout').data.timeout_ms, 1000);
   assert.equal(timeoutOutcome.artifacts[0].path, artifactRoot);
   assert.equal(timeoutOutcome.metadata.codebox.evidence_path, path.join(artifactRoot, 'homeboy-codebox-task-runner.json'));
   assert.equal(timeoutOutcome.metadata.codebox.timeout_classification, 'provider_timeout');
-  assert.equal(timeoutOutcome.metadata.codebox.runtime_id, 'runtime-task-timeout');
-  assert.equal(timeoutOutcome.metadata.codebox.last_known_phase, 'agent.inspecting-runtime');
-  assert.equal(timeoutOutcome.metadata.codebox.last_heartbeat.turn, 3);
-  assert.equal(timeoutOutcome.artifacts.some((artifact) => artifact.kind === 'codebox-artifact-bundle' && artifact.path === bundleRoot), true);
-  assert.equal(timeoutOutcome.artifacts.some((artifact) => artifact.kind === 'codebox-runtime-reference-manifest'), true);
-  assert.equal(timeoutOutcome.artifacts.some((artifact) => artifact.kind === 'codebox-command-log'), true);
-  assert.equal(timeoutOutcome.artifacts.some((artifact) => artifact.kind === 'codebox-transcript'), true);
-  assert.equal(timeoutOutcome.evidence_refs.some((ref) => ref.kind === 'codebox-transcript'), true);
+  assert.equal(timeoutOutcome.metadata.codebox.artifact_ref_count, 1);
+  assert.equal(timeoutOutcome.evidence_refs.some((ref) => ref.kind === 'codebox-artifact-directory' && ref.uri === artifactRoot), true);
+  assert.equal(timeoutOutcome.evidence_refs.some((ref) => ref.kind === 'codebox-transcript'), false);
 
   const configArtifactRoot = path.join(root, 'timeout-config-artifacts');
-  const configBundleRoot = writeTimeoutArtifacts(configArtifactRoot, 'task-timeout-config-artifacts');
+  fs.mkdirSync(configArtifactRoot, { recursive: true });
   const configArtifactRequest = {
     ...request,
     task_id: 'task-timeout-config-artifacts',
@@ -2812,14 +3359,13 @@ try {
   });
   assert.equal(configArtifactTimeoutResult.status, 1, configArtifactTimeoutResult.stderr || configArtifactTimeoutResult.stdout);
   const configArtifactTimeoutOutcome = JSON.parse(configArtifactTimeoutResult.stdout);
-  assert.equal(configArtifactTimeoutOutcome.status, 'timeout');
+  assert.equal(configArtifactTimeoutOutcome.status, 'failed');
   assert.equal(configArtifactTimeoutOutcome.artifacts[0].path, configArtifactRoot);
   assert.equal(configArtifactTimeoutOutcome.metadata.codebox.artifacts, configArtifactRoot);
   assert.equal(configArtifactTimeoutOutcome.metadata.codebox.evidence_path, path.join(configArtifactRoot, 'homeboy-codebox-task-runner.json'));
-  assert.equal(configArtifactTimeoutOutcome.metadata.codebox.artifact_ref_count > 0, true);
-  assert.equal(configArtifactTimeoutOutcome.metadata.codebox.runtime_id, 'runtime-task-timeout-config-artifacts');
-  assert.equal(configArtifactTimeoutOutcome.artifacts.some((artifact) => artifact.kind === 'codebox-artifact-bundle' && artifact.path === configBundleRoot), true);
-  assert.equal(configArtifactTimeoutOutcome.evidence_refs.some((ref) => ref.kind === 'codebox-transcript'), true);
+  assert.equal(configArtifactTimeoutOutcome.metadata.codebox.artifact_ref_count, 1);
+  assert.equal(configArtifactTimeoutOutcome.evidence_refs.some((ref) => ref.kind === 'codebox-artifact-directory' && ref.uri === configArtifactRoot), true);
+  assert.equal(configArtifactTimeoutOutcome.evidence_refs.some((ref) => ref.kind === 'codebox-transcript'), false);
 
   const missingSecretResult = spawnSync(process.execPath, [
     wpCodeboxRuntimeExecutor,
@@ -2834,12 +3380,12 @@ try {
   const missingSecretOutcome = JSON.parse(missingSecretResult.stdout);
   assert.equal(missingSecretOutcome.status, 'failed');
   assert.equal(missingSecretOutcome.failure_classification, 'provider');
-  assert.equal(missingSecretOutcome.diagnostics[0].class, 'codebox.preflight.missing_secret_env');
-  assert.deepEqual(missingSecretOutcome.diagnostics[0].data.missing_env, [
+  assert.equal(missingSecretOutcome.diagnostics.some((diagnostic) => diagnostic.class === 'codebox.preflight.missing_secret_env'), true);
+  assert.deepEqual(diagnosticByClass(missingSecretOutcome, 'codebox.preflight.missing_secret_env').data.missing_env, [
     'AI_PROVIDER_OPENAI_CODEX_ACCESS_TOKEN',
     'AI_PROVIDER_OPENAI_CODEX_REFRESH_TOKEN',
   ]);
-  assert.equal(missingSecretOutcome.diagnostics[0].data.phase, 'codebox.preflight');
+  assert.equal(diagnosticByClass(missingSecretOutcome, 'codebox.preflight.missing_secret_env').data.phase, 'codebox.preflight');
   assert.equal(missingSecretOutcome.metadata.codebox.missing_env[0], 'AI_PROVIDER_OPENAI_CODEX_ACCESS_TOKEN');
   assert(!JSON.stringify(missingSecretOutcome).includes('codex-access-token-value'));
 
@@ -2857,7 +3403,7 @@ try {
       ...request.executor,
       config: {
         provider: 'openai',
-        task_kind: 'repo-cooking',
+        workspace_required: true,
         repo: 'a8c-intelligence',
       },
     },
@@ -2877,17 +3423,17 @@ try {
   const missingWorkspaceOutcome = JSON.parse(missingWorkspaceResult.stdout);
   assert.equal(missingWorkspaceOutcome.status, 'failed');
   assert.equal(missingWorkspaceOutcome.failure_classification, 'execution_failed');
-  assert.equal(missingWorkspaceOutcome.diagnostics[0].class, 'codebox.preflight.missing_workspace');
-  assert.equal(missingWorkspaceOutcome.diagnostics[0].data.repo, 'a8c-intelligence');
-  assert.equal(missingWorkspaceOutcome.diagnostics[0].data.task_kind, 'repo-cooking');
-  assert.equal(missingWorkspaceOutcome.diagnostics[0].data.mounts_count, 0);
+  assert.equal(missingWorkspaceOutcome.diagnostics.some((diagnostic) => diagnostic.class === 'codebox.preflight.missing_workspace'), true);
+  assert.equal(diagnosticByClass(missingWorkspaceOutcome, 'codebox.preflight.missing_workspace').data.repo, 'a8c-intelligence');
+  assert.equal(diagnosticByClass(missingWorkspaceOutcome, 'codebox.preflight.missing_workspace').data.workspace_required, true);
+  assert.equal(diagnosticByClass(missingWorkspaceOutcome, 'codebox.preflight.missing_workspace').data.mounts_count, 0);
   assert.equal(missingWorkspaceOutcome.metadata.codebox.missing_workspace, true);
 
   const claudeCodeBaseRequest = {
     ...request,
     task_id: 'claude-code-preflight-task',
     executor: {
-      backend: 'codebox',
+      backend: 'wp-codebox',
       model: 'claude-sonnet-4-6',
       config: {
         provider: 'claude-code',
@@ -2909,8 +3455,8 @@ try {
   const claudeMissingValueOutcome = JSON.parse(claudeMissingValueResult.stdout);
   assert.equal(claudeMissingValueOutcome.status, 'failed');
   assert.equal(claudeMissingValueOutcome.failure_classification, 'provider');
-  assert.equal(claudeMissingValueOutcome.diagnostics[0].class, 'codebox.preflight.claude_code_auth');
-  assert.deepEqual(claudeMissingValueOutcome.diagnostics[0].data.missing_env, [claudeCodeRefreshTokenEnv]);
+  assert.equal(claudeMissingValueOutcome.diagnostics.some((diagnostic) => diagnostic.class === 'codebox.preflight.claude_code_auth'), true);
+  assert.deepEqual(diagnosticByClass(claudeMissingValueOutcome, 'codebox.preflight.claude_code_auth').data.missing_env, [claudeCodeRefreshTokenEnv]);
   assert(!JSON.stringify(claudeMissingValueOutcome).includes('claude-refresh-token-value'));
 
   const claudeMissingMappingResult = spawnSync(process.execPath, [
@@ -2934,8 +3480,8 @@ try {
   const claudeMissingMappingOutcome = JSON.parse(claudeMissingMappingResult.stdout);
   assert.equal(claudeMissingMappingOutcome.status, 'failed');
   assert.equal(claudeMissingMappingOutcome.failure_classification, 'provider');
-  assert.equal(claudeMissingMappingOutcome.diagnostics[0].class, 'codebox.preflight.claude_code_auth');
-  assert.deepEqual(claudeMissingMappingOutcome.diagnostics[0].data.missing_env, [claudeCodeRefreshTokenEnv]);
+  assert.equal(claudeMissingMappingOutcome.diagnostics.some((diagnostic) => diagnostic.class === 'codebox.preflight.claude_code_auth'), true);
+  assert.deepEqual(diagnosticByClass(claudeMissingMappingOutcome, 'codebox.preflight.claude_code_auth').data.missing_env, [claudeCodeRefreshTokenEnv]);
   assert(!JSON.stringify(claudeMissingMappingOutcome).includes('claude-access-token-value'));
   assert(!JSON.stringify(claudeMissingMappingOutcome).includes('claude-refresh-token-value'));
 } finally {

@@ -2,6 +2,51 @@
 
 All notable changes to the **rust** extension will be documented in this file.
 
+## [1.23.4] - 2026-07-04
+
+### Changed
+- Purge WP Codebox Data Machine plumbing
+
+## [1.23.3] - 2026-07-04
+
+### Changed
+- Converge shell runners on shared harness
+
+## [1.23.2] - 2026-07-04
+
+### Changed
+- Consolidate runtime helper smoke coverage
+
+## [1.23.1] - 2026-07-01
+
+### Changed
+- Declare extension contract producers
+
+## [1.22.3] - 2026-06-27
+
+### Changed
+- drop dead per-language runtime helper shims
+
+## [1.22.2] - 2026-06-27
+
+### Changed
+- Single-source shared shell runner libs to top-level scripts/lib
+
+## [1.22.1] - 2026-06-26
+
+### Changed
+- Remove generated local artifacts
+
+## [1.22.0] - 2026-06-21
+
+### Added
+- publish Homebrew formulae from rust releases
+
+### Fixed
+- remove shared core helper fallbacks
+- prefer runtime helpers in extension wrappers
+- consume core test scope in runners
+
 ## [1.21.1] - 2026-06-15
 
 ### Fixed

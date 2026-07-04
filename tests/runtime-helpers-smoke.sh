@@ -11,40 +11,14 @@ RESOLVE_CONTEXT_CORE_HELPER="${HOMEBOY_RUNTIME_RESOLVE_CONTEXT:-${HOMEBOY_CORE_D
 RUNNER_STEPS_CORE_HELPER="${HOMEBOY_RUNTIME_RUNNER_STEPS:-${HOMEBOY_CORE_DIR}/src/core/extension/runtime/runner-steps.sh}"
 COMMAND_CAPTURE_CORE_HELPER="${HOMEBOY_RUNTIME_COMMAND_CAPTURE:-${HOMEBOY_CORE_DIR}/src/core/extension/runtime/command-capture.sh}"
 PROJECT_SCRIPTS_HELPER="${ROOT_DIR}/scripts/lib/project-scripts.sh"
-RUNNER_PRELUDE_HELPERS=(
-    "${ROOT_DIR}/nodejs/scripts/lib/runner-prelude.sh"
-    "${ROOT_DIR}/rust/scripts/lib/runner-prelude.sh"
-    "${ROOT_DIR}/wordpress/scripts/lib/runner-prelude.sh"
-)
-RESOLVE_CONTEXT_HELPERS=(
-    "${ROOT_DIR}/nodejs/scripts/lib/resolve-context.sh"
-    "${ROOT_DIR}/rust/scripts/lib/resolve-context.sh"
-    "${ROOT_DIR}/wordpress/scripts/lib/resolve-context.sh"
-    "${ROOT_DIR}/swift/scripts/lib/resolve-context.sh"
-)
-RUNNER_STEPS_HELPERS=(
-    "${ROOT_DIR}/wordpress/scripts/lib/runner-steps.sh"
-)
-SIDECAR_WRITER_HELPERS=(
-    "${ROOT_DIR}/wordpress/scripts/lib/sidecar-writer.sh"
-)
-FIX_RESULTS_HELPERS=(
-    "${ROOT_DIR}/nodejs/scripts/lib/fix-results.sh"
-    "${ROOT_DIR}/rust/scripts/lib/fix-results.sh"
-    "${ROOT_DIR}/wordpress/scripts/lib/fix-results.sh"
-)
+# Extension-owned shared libs are single-sourced in the top-level scripts/lib
+# shared asset (materialized as an extensions/scripts/lib sibling at install).
+FIX_RESULTS_HELPER="${ROOT_DIR}/scripts/lib/fix-results.sh"
 BASH_PREFLIGHT_HELPER="${HOMEBOY_RUNTIME_BASH_PREFLIGHT:-${HOMEBOY_CORE_DIR}/src/core/extension/runtime/bash-preflight.sh}"
-SETTINGS_HELPERS=(
-    "${ROOT_DIR}/scripts/lib/settings.sh"
-    "${ROOT_DIR}/nodejs/scripts/lib/settings.sh"
-    "${ROOT_DIR}/rust/scripts/lib/settings.sh"
-    "${ROOT_DIR}/wordpress/scripts/lib/settings.sh"
-)
-COMMAND_CAPTURE_HELPERS=(
-    "${ROOT_DIR}/nodejs/scripts/lib/command-capture.sh"
-    "${ROOT_DIR}/rust/scripts/lib/command-capture.sh"
-    "${ROOT_DIR}/wordpress/scripts/lib/command-capture.sh"
-)
+SETTINGS_HELPER="${ROOT_DIR}/scripts/lib/settings.sh"
+RUNNER_HARNESS_HELPER="${ROOT_DIR}/scripts/lib/runner-harness.sh"
+TEST_FAILURES_ADAPTER_HELPER="${ROOT_DIR}/scripts/lib/test-failures-adapter.sh"
+LINT_FINDINGS_ADAPTER_HELPER="${ROOT_DIR}/scripts/lib/lint-findings-adapter.sh"
 
 assert_file() {
     local path="$1"
@@ -76,6 +50,33 @@ assert_not_contains() {
     fi
 }
 
+assert_sources() {
+    local file="$1"
+    local expected="$2"
+    if ! grep -Fq "$expected" "$file"; then
+        echo "Expected $file to source shared helper via: $expected" >&2
+        exit 1
+    fi
+}
+
+assert_sources_prelude() {
+    local file="$1"
+    if ! grep -Fq 'HOMEBOY_RUNTIME_RUNNER_PRELUDE' "$file" \
+        && ! grep -Fq '/runner-harness.sh' "$file"; then
+        echo "Expected $file to load the runner prelude directly (HOMEBOY_RUNTIME_RUNNER_PRELUDE) or via the shared runner-harness.sh" >&2
+        exit 1
+    fi
+}
+
+assert_sources_command_capture() {
+    local file="$1"
+    if ! grep -Fq 'HOMEBOY_RUNTIME_COMMAND_CAPTURE' "$file" \
+        && ! grep -Fq 'homeboy_runner_harness_source_command_capture' "$file"; then
+        echo "Expected $file to load command capture directly (HOMEBOY_RUNTIME_COMMAND_CAPTURE) or via the shared harness" >&2
+        exit 1
+    fi
+}
+
 assert_file "$FAILURE_TRAP_HELPER"
 assert_file "$WRITE_TEST_RESULTS_HELPER"
 assert_file "$SIDECAR_WRITER_HELPER"
@@ -85,71 +86,25 @@ assert_file "$RUNNER_STEPS_CORE_HELPER"
 assert_file "$COMMAND_CAPTURE_CORE_HELPER"
 assert_file "$BASH_PREFLIGHT_HELPER"
 assert_file "$PROJECT_SCRIPTS_HELPER"
+node "$ROOT_DIR/tests/extension-shape-lint.mjs"
 bash -c 'source "$1"; type homeboy_sidecar_emit >/dev/null; type homeboy_sidecar_write >/dev/null; type homeboy_sidecar_merge >/dev/null; type homeboy_merge_lint_findings >/dev/null; type homeboy_merge_test_failures >/dev/null; type homeboy_write_fix_results >/dev/null; type homeboy_merge_annotations >/dev/null' _ "$SIDECAR_WRITER_HELPER"
 bash -c 'source "$1"; homeboy_require_bash_version 4' _ "$BASH_PREFLIGHT_HELPER"
 bash -c 'source "$1"; type homeboy_project_init >/dev/null; type homeboy_project_has_script >/dev/null; type homeboy_project_run_script_command >/dev/null' _ "$PROJECT_SCRIPTS_HELPER"
-for runner_prelude_helper in "${RUNNER_PRELUDE_HELPERS[@]}"; do
-    assert_file "$runner_prelude_helper"
-    HOMEBOY_RUNTIME_RUNNER_PRELUDE="$RUNNER_PRELUDE_CORE_HELPER" bash -c 'source "$1"; type homeboy_runner_init >/dev/null; type homeboy_source_runtime_helper >/dev/null; type homeboy_require_bash_version >/dev/null' _ "$runner_prelude_helper"
-done
-for fix_results_helper in "${FIX_RESULTS_HELPERS[@]}"; do
-    assert_file "$fix_results_helper"
-    bash -c 'source "$1"; type homeboy_fix_results_capture >/dev/null; type homeboy_fix_results_append_changed >/dev/null; type homeboy_fix_results_write >/dev/null' _ "$fix_results_helper"
-done
-for settings_helper in "${SETTINGS_HELPERS[@]}"; do
-    assert_file "$settings_helper"
-    bash -c 'source "$1"; type homeboy_setting >/dev/null; type homeboy_setting_bool >/dev/null; type homeboy_setting_array >/dev/null' _ "$settings_helper"
-done
-for command_capture_helper in "${COMMAND_CAPTURE_HELPERS[@]}"; do
-    assert_file "$command_capture_helper"
-    HOMEBOY_RUNTIME_COMMAND_CAPTURE="$COMMAND_CAPTURE_CORE_HELPER" bash -c 'source "$1"; type homeboy_run_step >/dev/null; type homeboy_run_step_capture >/dev/null; type homeboy_cleanup_step_capture >/dev/null' _ "$command_capture_helper"
-done
-
-if ! cmp -s "${SETTINGS_HELPERS[0]}" "${SETTINGS_HELPERS[1]}" \
-    || ! cmp -s "${SETTINGS_HELPERS[0]}" "${SETTINGS_HELPERS[2]}" \
-    || ! cmp -s "${SETTINGS_HELPERS[0]}" "${SETTINGS_HELPERS[3]}"; then
-    echo "Settings helpers should stay identical across installed extension trees" >&2
-    exit 1
-fi
-
-if ! cmp -s "${COMMAND_CAPTURE_HELPERS[0]}" "${COMMAND_CAPTURE_HELPERS[1]}" \
-    || ! cmp -s "${COMMAND_CAPTURE_HELPERS[0]}" "${COMMAND_CAPTURE_HELPERS[2]}"; then
-    echo "Command capture wrappers should stay identical across installed extension trees" >&2
-    exit 1
-fi
-
-if ! cmp -s "${RUNNER_PRELUDE_HELPERS[0]}" "${RUNNER_PRELUDE_HELPERS[1]}" \
-    || ! cmp -s "${RUNNER_PRELUDE_HELPERS[0]}" "${RUNNER_PRELUDE_HELPERS[2]}"; then
-    echo "Runner prelude wrappers should stay identical across installed extension trees" >&2
-    exit 1
-fi
-
-if ! cmp -s "${FIX_RESULTS_HELPERS[0]}" "${FIX_RESULTS_HELPERS[1]}" \
-    || ! cmp -s "${FIX_RESULTS_HELPERS[0]}" "${FIX_RESULTS_HELPERS[2]}"; then
-    echo "Fix-result helpers should stay identical across installed extension trees" >&2
-    exit 1
-fi
+bash -c 'source "$1"; type homeboy_runner_init >/dev/null; type homeboy_source_runtime_helper >/dev/null; type homeboy_require_bash_version >/dev/null' _ "$RUNNER_PRELUDE_CORE_HELPER"
+assert_file "$FIX_RESULTS_HELPER"
+bash -c 'source "$1"; type homeboy_fix_results_capture >/dev/null; type homeboy_fix_results_append_changed >/dev/null; type homeboy_fix_results_write >/dev/null' _ "$FIX_RESULTS_HELPER"
+assert_file "$SETTINGS_HELPER"
+bash -c 'source "$1"; type homeboy_setting >/dev/null; type homeboy_setting_bool >/dev/null; type homeboy_setting_array >/dev/null' _ "$SETTINGS_HELPER"
+assert_file "$RUNNER_HARNESS_HELPER"
+bash -c 'source "$1"; type homeboy_runner_harness_init >/dev/null; type homeboy_runner_harness_temp >/dev/null; type homeboy_runner_harness_source_command_capture >/dev/null' _ "$RUNNER_HARNESS_HELPER"
+assert_file "$TEST_FAILURES_ADAPTER_HELPER"
+bash -c 'source "$1"; type homeboy_test_failures_merge_file >/dev/null; type homeboy_test_failure_record_json >/dev/null; type homeboy_test_failure_emit_record_json >/dev/null' _ "$TEST_FAILURES_ADAPTER_HELPER"
+assert_file "$LINT_FINDINGS_ADAPTER_HELPER"
+bash -c 'source "$1"; type homeboy_lint_findings_merge_file >/dev/null; type homeboy_lint_findings_write_empty >/dev/null; type homeboy_lint_findings_require_writer >/dev/null' _ "$LINT_FINDINGS_ADAPTER_HELPER"
+bash -c 'source "$1"; type homeboy_run_step >/dev/null; type homeboy_run_step_capture >/dev/null; type homeboy_cleanup_step_capture >/dev/null' _ "$COMMAND_CAPTURE_CORE_HELPER"
 
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
-
-RUNTIME_STUB="$TMP_DIR/runtime-stub.sh"
-printf 'HOMEBOY_WRAPPER_USED=runtime\n' > "$RUNTIME_STUB"
-for runner_prelude_helper in "${RUNNER_PRELUDE_HELPERS[@]}"; do
-    HOMEBOY_RUNTIME_RUNNER_PRELUDE="$RUNTIME_STUB" bash -c 'source "$1"; [ "$HOMEBOY_WRAPPER_USED" = runtime ]' _ "$runner_prelude_helper"
-done
-for resolve_context_helper in "${RESOLVE_CONTEXT_HELPERS[@]}"; do
-    HOMEBOY_RUNTIME_RESOLVE_CONTEXT="$RUNTIME_STUB" bash -c 'source "$1"; [ "$HOMEBOY_WRAPPER_USED" = runtime ]' _ "$resolve_context_helper"
-done
-for runner_steps_helper in "${RUNNER_STEPS_HELPERS[@]}"; do
-    HOMEBOY_RUNTIME_RUNNER_STEPS="$RUNTIME_STUB" bash -c 'source "$1"; [ "$HOMEBOY_WRAPPER_USED" = runtime ]' _ "$runner_steps_helper"
-done
-for command_capture_helper in "${COMMAND_CAPTURE_HELPERS[@]:1}"; do
-    HOMEBOY_RUNTIME_COMMAND_CAPTURE="$RUNTIME_STUB" bash -c 'source "$1"; [ "$HOMEBOY_WRAPPER_USED" = runtime ]' _ "$command_capture_helper"
-done
-for sidecar_writer_helper in "${SIDECAR_WRITER_HELPERS[@]}"; do
-    HOMEBOY_RUNTIME_SIDECAR_WRITER="$RUNTIME_STUB" bash -c 'source "$1"; [ "$HOMEBOY_WRAPPER_USED" = runtime ]' _ "$sidecar_writer_helper"
-done
 
 ANNOTATIONS_DIR="$TMP_DIR/annotations"
 ANNOTATIONS_SOURCE="$TMP_DIR/extra-annotations.json"
@@ -219,6 +174,22 @@ assert_contains "$SIDECAR_TMP_DIR/lint.json" '"id":"lint"'
 assert_contains "$SIDECAR_TMP_DIR/test.json" '"test_id":"test"'
 assert_contains "$SIDECAR_TMP_DIR/fix.json" '"file":"fixed.php"'
 assert_contains "$SIDECAR_TMP_DIR/annotations/phpcs.json" '"file":"plugin.php"'
+
+HARNESS_TEMP=""
+source "$RUNNER_HARNESS_HELPER"
+homeboy_runner_harness_temp HARNESS_TEMP "homeboy-harness-smoke.XXXXXX"
+if [ ! -f "$HARNESS_TEMP" ]; then
+    echo "Expected harness temp helper to create a file" >&2
+    exit 1
+fi
+homeboy_runner_harness_cleanup
+if [ -e "$HARNESS_TEMP" ]; then
+    echo "Expected harness cleanup to remove temp file" >&2
+    exit 1
+fi
+
+FAILURE_RECORD="$(source "$TEST_FAILURES_ADAPTER_HELPER"; homeboy_test_failure_record_json smoke 'suite::test' suite tests/smoke.test 12 'failed hard' assertion 'stdout tail' '')"
+printf '%s' "$FAILURE_RECORD" | node -e 'const fs=require("node:fs"); const record=JSON.parse(fs.readFileSync(0,"utf8")); if (record.test_id!=="suite::test" || record.file!=="tests/smoke.test" || record.line!==12 || !/^[a-f0-9]{64}$/.test(record.fingerprint)) process.exit(1);'
 
 WORDPRESS_OUTPUT="$TMP_DIR/phpunit.txt"
 WORDPRESS_RESULTS="$TMP_DIR/wordpress-results.json"
@@ -347,35 +318,66 @@ fi
 assert_contains "$TMP_DIR/node-build.out" 'BUILD FAILED: No build defined'
 assert_contains "$TMP_DIR/node-build.out" 'Error details:'
 
-if grep -R "print_failure_summary()" \
-    "$ROOT_DIR/nodejs/scripts" \
-    "$ROOT_DIR/rust/scripts" \
-    "$ROOT_DIR/wordpress/scripts/test" \
-    "$ROOT_DIR/wordpress/scripts/bench" >/dev/null; then
-    echo "Runner scripts should not define local print_failure_summary functions" >&2
-    exit 1
-fi
+for runner in \
+    nodejs/scripts/build/build-runner.sh \
+    nodejs/scripts/lint/lint-runner.sh \
+    nodejs/scripts/test/test-runner.sh \
+    rust/scripts/lint-runner.sh \
+    rust/scripts/test-runner.sh \
+    swift/scripts/test-runner.sh \
+    wordpress/scripts/lint/lint-runner.sh \
+    wordpress/scripts/test/test-runner.sh; do
+    assert_sources_prelude "$ROOT_DIR/$runner"
+done
 
-if grep -R --exclude='*smoke.sh' "homeboy_write_test_results()" \
-    "$ROOT_DIR/nodejs/scripts" \
-    "$ROOT_DIR/rust/scripts" \
-    "$ROOT_DIR/wordpress/scripts/test" >/dev/null; then
-    echo "Extension scripts should not define local homeboy_write_test_results functions" >&2
-    exit 1
-fi
+for runner in \
+    nodejs/scripts/bench/bench-runner.sh \
+    nodejs/scripts/trace/trace-runner.sh \
+    rust/scripts/bench/bench-runner.sh \
+    wordpress/scripts/bench/bench-runner.sh; do
+    assert_sources "$ROOT_DIR/$runner" 'HOMEBOY_RUNTIME_BASH_PREFLIGHT'
+done
 
-if grep "BASH_VERSINFO" \
-    "$ROOT_DIR/nodejs/scripts/bench/bench-runner.sh" \
-    "$ROOT_DIR/nodejs/scripts/build/build-runner.sh" \
-    "$ROOT_DIR/nodejs/scripts/lint/lint-runner.sh" \
-    "$ROOT_DIR/nodejs/scripts/test/test-runner.sh" \
-    "$ROOT_DIR/nodejs/scripts/trace/trace-runner.sh" \
-    "$ROOT_DIR/rust/scripts/bench/bench-runner.sh" \
-    "$ROOT_DIR/wordpress/scripts/bench/bench-runner.sh" \
-    "$ROOT_DIR/wordpress/scripts/lint/lint-runner.sh" \
-    "$ROOT_DIR/wordpress/scripts/test/test-runner.sh" >/dev/null; then
-    echo "Runner scripts should use HOMEBOY_RUNTIME_BASH_PREFLIGHT instead of local BASH_VERSINFO checks" >&2
-    exit 1
-fi
+for runner in \
+    nodejs/scripts/bench/bench-runner.sh \
+    nodejs/scripts/format.sh \
+    nodejs/scripts/trace/trace-runner.sh \
+    nodejs/scripts/validate.sh \
+    rust/scripts/bench/bench-runner.sh \
+    rust/scripts/format.sh \
+    rust/scripts/validate.sh \
+    swift/scripts/lint-runner.sh \
+    swift/scripts/validate.sh \
+    wordpress/scripts/bench/bench-runner-wp-codebox.sh \
+    wordpress/scripts/build/build.sh \
+    wordpress/scripts/lint/eslint-runner.sh \
+    wordpress/scripts/lint/lint-runner-core-dev.sh \
+    wordpress/scripts/test/test-runner-host-smoke-wp.sh \
+    wordpress/scripts/test/test-runner-wp-codebox.sh; do
+    assert_sources "$ROOT_DIR/$runner" 'HOMEBOY_RUNTIME_RESOLVE_CONTEXT'
+done
+
+for runner in \
+    nodejs/scripts/build/build-runner.sh \
+    nodejs/scripts/test/test-runner.sh \
+    rust/scripts/lint-runner.sh \
+    rust/scripts/test-runner.sh; do
+    assert_sources_command_capture "$ROOT_DIR/$runner"
+done
+
+for runner in \
+    nodejs/scripts/test/test-runner.sh \
+    rust/scripts/bench/bench-runner.sh \
+    rust/scripts/test-runner.sh \
+    wordpress/scripts/test/test-runner.sh; do
+    assert_sources "$ROOT_DIR/$runner" '/settings.sh'
+done
+
+for runner in \
+    nodejs/scripts/lint/lint-runner.sh \
+    rust/scripts/lint-runner.sh \
+    wordpress/scripts/lint/lint-runner.sh; do
+    assert_sources "$ROOT_DIR/$runner" '/fix-results.sh'
+done
 
 echo "runtime helper smoke passed"
