@@ -38,7 +38,6 @@ module.exports = {
 	...require('./lib/audit-fanout-runtime-provider'),
 	...require('./lib/agent-terminal-actions'),
 	...require('./lib/agent-task-runner-spec'),
-	...require('./lib/datamachine-agent-ci-plan'),
 	...require('./lib/wordpress-workload-profile'),
 	...require('./lib/wordpress-workload-scale-profile'),
 	...require('./lib/wordpress-fuzz-manifest'),
