@@ -1,6 +1,6 @@
 {
   "name": "WordPress",
-  "version": "3.23.36",
+  "version": "3.23.37",
   "icon": "w.circle.fill",
   "description": "WordPress project type with WP-CLI integration",
   "author": "Extra Chill",
@@ -208,6 +208,9 @@
     "crossref": "scripts/test/crossref.php",
     "validate": "scripts/validation/validate-syntax.sh",
     "format": "scripts/format.sh"
+  },
+  "deps": {
+    "extension_script": "scripts/deps/deps-runner.sh"
   },
   "component_env": {
     "detect_script": "scripts/env/detect.sh"

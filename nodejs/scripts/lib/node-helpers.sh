@@ -10,16 +10,17 @@ homeboy_node_project_scripts_helper() {
 
     local _candidate
     for _candidate in \
+        "${HOMEBOY_EXTENSION_PATH:+$(dirname "$HOMEBOY_EXTENSION_PATH")/scripts/lib/project-scripts.sh}" \
         "${SCRIPT_DIR}/../../../scripts/lib/project-scripts.sh" \
         "${SCRIPT_DIR}/project-scripts.sh"; do
-        if [ -f "$_candidate" ]; then
+        if [ -n "$_candidate" ] && [ -f "$_candidate" ]; then
             printf '%s\n' "$_candidate"
             return 0
         fi
     done
 
     echo "Error: Unable to locate Homeboy project script helpers for Node.js extension." >&2
-    echo "Expected shared helper at ${SCRIPT_DIR}/../../../scripts/lib/project-scripts.sh or packaged helper at ${SCRIPT_DIR}/project-scripts.sh." >&2
+    echo "Expected shared helper near HOMEBOY_EXTENSION_PATH, shared helper at ${SCRIPT_DIR}/../../../scripts/lib/project-scripts.sh, or packaged helper at ${SCRIPT_DIR}/project-scripts.sh." >&2
     return 1
 }
 

@@ -2,17 +2,26 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-NODE_HELPERS="${ROOT_DIR}/scripts/lib/node-helpers.sh"
-PROJECT_SCRIPTS="${ROOT_DIR}/../scripts/lib/project-scripts.sh"
-PACKAGED_PROJECT_SCRIPTS="${ROOT_DIR}/scripts/lib/project-scripts.sh"
-PACKAGED_NODE_ADAPTER="${ROOT_DIR}/dependency-adapters/examples/nodejs.json"
+REPO_ROOT="$(cd "${ROOT_DIR}/.." && pwd)"
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
+
+INSTALL_ROOT="$TMP_DIR/home/.config/homeboy/extensions"
+mkdir -p "$INSTALL_ROOT"
+cp -R "$ROOT_DIR" "$INSTALL_ROOT/nodejs"
+cp -R "$REPO_ROOT/scripts" "$INSTALL_ROOT/scripts"
+cp -R "$REPO_ROOT/dependency-adapters" "$INSTALL_ROOT/dependency-adapters"
+
+NODE_HELPERS="${INSTALL_ROOT}/nodejs/scripts/lib/node-helpers.sh"
+PROJECT_SCRIPTS="${INSTALL_ROOT}/scripts/lib/project-scripts.sh"
+PACKAGED_PROJECT_SCRIPTS="${INSTALL_ROOT}/nodejs/scripts/lib/project-scripts.sh"
+PACKAGED_NODE_ADAPTER="${INSTALL_ROOT}/nodejs/dependency-adapters/examples/nodejs.json"
 
 test -f "$NODE_HELPERS"
 test -f "$PROJECT_SCRIPTS"
 test -f "$PACKAGED_PROJECT_SCRIPTS"
 test -f "$PACKAGED_NODE_ADAPTER"
+test -f "${INSTALL_ROOT}/dependency-adapters/examples/nodejs.json"
 
 bash -c '
     source "$1"
@@ -21,6 +30,24 @@ bash -c '
     type homeboy_project_run_script_command >/dev/null
     type homeboy_require_package_json >/dev/null
 ' _ "$NODE_HELPERS"
+
+DEV_ROOT="$TMP_DIR/dev-overlay-src"
+mkdir -p "$DEV_ROOT"
+cp -R "$ROOT_DIR" "$DEV_ROOT/nodejs"
+rm -rf "$INSTALL_ROOT/nodejs"
+ln -s "$DEV_ROOT/nodejs" "$INSTALL_ROOT/nodejs"
+DEV_NODE_HELPERS="${INSTALL_ROOT}/nodejs/scripts/lib/node-helpers.sh"
+
+test -f "$DEV_NODE_HELPERS"
+
+bash -c '
+    export HOMEBOY_EXTENSION_PATH="$1/nodejs"
+    source "$2"
+    type homeboy_project_init >/dev/null
+    type homeboy_project_has_script >/dev/null
+    type homeboy_project_run_script_command >/dev/null
+    type homeboy_require_package_json >/dev/null
+' _ "$INSTALL_ROOT" "$DEV_NODE_HELPERS"
 
 PNPM_PROJECT="$TMP_DIR/pnpm-project"
 mkdir -p "$PNPM_PROJECT/subdir"
