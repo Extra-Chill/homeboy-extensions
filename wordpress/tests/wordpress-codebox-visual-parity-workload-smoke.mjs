@@ -77,6 +77,7 @@ process.stdout.write(JSON.stringify({
     },
     viewport: { width: 640, height: 480 },
     threshold: 0.02,
+    attributionLimits: { maxFindings: 1, maxRegions: 1, maxElementChanges: 1, maxStyleDeltas: 1 },
   });
   assert.equal(visualResult.metrics.visual_parity_pass, 1);
   assert.equal(visualResult.metrics.visual_parity_mismatch_ratio, 0.01);
@@ -91,6 +92,7 @@ process.stdout.write(JSON.stringify({
   const attribution = JSON.parse(await readFile(visualResult.artifacts.visualAttribution.path, 'utf8'));
   assert.equal(attribution.schema, 'homeboy/WordPressVisualAttribution/v1');
   assert.equal(attribution.evidence.visual_explanation, 'files/browser/visual-compare/visual-explanation.json');
+  assert.equal(attribution.limits.maxFindings, 1);
   const recipeArtifact = JSON.parse(await readFile(visualResult.metadata.codebox_recipe, 'utf8'));
   assert.equal(recipeArtifact.runtime.wp, 'latest');
   assert.equal(recipeArtifact.workflow.steps[0].command, 'wordpress.setup');

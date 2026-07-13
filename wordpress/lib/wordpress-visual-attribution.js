@@ -26,10 +26,17 @@ function normalizeWordPressVisualAttribution( input = {} ) {
 	if ( ! explanation ) {limitations.push( 'WP Codebox visual explanation evidence is unavailable; attribution is limited to pixel output.' );}
 	if ( ! sourceSnapshot || ! candidateSnapshot ) {limitations.push( 'WP Codebox DOM snapshot evidence is unavailable; element-level attribution is limited.' );}
 
-	const mismatchRegions = array( explanation?.mismatchRegions ).slice( 0, limits.maxRegions ).map( normalizeRegion );
-	const selectorDeltas = array( explanation?.selectorDeltas ).slice( 0, limits.maxElementChanges ).map( normalizeSelectorDelta );
-	const changes = array( explanation?.changes ).slice( 0, limits.maxElementChanges ).map( normalizeChange );
 	const candidateProvenance = object( input.candidateProvenance );
+	const mismatchRegions = array( explanation?.mismatchRegions )
+		.map( ( region, index ) => ( { region, index } ) )
+		.sort( ( left, right ) => number( right.region?.pixels ) - number( left.region?.pixels ) || left.index - right.index )
+		.slice( 0, limits.maxRegions )
+		.map( ( entry ) => normalizeRegion( entry.region, candidateProvenance ) );
+	const selectorDeltas = deduplicateDeltas( [
+		...array( explanation?.selectorDeltas ).map( normalizeSelectorDelta ),
+		...array( explanation?.changes ).map( normalizeChangeDelta ),
+	] ).slice( 0, limits.maxElementChanges ).map( ( delta ) => enrichCandidatePath( delta, candidateProvenance ) );
+	const changes = array( explanation?.changes ).slice( 0, limits.maxElementChanges ).map( normalizeChange );
 	const elements = {
 		changed: changes.map( ( change ) => enrichCandidatePath( change, candidateProvenance ) ),
 		added: array( explanation?.added ).slice( 0, limits.maxElementChanges ).map( ( element ) => enrichCandidatePath( normalizeElement( element ), candidateProvenance ) ),
@@ -79,10 +86,13 @@ function validSchema( value, schema ) {
 	return object( value ).schema === schema;
 }
 
-function normalizeRegion( region ) {
+function normalizeRegion( region, candidateProvenance ) {
 	const result = { x: number( region?.x ), y: number( region?.y ), width: number( region?.width ), height: number( region?.height ), pixels: number( region?.pixels ) };
 	for ( const side of [ 'source', 'candidate' ] ) {
-		const elements = array( region?.[ `${ side }Elements` ] ).slice( 0, 5 ).map( ( element ) => ( { path: string( element.path ), tag: string( element.tag ), bounding_box: element.boundingBox || null, overlap: element.overlap || null } ) );
+		const elements = array( region?.[ `${ side }Elements` ] ).slice( 0, 5 ).map( ( element ) => {
+			const normalized = { path: string( element.path ), tag: string( element.tag ), bounding_box: element.boundingBox || null, overlap: element.overlap || null };
+			return side === 'candidate' ? enrichCandidatePath( normalized, candidateProvenance ) : normalized;
+		} );
 		if ( elements.length ) {result[ `${ side }_elements` ] = elements;}
 	}
 	return result;
@@ -107,6 +117,27 @@ function normalizeChange( change ) {
 	return { path: string( change?.path ), tag: string( change?.tag ), changes: object( change?.changes ) };
 }
 
+function normalizeChangeDelta( change ) {
+	const changes = object( change?.changes );
+	const boundingBox = object( changes.boundingBox );
+	const styles = Object.entries( object( changes.styles ) ).map( ( [ property, values ] ) => normalizeStyle( { property, ...object( values ) } ) );
+	if ( ! Object.keys( boundingBox ).length && ! styles.length ) {
+		return null;
+	}
+	return {
+		selector: string( change?.path ),
+		source_path: string( change?.path ),
+		candidate_path: string( change?.path ),
+		bounding_box: {
+			source: boundingBox.source || null,
+			candidate: boundingBox.candidate || null,
+			delta: boundingBox.delta || {},
+			severity: string( boundingBox.severity ),
+		},
+		styles,
+	};
+}
+
 function normalizeElement( element ) {
 	return { path: string( element?.path ), tag: string( element?.tag ), text: string( element?.text ), bounding_box: element?.boundingBox || null };
 }
@@ -125,6 +156,31 @@ function styleCategory( property ) {
 function enrichCandidatePath( item, provenance ) {
 	const path = item.candidate_path || item.path;
 	return provenance[ path ] === undefined ? item : { ...item, provenance: provenance[ path ] };
+}
+
+function deduplicateDeltas( deltas ) {
+	const deltasByKey = new Map();
+	for ( const delta of deltas.filter( Boolean ) ) {
+		const key = JSON.stringify( [ delta.candidate_path, delta.bounding_box ] );
+		const existing = deltasByKey.get( key );
+		if ( existing ) {
+			existing.styles = deduplicateStyles( [ ...existing.styles, ...delta.styles ] );
+		} else {
+			deltasByKey.set( key, { ...delta, styles: deduplicateStyles( delta.styles ) } );
+		}
+	}
+	return [ ...deltasByKey.values() ];
+}
+
+function deduplicateStyles( styles ) {
+	const stylesByKey = new Map();
+	for ( const style of styles ) {
+		const key = JSON.stringify( [ style.property, style.source, style.candidate, style.category ] );
+		if ( ! stylesByKey.has( key ) ) {
+			stylesByKey.set( key, style );
+		}
+	}
+	return [ ...stylesByKey.values() ];
 }
 
 function normalizeLimits( input ) {

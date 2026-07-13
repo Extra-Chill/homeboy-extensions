@@ -68,7 +68,7 @@ export async function runWordPressCodeboxVisualParityWorkload(options = {}) {
   const visualDiffRef = findVisualCompareArtifactRef(codeboxResult) || 'files/browser/visual-compare/visual-diff.json';
   const visualDiffPath = path.join(artifactDirectory, visualDiffRef);
   const visualDiff = parseJsonOutput(await readFile(visualDiffPath, 'utf8'), visualDiffPath);
-  const attribution = await normalizeVisualAttribution({ artifactDirectory, candidate, visualDiff });
+  const attribution = await normalizeVisualAttribution({ artifactDirectory, candidate, limits: options.attributionLimits, visualDiff });
   const attributionArtifact = await context.writeJson(options.attributionArtifactName || 'wordpress-visual-attribution', attribution, {
     label: options.attributionArtifactLabel || 'WordPress visual attribution',
     kind: 'wordpress-visual-attribution',
@@ -308,7 +308,7 @@ function normalizeVisualParityArtifact({ artifactDirectory, attribution, candida
   };
 }
 
-async function normalizeVisualAttribution({ artifactDirectory, candidate, visualDiff }) {
+async function normalizeVisualAttribution({ artifactDirectory, candidate, limits, visualDiff }) {
   const files = visualDiff.files || {};
   const [visualExplanation, sourceDomSnapshot, candidateDomSnapshot] = await Promise.all([
     readOptionalJsonArtifact(artifactDirectory, files.visualExplanation),
@@ -321,6 +321,7 @@ async function normalizeVisualAttribution({ artifactDirectory, candidate, visual
     sourceDomSnapshot,
     candidateDomSnapshot,
     candidateProvenance: candidate.provenance,
+    limits,
     refs: {
       visualExplanation: files.visualExplanation,
       sourceDomSnapshot: files.sourceDomSnapshot,
