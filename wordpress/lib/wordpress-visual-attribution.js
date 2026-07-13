@@ -21,6 +21,14 @@ function normalizeWordPressVisualAttribution( input = {} ) {
 	const candidateSnapshot = snapshot( input.candidateDomSnapshot );
 	const limits = normalizeLimits( input.limits );
 	const comparison = object( visualDiff.comparison );
+	const mismatchPixels = number( comparison.mismatchPixels );
+	const totalPixels = number( comparison.totalPixels );
+	let mismatchRatio = 0;
+	if ( Number.isFinite( Number( comparison.mismatchRatio ) ) ) {
+		mismatchRatio = number( comparison.mismatchRatio );
+	} else if ( totalPixels > 0 ) {
+		mismatchRatio = mismatchPixels / totalPixels;
+	}
 	const limitations = [ ...array( visualDiff.limitations ), ...array( explanation?.limitations ) ];
 
 	if ( ! explanation ) {limitations.push( 'WP Codebox visual explanation evidence is unavailable; attribution is limited to pixel output.' );}
@@ -53,9 +61,9 @@ function normalizeWordPressVisualAttribution( input = {} ) {
 	return {
 		schema: 'homeboy/WordPressVisualAttribution/v1',
 		pixel_summary: {
-			mismatch_ratio: number( comparison.mismatchRatio ),
-			mismatch_pixels: number( comparison.mismatchPixels ),
-			total_pixels: number( comparison.totalPixels ),
+			mismatch_ratio: mismatchRatio,
+			mismatch_pixels: mismatchPixels,
+			total_pixels: totalPixels,
 			dimension_mismatch: Boolean( comparison.dimensionMismatch ),
 		},
 		evidence: {
@@ -132,7 +140,7 @@ function normalizeChangeDelta( change ) {
 			source: boundingBox.source || null,
 			candidate: boundingBox.candidate || null,
 			delta: boundingBox.delta || {},
-			severity: string( boundingBox.severity ),
+			severity: string( boundingBox.severity ) || geometrySeverity( boundingBox.delta ),
 		},
 		styles,
 	};
@@ -161,15 +169,36 @@ function enrichCandidatePath( item, provenance ) {
 function deduplicateDeltas( deltas ) {
 	const deltasByKey = new Map();
 	for ( const delta of deltas.filter( Boolean ) ) {
-		const key = JSON.stringify( [ delta.candidate_path, delta.bounding_box ] );
+		const key = delta.candidate_path || delta.source_path || delta.selector;
 		const existing = deltasByKey.get( key );
 		if ( existing ) {
-			existing.styles = deduplicateStyles( [ ...existing.styles, ...delta.styles ] );
+			const preferred = deltaRichness( delta ) > deltaRichness( existing ) ? delta : existing;
+			deltasByKey.set( key, { ...preferred, styles: deduplicateStyles( [ ...existing.styles, ...delta.styles ] ) } );
 		} else {
 			deltasByKey.set( key, { ...delta, styles: deduplicateStyles( delta.styles ) } );
 		}
 	}
 	return [ ...deltasByKey.values() ];
+}
+
+function deltaRichness( delta ) {
+	return ( delta.selector && delta.selector !== delta.candidate_path ? 2 : 0 ) + ( delta.bounding_box.severity ? 1 : 0 ) + ( delta.bounding_box.source ? 1 : 0 ) + ( delta.bounding_box.candidate ? 1 : 0 );
+}
+
+function geometrySeverity( delta ) {
+	const values = Object.values( object( delta ) ).map( ( value ) => Math.abs( number( value ) ) );
+	const maxPositionDelta = Math.max( values[ 0 ] || 0, values[ 1 ] || 0 );
+	const maxSizeDelta = Math.max( values[ 2 ] || 0, values[ 3 ] || 0 );
+	if ( maxPositionDelta >= 8 || maxSizeDelta >= 8 ) {
+		return 'error';
+	}
+	if ( maxPositionDelta >= 1 || maxSizeDelta >= 1 ) {
+		return 'warning';
+	}
+	if ( maxPositionDelta >= 0.5 || maxSizeDelta >= 0.5 ) {
+		return 'info';
+	}
+	return 'none';
 }
 
 function deduplicateStyles( styles ) {
