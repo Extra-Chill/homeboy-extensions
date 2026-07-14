@@ -888,7 +888,7 @@ EXTRA_PLUGINS_JSON="[]"
 homeboy_wp_codebox_add_recipe_mount() {
     local source="$1"
     local target="$2"
-    local mode="${3:-readwrite}"
+    local mode="${3:-readonly}"
     MOUNTS_JSON=$(jq -nc --argjson mounts "$MOUNTS_JSON" --arg source "$source" --arg target "$target" --arg mode "$mode" '$mounts + [{source: $source, target: $target, mode: $mode}]')
 }
 

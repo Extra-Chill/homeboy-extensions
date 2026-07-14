@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-RUNNER="${SCRIPT_DIR}/test-runner.sh"
+RUNNER="${SCRIPT_DIR}/test-runner-wp-codebox.sh"
 EXTENSION_PATH="$(cd "$SCRIPT_DIR/../.." && pwd)"
 TMPDIR="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR"' EXIT
@@ -13,9 +13,11 @@ REMOTE_DEP_PATH="${TMPDIR}/remote/dep-plugin"
 FAKE_WP_CODEBOX="${TMPDIR}/wp-codebox.js"
 ARGS_FILE="${TMPDIR}/wp-codebox-args.txt"
 ARTIFACTS_DIR="${TMPDIR}/artifacts"
+WRITABLE_DIR="${TMPDIR}/writable"
 STUBS_DIR="${TMPDIR}/stubs"
 COMPOSER_LOG="${TMPDIR}/composer.log"
-mkdir -p "${PLUGIN_PATH}/tests" "${PLUGIN_PATH}/config" "${DEP_PATH}/fixtures" "${REMOTE_DEP_PATH}/fixtures" "$ARTIFACTS_DIR" "$STUBS_DIR"
+RESOLVE_CONTEXT_HELPER="${TMPDIR}/resolve-context-helper.sh"
+mkdir -p "${PLUGIN_PATH}/tests" "${PLUGIN_PATH}/config" "${DEP_PATH}/fixtures" "${REMOTE_DEP_PATH}/fixtures" "$ARTIFACTS_DIR" "$WRITABLE_DIR" "$STUBS_DIR"
 
 cat > "${PLUGIN_PATH}/tests/OnlyTest.php" <<'PHP'
 <?php
@@ -40,6 +42,16 @@ mkdir -p vendor
 printf '<?php // prepared autoload\n' > vendor/autoload.php
 SH
 chmod +x "${STUBS_DIR}/composer"
+
+cat > "$RESOLVE_CONTEXT_HELPER" <<'SH'
+#!/usr/bin/env bash
+homeboy_resolve_context() {
+    PLUGIN_PATH="$HOMEBOY_COMPONENT_PATH"
+    COMPONENT_ID="$HOMEBOY_COMPONENT_ID"
+    EXTENSION_PATH="$HOMEBOY_EXTENSION_PATH"
+}
+SH
+chmod +x "$RESOLVE_CONTEXT_HELPER"
 
 cat > "$FAKE_WP_CODEBOX" <<'NODE'
 #!/usr/bin/env node
@@ -113,7 +125,7 @@ if (step?.command !== 'wordpress.phpunit') {
 const mounts = recipe.inputs?.mounts || []
 for (const expected of [
   'plugin-slug=example',
-  'test-file=tests/OnlyTest.php',
+  'test-file=OnlyTest.php',
   'changed-tests-json=["tests/OnlyTest.php"]',
   'env-json={}',
   'wp-config-defines-json={"WP_DEBUG":true,"CUSTOM_NUMBER":7}',
@@ -136,11 +148,12 @@ for (const mount of requiredMounts) {
   }
 }
 
-const componentMount = mountStrings.find((mount) => mount.endsWith(':/wordpress/wp-content/plugins/example'))
+const componentMountSuffix = ':/wordpress/wp-content/plugins/example:readonly'
+const componentMount = mountStrings.find((mount) => mount.endsWith(componentMountSuffix))
 if (!componentMount) {
   throw new Error('component mount missing')
 }
-const componentPath = componentMount.slice(0, -':/wordpress/wp-content/plugins/example'.length)
+const componentPath = componentMount.slice(0, -componentMountSuffix.length)
 if (!fs.existsSync(path.join(componentPath, 'vendor/autoload.php'))) {
   throw new Error(`component Composer autoload was not prepared before mount: ${componentPath}`)
 }
@@ -177,10 +190,16 @@ chmod +x "$FAKE_WP_CODEBOX"
 SETTINGS_JSON=$(jq -nc \
     --argjson wpConfig '{"WP_DEBUG":true,"CUSTOM_NUMBER":7}' \
     --argjson benchEnv '{"HOMEBOY_FLAG":"yes"}' \
+    --arg writable "$WRITABLE_DIR" \
+    --arg runtimeBin "$FAKE_WP_CODEBOX" \
     '{
+        runtime_bin: $runtimeBin,
         wordpress_runtime_version: "6.10",
         wp_config_defines: $wpConfig,
         bench_env: $benchEnv,
+        wp_codebox_phpunit_mounts: [
+            {source: $writable, target: "/tmp/writable-workspace", mode: "readwrite"}
+        ],
         wp_codebox_file_mounts: [
             {from: "config/component-extra.php", to: "/wordpress/wp-content/component-extra.php"},
             {from_dependency: "dep-plugin", from: "fixtures/dep-extra.php", to: "/wordpress/wp-content/dep-extra.php"}
@@ -188,14 +207,15 @@ SETTINGS_JSON=$(jq -nc \
     }')
 
 REQUIRED_MOUNTS_JSON=$(jq -nc \
-    --arg component "${PLUGIN_PATH}:/wordpress/wp-content/plugins/example" \
-    --arg dep "${REMOTE_DEP_PATH}:/wordpress/wp-content/plugins/dep-plugin" \
-    --arg dropin "${PLUGIN_PATH}/db.php:/wordpress/wp-content/db.php" \
-    --arg componentExtra "${PLUGIN_PATH}/config/component-extra.php:/wordpress/wp-content/component-extra.php" \
-    --arg depExtra "${REMOTE_DEP_PATH}/fixtures/dep-extra.php:/wordpress/wp-content/dep-extra.php" \
+    --arg component "${PLUGIN_PATH}:/wordpress/wp-content/plugins/example:readonly" \
+    --arg dep "${REMOTE_DEP_PATH}:/wordpress/wp-content/plugins/dep-plugin:readonly" \
+    --arg dropin "${PLUGIN_PATH}/db.php:/wordpress/wp-content/db.php:readonly" \
+    --arg componentExtra "${PLUGIN_PATH}/config/component-extra.php:/wordpress/wp-content/component-extra.php:readonly" \
+    --arg depExtra "${REMOTE_DEP_PATH}/fixtures/dep-extra.php:/wordpress/wp-content/dep-extra.php:readonly" \
+    --arg writableWorkspace "${WRITABLE_DIR}:/tmp/writable-workspace" \
     --arg vendor "${EXTENSION_PATH}/vendor:/wp-codebox-vendor:readonly" \
     --arg extension "${EXTENSION_PATH}:/homeboy-extension:readonly" \
-    '[$component, $dep, $dropin, $componentExtra, $depExtra, $vendor, $extension]')
+    '[$component, $dep, $dropin, $componentExtra, $depExtra, $writableWorkspace, $vendor, $extension]')
 export REQUIRED_MOUNTS_JSON
 
 LAB_OFFLOAD_JSON=$(jq -nc \
@@ -212,6 +232,8 @@ output=$(FAKE_WP_CODEBOX_ARGS_FILE="$ARGS_FILE" \
     HOMEBOY_EXTENSION_PATH="$EXTENSION_PATH" \
     HOMEBOY_COMPONENT_PATH="$PLUGIN_PATH" \
     HOMEBOY_COMPONENT_ID="example" \
+    HOMEBOY_RUNTIME_RESOLVE_CONTEXT="$RESOLVE_CONTEXT_HELPER" \
+    HOMEBOY_RUNTIME_RUNNER_STEPS="${TMPDIR}/missing-runner-steps.sh" \
     HOMEBOY_WORDPRESS_DEPENDENCY_PATHS="$DEP_PATH" \
     HOMEBOY_LAB_OFFLOAD_JSON="$LAB_OFFLOAD_JSON" \
     HOMEBOY_SETTINGS_JSON="$SETTINGS_JSON" \
