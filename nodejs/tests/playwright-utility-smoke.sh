@@ -56,6 +56,38 @@ HOMEBOY_TEST_CLI_LOG="$CLI_LOG" \
 STATUS="$(HOMEBOY_NODEJS_PLAYWRIGHT_RUNTIME_DIR="$RUNTIME_DIR" bash "$UTILITY" status --json)"
 node -e 'const status = JSON.parse(process.argv[1]); if (status.package.state !== "ready" || status.chromium.state !== "ready") process.exit(1)' "$STATUS"
 
+for dialect in gnu bsd; do
+    FAKE_STAT="$TMP_DIR/stat-$dialect"
+    STAT_LOG="$TMP_DIR/stat-$dialect.log"
+    cat > "$FAKE_STAT" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "\$*" >> "$STAT_LOG"
+case "\$1" in
+  --version)
+    $([ "$dialect" = gnu ] && printf 'printf "stat (GNU coreutils) 9.0\\n"' || printf 'exit 1')
+    ;;
+  -c)
+    [ "$dialect" = gnu ] || exit 64
+    case "\$2" in '%u') id -u ;; '%a') printf '700\\n' ;; *) exit 64 ;; esac
+    ;;
+  -f)
+    if [ "$dialect" = gnu ]; then printf 'filesystem-data\\n'; exit 0; fi
+    case "\$2" in '%u') id -u ;; '%Lp') printf '700\\n' ;; *) exit 64 ;; esac
+    ;;
+  *) exit 64 ;;
+esac
+EOF
+    chmod +x "$FAKE_STAT"
+    DIALECT_STATUS="$(HOMEBOY_NODEJS_PLAYWRIGHT_RUNTIME_DIR="$RUNTIME_DIR" HOMEBOY_NODEJS_PLAYWRIGHT_STAT="$FAKE_STAT" bash "$UTILITY" status --json)"
+    node -e 'const status = JSON.parse(process.argv[1]); if (status.package.state !== "ready") process.exit(1)' "$DIALECT_STATUS"
+    if [ "$dialect" = gnu ]; then
+        ! grep -q '^-f ' "$STAT_LOG" || { echo 'GNU stat used BSD -f probe' >&2; exit 1; }
+    else
+        ! grep -q '^-c ' "$STAT_LOG" || { echo 'BSD stat used GNU -c probe' >&2; exit 1; }
+    fi
+done
+
 PROJECT_DIR="$TMP_DIR/fresh-project"
 mkdir -p "$PROJECT_DIR"
 cat > "$PROJECT_DIR/extension-runtime.mjs" <<'EOF'

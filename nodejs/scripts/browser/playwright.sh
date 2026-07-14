@@ -8,6 +8,7 @@ RUNTIME_DIR="${HOMEBOY_NODEJS_PLAYWRIGHT_RUNTIME_DIR:-${XDG_CACHE_HOME:-${HOME}/
 PACKAGE_DIR="${RUNTIME_DIR}/package"
 NODE_BIN="${HOMEBOY_NODEJS_PLAYWRIGHT_NODE:-node}"
 NPM_BIN="${HOMEBOY_NODEJS_PLAYWRIGHT_NPM:-npm}"
+STAT_BIN="${HOMEBOY_NODEJS_PLAYWRIGHT_STAT:-stat}"
 ACTION="${1:-status}"
 
 setup_command() { printf 'homeboy extension action nodejs browser.playwright.setup'; }
@@ -24,10 +25,19 @@ assert_safe_path() {
     local path="$1"
     [ ! -L "$path" ] || { echo "Refusing symlinked Playwright runtime path: $path" >&2; return 1; }
     if [ -e "$path" ]; then
-        local owner mode
-        owner="$(stat -f '%u' "$path" 2>/dev/null || stat -c '%u' "$path")"
+        local owner mode stat_version
+        stat_version="$("$STAT_BIN" --version 2>&1 || true)"
+        case "$stat_version" in
+            *GNU*)
+                owner="$("$STAT_BIN" -c '%u' "$path")"
+                mode="$("$STAT_BIN" -c '%a' "$path")"
+                ;;
+            *)
+                owner="$("$STAT_BIN" -f '%u' "$path")"
+                mode="$("$STAT_BIN" -f '%Lp' "$path")"
+                ;;
+        esac
         [ "$owner" = "$(id -u)" ] || { echo "Refusing runtime path not owned by this user: $path" >&2; return 1; }
-        mode="$(stat -f '%Lp' "$path" 2>/dev/null || stat -c '%a' "$path")"
         [ $(( 8#$mode & 8#022 )) -eq 0 ] || { echo "Refusing group/world-writable runtime path: $path" >&2; return 1; }
     fi
 }
