@@ -56,7 +56,7 @@ HOMEBOY_TEST_CLI_LOG="$CLI_LOG" \
 STATUS="$(HOMEBOY_NODEJS_PLAYWRIGHT_RUNTIME_DIR="$RUNTIME_DIR" bash "$UTILITY" status --json)"
 node -e 'const status = JSON.parse(process.argv[1]); if (status.package.state !== "ready" || status.chromium.state !== "ready") process.exit(1)' "$STATUS"
 
-for dialect in gnu bsd; do
+for dialect in gnu uutils bsd; do
     FAKE_STAT="$TMP_DIR/stat-$dialect"
     STAT_LOG="$TMP_DIR/stat-$dialect.log"
     cat > "$FAKE_STAT" <<EOF
@@ -65,14 +65,15 @@ set -euo pipefail
 printf '%s\\n' "\$*" >> "$STAT_LOG"
 case "\$1" in
   --version)
-    $([ "$dialect" = gnu ] && printf 'printf "stat (GNU coreutils) 9.0\\n"' || printf 'exit 1')
+    case "$dialect" in gnu) printf 'stat (GNU coreutils) 9.0\\n' ;; uutils) printf 'stat (uutils coreutils) 0.8.0\\n' ;; *) exit 1 ;; esac
     ;;
   -c)
-    [ "$dialect" = gnu ] || exit 64
+    { [ "$dialect" = gnu ] || [ "$dialect" = uutils ]; } || exit 64
     case "\$2" in '%u') id -u ;; '%a') printf '700\\n' ;; *) exit 64 ;; esac
     ;;
   -f)
     if [ "$dialect" = gnu ]; then printf 'filesystem-data\\n'; exit 0; fi
+    [ "$dialect" = bsd ] || exit 64
     case "\$2" in '%u') id -u ;; '%Lp') printf '700\\n' ;; *) exit 64 ;; esac
     ;;
   *) exit 64 ;;
@@ -81,10 +82,11 @@ EOF
     chmod +x "$FAKE_STAT"
     DIALECT_STATUS="$(HOMEBOY_NODEJS_PLAYWRIGHT_RUNTIME_DIR="$RUNTIME_DIR" HOMEBOY_NODEJS_PLAYWRIGHT_STAT="$FAKE_STAT" bash "$UTILITY" status --json)"
     node -e 'const status = JSON.parse(process.argv[1]); if (status.package.state !== "ready") process.exit(1)' "$DIALECT_STATUS"
-    if [ "$dialect" = gnu ]; then
-        ! grep -q '^-f ' "$STAT_LOG" || { echo 'GNU stat used BSD -f probe' >&2; exit 1; }
+    if [ "$dialect" = gnu ] || [ "$dialect" = uutils ]; then
+        ! grep -q '^-f ' "$STAT_LOG" || { echo "$dialect stat used BSD -f probe" >&2; exit 1; }
     else
-        ! grep -q '^-c ' "$STAT_LOG" || { echo 'BSD stat used GNU -c probe' >&2; exit 1; }
+        grep -q '^-c ' "$STAT_LOG" || { echo 'BSD stat did not receive GNU compatibility probe' >&2; exit 1; }
+        grep -q '^-f ' "$STAT_LOG" || { echo 'BSD stat did not receive BSD fallback probe' >&2; exit 1; }
     fi
 done
 

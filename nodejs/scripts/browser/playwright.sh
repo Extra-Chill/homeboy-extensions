@@ -25,18 +25,23 @@ assert_safe_path() {
     local path="$1"
     [ ! -L "$path" ] || { echo "Refusing symlinked Playwright runtime path: $path" >&2; return 1; }
     if [ -e "$path" ]; then
-        local owner mode stat_version
-        stat_version="$("$STAT_BIN" --version 2>&1 || true)"
-        case "$stat_version" in
-            *GNU*)
-                owner="$("$STAT_BIN" -c '%u' "$path")"
-                mode="$("$STAT_BIN" -c '%a' "$path")"
-                ;;
-            *)
-                owner="$("$STAT_BIN" -f '%u' "$path")"
-                mode="$("$STAT_BIN" -f '%Lp' "$path")"
-                ;;
-        esac
+        local owner mode probe_owner probe_mode
+        if probe_owner="$("$STAT_BIN" -c '%u' "$path" 2>/dev/null)" \
+            && [[ "$probe_owner" =~ ^[0-9]+$ ]] \
+            && probe_mode="$("$STAT_BIN" -c '%a' "$path" 2>/dev/null)" \
+            && [[ "$probe_mode" =~ ^[0-7]+$ ]]; then
+            owner="$probe_owner"
+            mode="$probe_mode"
+        elif probe_owner="$("$STAT_BIN" -f '%u' "$path" 2>/dev/null)" \
+            && [[ "$probe_owner" =~ ^[0-9]+$ ]] \
+            && probe_mode="$("$STAT_BIN" -f '%Lp' "$path" 2>/dev/null)" \
+            && [[ "$probe_mode" =~ ^[0-7]+$ ]]; then
+            owner="$probe_owner"
+            mode="$probe_mode"
+        else
+            echo "Unable to read numeric owner and mode for runtime path: $path" >&2
+            return 1
+        fi
         [ "$owner" = "$(id -u)" ] || { echo "Refusing runtime path not owned by this user: $path" >&2; return 1; }
         [ $(( 8#$mode & 8#022 )) -eq 0 ] || { echo "Refusing group/world-writable runtime path: $path" >&2; return 1; }
     fi
