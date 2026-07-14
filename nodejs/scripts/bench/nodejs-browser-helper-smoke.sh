@@ -60,10 +60,18 @@ if [ "$MISSING_DEPS_EXIT" -ne 42 ]; then
     echo "$MISSING_DEPS_OUTPUT" >&2
     exit 1
 fi
-if [[ "$MISSING_DEPS_OUTPUT" != *"npm i -D playwright"* ]] || [[ "$MISSING_DEPS_OUTPUT" != *"npx playwright install chromium"* ]]; then
+if [[ "$MISSING_DEPS_OUTPUT" != *"homeboy extension action nodejs browser.playwright.setup"* ]]; then
     echo "missing dependency error did not include actionable setup guidance" >&2
     echo "$MISSING_DEPS_OUTPUT" >&2
     exit 1
+fi
+
+# Browser installation is an opt-in integration check. The deterministic
+# extension utility smoke covers resolution and setup decisions without npm or
+# browser downloads, so ordinary extension test runs stay network-free.
+if [ "${HOMEBOY_RUN_PLAYWRIGHT_INTEGRATION:-0}" != "1" ]; then
+    echo "Node.js browser helper integration smoke skipped (set HOMEBOY_RUN_PLAYWRIGHT_INTEGRATION=1 to run)."
+    exit 0
 fi
 
 if ! npm --prefix "$PROJECT_DIR" install --no-audit --no-fund --silent; then
