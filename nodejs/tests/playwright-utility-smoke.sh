@@ -26,7 +26,10 @@ cat > "$prefix/node_modules/playwright/package.json" <<'PKG'
 PKG
 cat > "$prefix/node_modules/playwright/index.js" <<'JS'
 const path = require('node:path');
-exports.chromium = { executablePath: () => path.join(__dirname, 'chromium-ready') };
+exports.chromium = {
+  executablePath: () => path.join(__dirname, 'chromium-ready'),
+  launch: async () => ({ close: async () => {} }),
+};
 JS
 cat > "$prefix/node_modules/playwright/cli.js" <<'JS'
 const fs = require('node:fs');
@@ -97,6 +100,15 @@ import { chromium } from 'playwright';
 if (!chromium.executablePath().endsWith('chromium-ready')) throw new Error('extension Playwright was not resolved');
 EOF
 HOMEBOY_NODEJS_PLAYWRIGHT_RUNTIME_DIR="$RUNTIME_DIR" bash "$UTILITY" execute "$PROJECT_DIR/extension-runtime.mjs"
+
+cat > "$PROJECT_DIR/dynamic-runtime.mjs" <<'EOF'
+const p = await import('playwright');
+if (!p.chromium || typeof p.chromium.launch !== 'function') throw new Error('dynamic import did not expose chromium');
+const browser = await p.chromium.launch();
+await browser.close();
+if (p.default?.chromium !== p.chromium) throw new Error('default export did not preserve the Playwright module');
+EOF
+HOMEBOY_NODEJS_PLAYWRIGHT_RUNTIME_DIR="$RUNTIME_DIR" bash "$UTILITY" execute "$PROJECT_DIR/dynamic-runtime.mjs"
 
 cat > "$PROJECT_DIR/action-runtime.mjs" <<'EOF'
 import { chromium } from 'playwright';
@@ -178,6 +190,23 @@ const action = manifest.actions.find(({ id }) => id === 'browser.playwright.exec
 if (!action || !action.command.endsWith(' action-execute') || action.payload.selected !== '{{selected}}') process.exit(1);
 const docs = fs.readFileSync('nodejs/docs/browser-bench-helpers.md', 'utf8');
 if (!docs.includes("browser.playwright.execute --data '[{")) process.exit(1);
+NODE
+
+node <<'NODE'
+const fs = require('node:fs');
+const expected = JSON.parse(fs.readFileSync('nodejs/tests/fixtures/playwright-1.61.1-root-exports.json', 'utf8')).sort();
+const facade = fs.readFileSync('nodejs/scripts/browser/playwright-esm-facade.mjs', 'utf8');
+const actual = [...facade.matchAll(/^export const ([A-Za-z_$][\w$]*) = playwright\./gm)].map((match) => match[1]).sort();
+if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+  throw new Error(`Playwright 1.61.1 root facade exports drifted: ${JSON.stringify(actual)}`);
+}
+if (/export const (test|expect|defineConfig)\b/.test(facade)) {
+  throw new Error('playwright/test exports must not be exposed by the root facade');
+}
+const loader = fs.readFileSync('nodejs/scripts/browser/playwright-loader.mjs', 'utf8');
+if (!loader.includes("specifier.startsWith('playwright/')") || !loader.includes('nextResolve(specifier')) {
+  throw new Error('Playwright subpath resolution must use Node package resolution.');
+}
 NODE
 
 LINKED_ROOT="$TMP_DIR/linked-extension"
