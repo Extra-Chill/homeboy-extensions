@@ -359,6 +359,14 @@ if ! grep -q 'stale-caller-sidecar' "${ARTIFACTS_DIR}/files/test-results.json"; 
     echo "Runner must not consume or replace stale caller test-result sidecars" >&2
     exit 1
 fi
+if ! grep -q 'stale-caller-sidecar' "$RESULTS_FILE"; then
+    echo "Runner must not overwrite exported results from stale caller sidecars" >&2
+    exit 1
+fi
+if ! grep -q 'stale-caller-sidecar' "$FAILURES_FILE"; then
+    echo "Runner must not overwrite exported failures from stale caller sidecars" >&2
+    exit 1
+fi
 
 printf 'invalid-pointer\n' > "${ARTIFACTS_DIR}/runtime-smoke-result-mode"
 set +e
