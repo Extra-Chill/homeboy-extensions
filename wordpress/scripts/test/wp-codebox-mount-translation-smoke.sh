@@ -176,7 +176,8 @@ const phpunitResult = resultMode === 'bootstrap-failure'
 // WP Codebox persists the sandbox VFS result to this structured artifact path.
 fs.writeFileSync(path.join(phpunitArtifacts, '.pg-test-result.txt'), phpunitResult)
 fs.writeFileSync(resultModePath, resultMode === 'passed' ? 'bootstrap-failure\n' : 'passed\n')
-fs.writeFileSync(path.join(artifactRoot, 'latest-runtime.json'), JSON.stringify({ paths: { runtimeDirectory } }))
+const pointerRuntimeDirectory = resultMode === 'invalid-pointer' ? 'runtime-/../../other-run' : runtimeDirectory
+fs.writeFileSync(path.join(artifactRoot, 'latest-runtime.json'), JSON.stringify({ paths: { runtimeDirectory: pointerRuntimeDirectory } }))
 const filesRoot = path.join(artifactRoot, 'runtime-smoke', 'files')
 fs.mkdirSync(filesRoot, { recursive: true })
 fs.writeFileSync(path.join(filesRoot, 'test-results.json'), JSON.stringify({ schema: 'wp-codebox/test-results/v1', status: 'passed' }, null, 2))
@@ -306,6 +307,7 @@ fi
 
 mkdir -p "${ARTIFACTS_DIR}/files/phpunit"
 printf 'NO_TEST_FILES\n' > "${ARTIFACTS_DIR}/files/phpunit/.pg-test-result.txt"
+printf '{"schema":"stale-caller-sidecar"}\n' > "${ARTIFACTS_DIR}/files/test-results.json"
 printf 'fail-before-diagnostic\n' > "${ARTIFACTS_DIR}/runtime-smoke-result-mode"
 set +e
 stale_output=$(run_runner 2>&1)
@@ -322,6 +324,25 @@ if [[ "$stale_output" == *"Skipping PHPUnit tests"* ]]; then
 fi
 if ! grep -q '^NO_TEST_FILES' "${ARTIFACTS_DIR}/files/phpunit/.pg-test-result.txt"; then
     echo "Runner must preserve unrelated caller artifacts" >&2
+    exit 1
+fi
+if ! grep -q 'stale-caller-sidecar' "${ARTIFACTS_DIR}/files/test-results.json"; then
+    echo "Runner must not consume or replace stale caller test-result sidecars" >&2
+    exit 1
+fi
+
+printf 'invalid-pointer\n' > "${ARTIFACTS_DIR}/runtime-smoke-result-mode"
+set +e
+pointer_output=$(run_runner 2>&1)
+pointer_status=$?
+set -e
+if [ "$pointer_status" -eq 0 ]; then
+    echo "Expected malformed runtime artifact pointer to fail the runner" >&2
+    exit 1
+fi
+if [[ "$pointer_output" != *"Invalid runtime directory"* ]]; then
+    echo "Expected actionable malformed runtime pointer diagnostic" >&2
+    echo "$pointer_output" >&2
     exit 1
 fi
 
