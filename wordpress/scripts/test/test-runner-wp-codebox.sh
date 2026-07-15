@@ -850,7 +850,6 @@ PHPUNIT_ARGS_JSON=$(printf '%s\0' "${PASSTHROUGH_ARGS[@]}" | php -r '
     $parts = array_values(array_filter(explode("\0", $raw), static function ($value) { return $value !== ""; }));
     echo json_encode($parts, JSON_UNESCAPED_SLASHES);
 ' 2>/dev/null || printf '[]')
-PHPUNIT_ARGS_JSON=$(printf '%s' "$PHPUNIT_ARGS_JSON" | jq -c '. + ["--cache-result-file=/tmp/wp-codebox-phpunit.result.cache"]' 2>/dev/null || printf '["--cache-result-file=/tmp/wp-codebox-phpunit.result.cache"]')
 
 SELECTED_TEST_FILE_REL=""
 if [ -n "$SELECTED_TEST_FILE" ]; then
@@ -1019,6 +1018,7 @@ if [ -n "$DEPENDENCY_PATHS" ]; then
 fi
 
 RESULT_FILE=""
+WP_CODEBOX_RUN_ARTIFACTS_DIR=""
 WP_CODEBOX_TMPFILE=""
 PHPUNIT_STDOUT_TMPFILE=""
 RECIPE_FILE=""
@@ -1117,6 +1117,7 @@ if [ -z "$ARTIFACTS_DIR" ]; then
     ARTIFACTS_DIR=$(mktemp -d "${TMPDIR:-/tmp}/homeboy-wp-codebox-test-artifacts.XXXXXX")
 fi
 RESULT_FILE="${ARTIFACTS_DIR}/files/phpunit/.pg-test-result.txt"
+WP_CODEBOX_RUN_ARTIFACTS_DIR=$(mktemp -d "${ARTIFACTS_DIR}/wp-codebox-phpunit.XXXXXX")
 
 run_phpunit_prepare_steps
 
@@ -1287,7 +1288,7 @@ fi
 set +e
 NODE_OPTIONS="$WP_CODEBOX_NODE_OPTIONS" "${wp_codebox_command[@]}" recipe-run \
     --recipe "$RECIPE_FILE" \
-    --artifacts "$ARTIFACTS_DIR" \
+    --artifacts "$WP_CODEBOX_RUN_ARTIFACTS_DIR" \
     --json \
     > "$WP_CODEBOX_TMPFILE" 2>&1
 wp_codebox_exit=$?
@@ -1297,6 +1298,14 @@ rm -f "$RECIPE_FILE" "$RECIPE_OPTIONS_FILE" "$PHPUNIT_RECIPE_BUILDER_STDERR"
 
 WP_CODEBOX_OUTPUT=$(cat "$WP_CODEBOX_TMPFILE")
 PHPUNIT_OUTPUT=""
+RESULT_FILE=""
+runtime_artifact_directory=$(jq -r '.paths.runtimeDirectory // empty' "${WP_CODEBOX_RUN_ARTIFACTS_DIR}/latest-runtime.json" 2>/dev/null || true)
+case "$runtime_artifact_directory" in
+    runtime-*)
+        candidate_result_file="${WP_CODEBOX_RUN_ARTIFACTS_DIR}/${runtime_artifact_directory}/files/phpunit/.pg-test-result.txt"
+        [ -f "$candidate_result_file" ] && RESULT_FILE="$candidate_result_file"
+        ;;
+esac
 if [ -f "$RESULT_FILE" ]; then
     PHPUNIT_OUTPUT=$(cat "$RESULT_FILE")
 fi

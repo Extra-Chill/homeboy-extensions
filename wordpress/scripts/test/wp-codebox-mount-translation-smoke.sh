@@ -128,7 +128,7 @@ for (const expected of [
   'plugin-slug=example',
   'test-file=OnlyTest.php',
   'changed-tests-json=["tests/OnlyTest.php"]',
-  'phpunit-args-json=["--filter","OnlyTest","--cache-result-file=/tmp/wp-codebox-phpunit.result.cache"]',
+  'phpunit-args-json=["--filter","OnlyTest"]',
   'env-json={}',
   'wp-config-defines-json={"WP_DEBUG":true,"CUSTOM_NUMBER":7}',
   'autoload-file=/wp-codebox-vendor/autoload.php',
@@ -161,15 +161,22 @@ if (!fs.existsSync(path.join(componentPath, 'vendor/autoload.php'))) {
 }
 
 const artifactRoot = argValue('--artifacts') || path.join(path.dirname(process.env.FAKE_WP_CODEBOX_ARGS_FILE), 'artifacts')
-const phpunitArtifacts = path.join(artifactRoot, 'files', 'phpunit')
+const runtimeDirectory = 'runtime-fixture'
+const phpunitArtifacts = path.join(artifactRoot, runtimeDirectory, 'files', 'phpunit')
 fs.mkdirSync(phpunitArtifacts, { recursive: true })
-const resultModePath = path.join(artifactRoot, 'runtime-smoke-result-mode')
-const phpunitResult = fs.existsSync(resultModePath)
+const resultModePath = path.join(path.dirname(artifactRoot), 'runtime-smoke-result-mode')
+const resultMode = fs.existsSync(resultModePath) ? fs.readFileSync(resultModePath, 'utf8').trim() : 'passed'
+if (resultMode === 'fail-before-diagnostic') {
+  process.stderr.write('fixture runtime failed before persisting diagnostics\n')
+  process.exit(1)
+}
+const phpunitResult = resultMode === 'bootstrap-failure'
   ? ['STAGE_FAIL:bootstrap:fixture bootstrap failure', ''].join('\n')
   : ['STAGE_BEGIN:run_tests', 'ALL TESTS PASSED', 'TESTS: 1 FAILURES: 0 ERRORS: 0', 'STAGE_OK:run_tests', ''].join('\n')
 // WP Codebox persists the sandbox VFS result to this structured artifact path.
 fs.writeFileSync(path.join(phpunitArtifacts, '.pg-test-result.txt'), phpunitResult)
-fs.writeFileSync(resultModePath, 'bootstrap-failure\n')
+fs.writeFileSync(resultModePath, resultMode === 'passed' ? 'bootstrap-failure\n' : 'passed\n')
+fs.writeFileSync(path.join(artifactRoot, 'latest-runtime.json'), JSON.stringify({ paths: { runtimeDirectory } }))
 const filesRoot = path.join(artifactRoot, 'runtime-smoke', 'files')
 fs.mkdirSync(filesRoot, { recursive: true })
 fs.writeFileSync(path.join(filesRoot, 'test-results.json'), JSON.stringify({ schema: 'wp-codebox/test-results/v1', status: 'passed' }, null, 2))
@@ -270,7 +277,11 @@ if [ -e "${PLUGIN_PATH}/.pg-test-result.txt" ]; then
     echo "WP Codebox diagnostics must not write to the readonly component source" >&2
     exit 1
 fi
-if ! grep -q '^STAGE_OK:run_tests' "${ARTIFACTS_DIR}/files/phpunit/.pg-test-result.txt"; then
+run_artifacts_dir=""
+for candidate in "${ARTIFACTS_DIR}"/wp-codebox-phpunit.*; do
+    [ -d "$candidate" ] && run_artifacts_dir="$candidate"
+done
+if ! grep -q '^STAGE_OK:run_tests' "${run_artifacts_dir}/runtime-fixture/files/phpunit/.pg-test-result.txt"; then
     echo "Expected PHPUnit VFS diagnostic to persist under WP Codebox artifacts" >&2
     exit 1
 fi
@@ -290,6 +301,27 @@ if [[ "$failure_output" != *"BOOTSTRAP FAILURE: bootstrap:fixture bootstrap fail
 fi
 if [ -e "${PLUGIN_PATH}/.pg-test-result.txt" ]; then
     echo "Structured diagnostic failure must not write to the readonly component source" >&2
+    exit 1
+fi
+
+mkdir -p "${ARTIFACTS_DIR}/files/phpunit"
+printf 'NO_TEST_FILES\n' > "${ARTIFACTS_DIR}/files/phpunit/.pg-test-result.txt"
+printf 'fail-before-diagnostic\n' > "${ARTIFACTS_DIR}/runtime-smoke-result-mode"
+set +e
+stale_output=$(run_runner 2>&1)
+stale_status=$?
+set -e
+if [ "$stale_status" -eq 0 ]; then
+    echo "Expected a runtime failure without a current diagnostic to fail the runner" >&2
+    exit 1
+fi
+if [[ "$stale_output" == *"Skipping PHPUnit tests"* ]]; then
+    echo "Runner consumed a stale no-test diagnostic from a previous invocation" >&2
+    echo "$stale_output" >&2
+    exit 1
+fi
+if ! grep -q '^NO_TEST_FILES' "${ARTIFACTS_DIR}/files/phpunit/.pg-test-result.txt"; then
+    echo "Runner must preserve unrelated caller artifacts" >&2
     exit 1
 fi
 
