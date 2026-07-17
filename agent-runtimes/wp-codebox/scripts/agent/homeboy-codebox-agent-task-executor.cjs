@@ -22,7 +22,6 @@ if (process.argv.includes('--provider-contract')) {
 const {
   agentTaskOutcomeFromCodeboxResult,
   codeboxTaskRequestFromAgentTaskRequest,
-  providerContract,
 } = require('../../lib/codebox-agent-task-executor');
 const {
   normalizeStringArray,
