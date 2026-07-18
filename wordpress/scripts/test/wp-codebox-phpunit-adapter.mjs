@@ -2,7 +2,7 @@
 /**
  * External dependencies
  */
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -11,6 +11,8 @@ import { spawnSync } from 'node:child_process';
 const settings = json(process.env.HOMEBOY_SETTINGS_JSON, {});
 const componentPath = required(process.env.HOMEBOY_COMPONENT_PATH, 'HOMEBOY_COMPONENT_PATH');
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
+const extensionRoot = path.resolve(scriptDirectory, '../..');
+const harnessSource = path.join(extensionRoot, 'vendor');
 const slug = process.env.COMPONENT_ID || path.basename(componentPath);
 const root = settings.wp_codebox_source_root || componentPath;
 const subpath = settings.wp_codebox_source_subpath || undefined;
@@ -24,10 +26,12 @@ const dependencies = dependencyPaths(settings).map((source) => ({
   slug: path.basename(source).replace(/@[^/]+$/, ''),
   activate: true,
 }));
+await requireHarness(harnessSource);
 const options = clean({
   wordpressVersion: settings.wordpress_runtime_version,
   pluginSlug: slug,
   extra_plugins: [{ source: root, sourceSubpath: subpath, slug, activate: false }, ...dependencies],
+  dependencyMounts: dependencies.map((dependency) => `/wordpress/wp-content/plugins/${dependency.slug}`),
   testRoot: settings.wp_codebox_phpunit_test_root,
   phpunitXml: settings.wp_codebox_phpunit_config,
   cwd: settings.wp_codebox_phpunit_cwd,
@@ -37,7 +41,7 @@ const options = clean({
   bootstrapMode: settings.wp_codebox_phpunit_bootstrap_mode,
   projectBootstrap: settings.wp_codebox_phpunit_project_bootstrap,
   preloadFiles: settings.wp_codebox_phpunit_preload_files,
-  mounts: settings.wp_codebox_phpunit_mounts,
+  mounts: [...canonicalMounts(settings.wp_codebox_phpunit_mounts), { source: harnessSource, target: '/wp-codebox-vendor', mode: 'readonly' }],
 });
 
 try {
@@ -67,6 +71,19 @@ function dependencyPaths(configuration) {
   const configured = Array.isArray(configuration.validation_dependencies) ? configuration.validation_dependencies : [];
   const canonical = (process.env.HOMEBOY_WORDPRESS_DEPENDENCY_PATHS || '').split('\n');
   return [...new Set([...canonical, ...configured].filter((value) => typeof value === 'string' && path.isAbsolute(value)))];
+}
+function canonicalMounts(value) {
+  return Array.isArray(value) ? value : [];
+}
+async function requireHarness(source) {
+  try {
+    await Promise.all([
+      access(path.join(source, 'autoload.php')),
+      access(path.join(source, 'wp-phpunit', 'wp-phpunit')),
+    ]);
+  } catch {
+    throw new Error(`WP Codebox PHPUnit harness is required at ${source}. Run composer install in ${extensionRoot}.`);
+  }
 }
 async function handoffArtifacts(artifactRoot) {
   let pointer;

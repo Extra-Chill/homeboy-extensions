@@ -66,6 +66,8 @@ try {
     { source: '/workspace/monorepo', sourceSubpath: 'plugins/canonical-plugin', slug: 'canonical-plugin', activate: false },
   ]);
   assert.deepEqual(options[1].extra_plugins[1], { source: dependency, slug: 'db-touching-dependency', activate: true });
+  assert.deepEqual(options[1].dependencyMounts, ['/wordpress/wp-content/plugins/db-touching-dependency']);
+  assert.deepEqual(options[1].mounts, [{ source: path.join(extension, 'vendor'), target: '/wp-codebox-vendor', mode: 'readonly' }]);
   assert.equal(options[0].workloads[0].id, 'canonical-workload');
   assert.equal(Object.hasOwn(options[0], 'wp_codebox_workloads'), false);
   assert.deepEqual(JSON.parse(await readFile(results, 'utf8')).scenarios, []);
