@@ -21,17 +21,19 @@ const optionsPath = path.join(directory, 'options.json');
 const recipePath = path.join(directory, 'recipe.json');
 const artifacts = process.env.HOMEBOY_WP_CODEBOX_ARTIFACTS_DIR || path.join(directory, 'artifacts');
 const runArtifacts = path.join(artifacts, `wp-codebox-phpunit.${process.pid}`);
-const dependencies = dependencyPaths(settings).map((source) => ({
-  source,
-  slug: path.basename(source).replace(/@[^/]+$/, ''),
-  activate: true,
-}));
+const dependencies = dependencyPaths(settings).map((source) => {
+  const dependencySlug = path.basename(source).replace(/@[^/]+$/, '');
+  return { source, slug: dependencySlug, sandboxDirectory: sandboxPluginDirectory(dependencySlug) };
+});
 await requireHarness(harnessSource);
 const options = clean({
   wordpressVersion: settings.wordpress_runtime_version,
   pluginSlug: slug,
-  extra_plugins: [{ source: root, sourceSubpath: subpath, slug, activate: false }, ...dependencies],
-  dependencyMounts: dependencies.map((dependency) => `/wordpress/wp-content/plugins/${dependency.slug}`),
+  extra_plugins: [
+    { source: root, sourceSubpath: subpath, slug, activate: false },
+    ...dependencies.map(({ source, slug: dependencySlug }) => ({ source, slug: dependencySlug, activate: false })),
+  ],
+  dependencyMounts: dependencies.map(({ sandboxDirectory }) => sandboxDirectory),
   testRoot: settings.wp_codebox_phpunit_test_root,
   phpunitXml: settings.wp_codebox_phpunit_config,
   cwd: settings.wp_codebox_phpunit_cwd,
@@ -71,6 +73,9 @@ function dependencyPaths(configuration) {
   const configured = Array.isArray(configuration.validation_dependencies) ? configuration.validation_dependencies : [];
   const canonical = (process.env.HOMEBOY_WORDPRESS_DEPENDENCY_PATHS || '').split('\n');
   return [...new Set([...canonical, ...configured].filter((value) => typeof value === 'string' && path.isAbsolute(value)))];
+}
+function sandboxPluginDirectory(pluginSlug) {
+  return `/wordpress/wp-content/plugins/${pluginSlug}`;
 }
 function canonicalMounts(value) {
   return Array.isArray(value) ? value : [];
