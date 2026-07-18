@@ -278,7 +278,6 @@ function opencodeConfigContentForRequest(request = {}, existingContent = '') {
 	// provider session title from an ambient or run-scoped configuration layer.
 	content.agent.title = { ...objectValue(content.agent.title), disable: true };
 	const externalDirectoryPatterns = opencodeExternalDirectoryPatterns(request, config);
-	const workspaceReadPatterns = opencodeWorkspaceReadPatterns(request, config);
 	if (externalDirectoryPatterns.length > 0) {
 		content.permission = permissionWithExternalDirectoryAllowances(content.permission, externalDirectoryPatterns);
 		content.agent[primaryAgent] = {
@@ -289,13 +288,12 @@ function opencodeConfigContentForRequest(request = {}, existingContent = '') {
 			),
 		};
 	}
-	if (workspaceReadPatterns.length > 0) {
-		content.permission = permissionWithWorkspaceReadAllowances(content.permission, workspaceReadPatterns);
+	if (externalDirectoryPatterns.length > 0) {
+		content.permission = permissionWithWorkspaceReadAllowances(content.permission);
 		content.agent[primaryAgent] = {
 			...objectValue(content.agent[primaryAgent]),
 			permission: permissionWithWorkspaceReadAllowances(
 				objectValue(content.agent[primaryAgent]).permission,
-				workspaceReadPatterns,
 				content.permission
 			),
 		};
@@ -370,7 +368,7 @@ function permissionWithExternalDirectoryAllowances(permission, patterns) {
 	};
 }
 
-function permissionWithWorkspaceReadAllowances(permission, patterns, inheritedPermission = {}) {
+function permissionWithWorkspaceReadAllowances(permission, inheritedPermission = {}) {
 	const rules = typeof permission === 'string'
 		? { '*': permission }
 		: objectValue(permission);
@@ -388,9 +386,12 @@ function permissionWithWorkspaceReadAllowances(permission, patterns, inheritedPe
 	return {
 		...rules,
 		read: {
-			// Permit source inspection only under the concrete task workspace.
-			'*': 'deny',
-			...Object.fromEntries(patterns.map((pattern) => [pattern, 'allow'])),
+			// ReadTool checks paths relative to the discovered workspace. Absolute
+			// boundaries remain enforced by external_directory before this rule.
+			'*': 'allow',
+			'..': 'deny',
+			'../*': 'deny',
+			'..\\*': 'deny',
 			...deniedReadRules,
 		},
 	};
