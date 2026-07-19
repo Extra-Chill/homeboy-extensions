@@ -34,7 +34,7 @@ async function main() {
     result.failure = { stage: error.stage || 'unknown', code: error.code || 'deployment_failed', message: redact(error.message) };
     result.remediation.push(...remediation(error.code));
   }
-  await writeResult(contract, result);
+  await writeResult(root, contract, result);
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
   process.exitCode = result.status === 'succeeded' ? 0 : 1;
 }
@@ -86,16 +86,19 @@ async function provisionSecrets(contract, root, secrets, prior, result, redact, 
 
 async function deployAndGate(contract, root, prior, id, result, redact, env) {
   const stage = start(result, id);
+  let deployed = null;
   try {
     await command(contract.wrangler.binary, ['deploy', '--config', resolvePath(root, contract.wrangler.config), '--name', contract.target.worker], root, redact, env, contract.timeout_ms);
-    const deployed = await deployedState(contract, root, redact, env);
+    deployed = await deployedState(contract, root, redact, env);
     result.deployments.push({ stage: id, source_revision: contract.repository.revision, prior_deployment: prior, deployed });
     await runGates(contract.gates, id);
     finish(stage, 'succeeded', { prior_deployment: prior, deployed, gate_ids: contract.gates.map(({ id: gateId }) => gateId) });
   } catch (error) {
     error.stage ||= id;
     const rollbackResult = prior?.version_id ? await rollback(contract, root, prior, redact, env) : { status: 'not_available', reason: 'No single prior production version was recorded.' };
-    result.deployments.push({ stage: id, source_revision: contract.repository.revision, prior_deployment: prior, deployed: null, rollback: rollbackResult });
+    const existing = result.deployments.find((deployment) => deployment.stage === id);
+    if (existing) existing.rollback = rollbackResult;
+    else result.deployments.push({ stage: id, source_revision: contract.repository.revision, prior_deployment: prior, deployed, rollback: rollbackResult });
     finish(stage, 'failed', { code: error.code || 'deployment_failed', rollback: rollbackResult }); throw error;
   }
 }
@@ -147,6 +150,6 @@ async function command(executable, args, cwd, redact, env, timeoutMs = 120000, i
 function start(result, id) { const stage = { id, status: 'running', evidence: null }; result.stages.push(stage); return stage; } function finish(stage, status, evidence) { stage.status = status; stage.evidence = evidence; } function fail(code, message, stage) { const error = new Error(message); error.code = code; error.stage = stage; return error; }
 function remediation(code) { return ({ ambiguous_deployment_versions: ['Use a single-version production deployment or declare a weighted-version selection policy.'], source_not_clean: ['Commit or discard source changes before deployment.'], source_revision_mismatch: ['Check out the declared immutable revision before deployment.'], http_gate_status_failed: ['Correct the deployed route or expected status before retrying the immutable revision.'] }[code] || ['Inspect redacted stage evidence and correct the deployment contract.']); }
 function resolvePath(root, value) { if (!value) throw fail('invalid_contract', 'Required path is missing.'); return isAbsolute(value) ? value : resolve(root, value); } function requiredArgument(name) { const index = process.argv.indexOf(name); if (index < 0 || !process.argv[index + 1]) throw new Error(`${name} is required`); return process.argv[index + 1]; }
-function validate(contract) { if (contract.schema !== 'homeboy/cloudflare-worker-deploy-contract/v1') throw new Error('Unsupported deployment contract schema.'); for (const path of ['repository.worktree', 'repository.revision', 'wrangler.binary', 'wrangler.config', 'wrangler.config_ref', 'target.worker', 'target.account_id']) if (!path.split('.').reduce((value, key) => value?.[key], contract)) throw new Error(`Missing ${path}.`); contract.expected_bindings ||= []; contract.secrets ||= []; contract.gates ||= []; contract.timeout_ms ||= 120000; for (const secret of contract.secrets) if (!secret.name || Boolean(secret.env) === Boolean(secret.file)) throw new Error('Each secret requires exactly one environment or file descriptor.'); }
-async function writeResult(contract, result) { if (contract.result_file) await writeFile(resolve(contract.result_file), `${JSON.stringify(result, null, 2)}\n`, { mode: 0o600 }); }
+function validate(contract) { if (contract.schema !== 'homeboy/cloudflare-worker-deploy-contract/v1') throw new Error('Unsupported deployment contract schema.'); for (const path of ['repository.worktree', 'repository.revision', 'wrangler.binary', 'wrangler.config', 'wrangler.config_ref', 'target.worker', 'target.account_id']) if (!path.split('.').reduce((value, key) => value?.[key], contract)) throw new Error(`Missing ${path}.`); contract.expected_bindings ||= []; contract.secrets ||= []; contract.gates ||= []; contract.timeout_ms ||= 120000; for (const secret of contract.secrets) if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(secret.name || '') || Boolean(secret.env) === Boolean(secret.file)) throw new Error('Each secret requires a safe environment-style name and exactly one environment or file descriptor.'); }
+async function writeResult(root, contract, result) { if (contract.result_file) await writeFile(resolvePath(root, contract.result_file), `${JSON.stringify(result, null, 2)}\n`, { mode: 0o600 }); }
 main().catch((error) => { process.stderr.write(`${JSON.stringify({ schema: SCHEMA, status: 'failed', code: error.code || 'invalid_contract', error: error.message })}\n`); process.exitCode = 1; });
