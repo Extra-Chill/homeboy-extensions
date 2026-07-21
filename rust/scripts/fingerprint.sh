@@ -654,32 +654,62 @@ aggregate_definitions = []
 for type_match in re.finditer(r'\b(?:pub(?:\([^)]*\))?\s+)?(struct|enum)\s+([A-Z][A-Za-z0-9_]*)\b', masked_content):
     type_declarations[type_match.group(2)] = f'{module_id}::{type_match.group(2)}'
 
-imports_by_name = {}
-for import_match in re.finditer(r'\buse\s+(crate(?:::\w+)+)\s*;', masked_content):
-    imported = import_match.group(1)
-    imports_by_name[imported.rsplit('::', 1)[-1]] = imported
-
 primitive_types = {
     'bool', 'char', 'str', 'String', 'usize', 'isize', 'u8', 'u16', 'u32',
     'u64', 'u128', 'i8', 'i16', 'i32', 'i64', 'i128', 'f32', 'f64',
 }
 
 
+def strip_generic_arguments(type_text):
+    match = re.fullmatch(r'((?:crate|self|super|[A-Za-z_]\w*)(?:::(?:super|self|[A-Za-z_]\w*))*)(?:::)?\s*<.*>', type_text, re.S)
+    return match.group(1) if match else type_text
+
+
+def canonical_type_path(path):
+    path = re.sub(r'\s*::\s*', '::', path.strip())
+    segments = path.split('::')
+    if not segments or any(not re.fullmatch(r'[A-Za-z_]\w*', segment) for segment in segments):
+        return None
+    if segments[0] == 'crate':
+        resolved = ['crate']
+        segments = segments[1:]
+    elif segments[0] == 'self':
+        resolved = module_id.split('::')
+        segments = segments[1:]
+    elif segments[0] == 'super':
+        resolved = module_id.split('::')
+    else:
+        return None
+    for segment in segments:
+        if segment == 'self':
+            continue
+        if segment == 'super':
+            if len(resolved) == 1:
+                return None
+            resolved.pop()
+        else:
+            resolved.append(segment)
+    return '::'.join(resolved)
+
+
+imports_by_name = {}
+for import_match in re.finditer(r'\buse\s+((?:crate|self|super)(?:::\w+)+)\s*;', masked_content):
+    imported = canonical_type_path(import_match.group(1))
+    if imported:
+        imports_by_name[imported.rsplit('::', 1)[-1]] = imported
+
+
 def resolve_type(type_text, impl_type=None):
     value = re.sub(r'\b(?:mut|const|dyn)\b', '', type_text).strip()
-    value = re.sub(r"&\s*'(?:[A-Za-z_]\w*)?\s*", '', value).strip()
-    value = value.lstrip('&').strip()
+    while value.startswith('&'):
+        value = re.sub(r"^&\s*(?:'[A-Za-z_]\w*\s+)?(?:mut\s+)?", '', value).strip()
+    value = strip_generic_arguments(value)
     if value == 'Self' and impl_type:
         return type_declarations.get(impl_type)
     if value in primitive_types:
         return value
-    if value.startswith('crate::'):
-        return value if re.match(r'^crate(?:::\w+)+$', value) else None
-    if value.startswith('self::'):
-        return f"{module_id}::{value[6:]}"
-    if value.startswith('super::'):
-        parent = module_id.rsplit('::', 1)[0] if '::' in module_id else module_id
-        return f"{parent}::{value[7:]}"
+    if value.startswith(('crate::', 'self::', 'super::')):
+        return canonical_type_path(value)
     if value in type_declarations:
         return type_declarations[value]
     if value in imports_by_name:
@@ -687,7 +717,7 @@ def resolve_type(type_text, impl_type=None):
     return None
 
 
-for struct_match in re.finditer(r'\b(?:pub(?:\([^)]*\))?\s+)?struct\s+([A-Z][A-Za-z0-9_]*)\s*\{', masked_content):
+for struct_match in re.finditer(r'\b(?:pub(?:\([^)]*\))?\s+)?struct\s+([A-Z][A-Za-z0-9_]*)(?:\s*<[^>{;]*>)?\s*\{', masked_content):
     name = struct_match.group(1)
     opening = masked_content.find('{', struct_match.start(), struct_match.end())
     closing = matching_delimiter(masked_content, opening)
@@ -749,7 +779,7 @@ def expression_type(expression, variable_types):
         receiver_type = variable_types.get(call_match.group(1))
         if receiver_type:
             return function_returns.get(f"{receiver_type}::{call_match.group(2)}")
-    literal_match = re.match(r'([A-Z][A-Za-z0-9_]*)\s*\{', expression)
+    literal_match = re.match(r'([A-Z][A-Za-z0-9_]*)(?:::)?(?:\s*<[^>{;]*>)?\s*\{', expression)
     if literal_match:
         return resolve_type(literal_match.group(1))
     return None
@@ -824,7 +854,7 @@ for fn in functions:
             'location': location_at(body_offset + access_match.start(2)),
         })
 
-    for literal_match in re.finditer(r'\b([A-Z][A-Za-z0-9_]*)\s*\{', body_masked):
+    for literal_match in re.finditer(r'\b([A-Z][A-Za-z0-9_]*)(?:::)?(?:\s*<[^>{;]*>)?\s*\{', body_masked):
         target_type = resolve_type(literal_match.group(1), fn.impl_type)
         if not target_type or target_type in primitive_types:
             continue
@@ -834,14 +864,21 @@ for fn in functions:
             continue
         literal_body = body_masked[opening + 1:closing]
         mappings_by_source = {}
-        for start, end in split_top_level_spans(literal_body):
-            item = literal_body[start:end].strip()
+        literal_items = [literal_body[start:end].strip() for start, end in split_top_level_spans(literal_body)]
+        initialized_fields = {
+            explicit.group(1)
+            for item in literal_items
+            if not item.startswith('..')
+            for explicit in [re.match(r'([a-z_][A-Za-z0-9_]*)(?:\s*:|\s*$)', item)]
+            if explicit
+        }
+        for item in literal_items:
             update_match = re.fullmatch(r'\.\.\s*([a-z_][A-Za-z0-9_]*)', item)
             if update_match:
                 source = update_match.group(1)
                 source_type = variable_types.get(source)
                 if source_type and source_type in struct_fields:
-                    common = struct_fields[source_type] & struct_fields[target_type]
+                    common = (struct_fields[source_type] & struct_fields[target_type]) - initialized_fields
                     mappings_by_source.setdefault(source_type, set()).update((field, field) for field in common)
                 continue
             explicit = re.match(r'([a-z_][A-Za-z0-9_]*)\s*:\s*([a-z_][A-Za-z0-9_]*|self)\s*\.\s*([a-z_][A-Za-z0-9_]*)\s*$', item)

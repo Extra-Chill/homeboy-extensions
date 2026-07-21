@@ -107,6 +107,28 @@ pub fn unresolved(mystery: Mystery, policy: &Policy) {
     UnknownView { unknown };
     policy.missing().unknown;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn helper(policy: &Policy) -> PolicyView {
+        if let Decision::Allow = policy.authoritative() {
+            PolicyView { allowed: policy.allowed }
+        } else {
+            PolicyView { allowed: false }
+        }
+    }
+
+    #[test]
+    fn policy_flow_is_test_only() {
+        let policy = Policy { allowed: true, blocked: false, decision: Decision::Allow };
+        match policy.authoritative() {
+            Decision::Allow => { helper(&policy); }
+            Decision::Deny => {}
+        }
+    }
+}
 RS
 
 make_input() {
@@ -195,9 +217,14 @@ assert projection_keys[(f"{module}::ordinary_dto", f"{module}::Policy", f"{modul
 }
 assert projection_keys[(f"{module}::update", f"{module}::Policy", f"{module}::Policy")] == {
     ("allowed", "allowed"),
-    ("blocked", "blocked"),
     ("decision", "decision"),
 }
+policy_fields = {field["name"] for field in definitions[f"{module}::Policy"]["fields"]}
+update_fields = {
+    target
+    for _, target in projection_keys[(f"{module}::update", f"{module}::Policy", f"{module}::Policy")]
+}
+assert policy_fields - update_fields == {"blocked"}
 
 allow_branch_callables = {
     item["callable_id"]
@@ -224,6 +251,18 @@ assert "decision_domain_type_id" not in audit
 serialized = json.dumps(result, sort_keys=True)
 assert "Mystery" not in serialized
 assert "UnknownView" not in serialized
+policy_flow_serialized = json.dumps({
+    key: result[key]
+    for key in (
+        "aggregate_definitions",
+        "field_accesses",
+        "aggregate_projections",
+        "decision_branches",
+        "method_calls",
+    )
+}, sort_keys=True)
+assert "helper" not in policy_flow_serialized
+assert "policy_flow_is_test_only" not in policy_flow_serialized
 for collection in result.values():
     if isinstance(collection, list) and collection and isinstance(collection[0], dict):
         for item in collection:
@@ -269,6 +308,55 @@ fn project(policy: &Policy) -> PolicyView {
 assert imported_result["field_accesses"][0]["owner_type_id"] == "crate::domain::Policy"
 assert imported_result["aggregate_projections"][0]["source_type_id"] == "crate::domain::Policy"
 assert imported_result["aggregate_projections"][0]["target_type_id"] == "crate::dto::PolicyView"
+
+generic_result = fingerprint("src/generic.rs", '''
+struct Policy<T> {
+    blocked: bool,
+    state: T,
+}
+
+struct PolicyView<T> {
+    state: T,
+}
+
+fn project<T>(policy: &&Policy<T>) -> PolicyView<T> {
+    PolicyView::<T> { state: policy.state }
+}
+''')
+generic_definitions = {item["type_id"]: item for item in generic_result["aggregate_definitions"]}
+assert set(generic_definitions) == {"crate::generic::Policy", "crate::generic::PolicyView"}
+assert generic_definitions["crate::generic::Policy"]["fields"] == [
+    {"name": "blocked", "type_id": "bool"},
+    {"name": "state"},
+]
+assert generic_result["aggregate_projections"] == [{
+    "source_type_id": "crate::generic::Policy",
+    "target_type_id": "crate::generic::PolicyView",
+    "callable_id": "crate::generic::project",
+    "field_mappings": [{"source_field": "state", "target_field": "state"}],
+    "location": {"line": 12, "column": 5},
+}]
+
+parent_result = fingerprint("src/domain/nested/adapter.rs", '''
+struct Local { enabled: bool }
+
+fn inspect(
+    policy: &super::super::Policy,
+    local: &self::Local,
+    root: &crate::domain::Policy,
+) -> bool {
+    policy.blocked || local.enabled || root.allowed
+}
+''')
+parent_owners = {
+    (item["field"], item["owner_type_id"])
+    for item in parent_result["field_accesses"]
+}
+assert parent_owners == {
+    ("blocked", "crate::domain::Policy"),
+    ("enabled", "crate::domain::nested::adapter::Local"),
+    ("allowed", "crate::domain::Policy"),
+}
 
 print("Rust policy-flow fingerprint smoke passed")
 PY
