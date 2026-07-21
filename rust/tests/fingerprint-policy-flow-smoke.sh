@@ -112,6 +112,12 @@ pub fn unresolved(mystery: Mystery, policy: &Policy) {
 mod tests {
     use super::*;
 
+    struct TestOnlyPolicy {
+        allowed: bool,
+        blocked: bool,
+        decision: Decision,
+    }
+
     fn helper(policy: &Policy) -> PolicyView {
         if let Decision::Allow = policy.authoritative() {
             PolicyView { allowed: policy.allowed }
@@ -176,6 +182,7 @@ assert set(definitions) == {
     f"{module}::PolicyView",
     f"{module}::DecisionDto",
 }
+assert f"{module}::TestOnlyPolicy" not in definitions
 assert [field["name"] for field in definitions[f"{module}::Policy"]["fields"]] == [
     "allowed",
     "blocked",
@@ -310,12 +317,15 @@ assert imported_result["aggregate_projections"][0]["source_type_id"] == "crate::
 assert imported_result["aggregate_projections"][0]["target_type_id"] == "crate::dto::PolicyView"
 
 generic_result = fingerprint("src/generic.rs", '''
-struct Policy<T> {
+struct Policy<T> where T: Copy {
     blocked: bool,
     state: T,
 }
 
-struct PolicyView<T> {
+struct PolicyView<T>
+where
+    T: Copy,
+{
     state: T,
 }
 
@@ -334,7 +344,7 @@ assert generic_result["aggregate_projections"] == [{
     "target_type_id": "crate::generic::PolicyView",
     "callable_id": "crate::generic::project",
     "field_mappings": [{"source_field": "state", "target_field": "state"}],
-    "location": {"line": 12, "column": 5},
+    "location": {"line": 15, "column": 5},
 }]
 
 parent_result = fingerprint("src/domain/nested/adapter.rs", '''

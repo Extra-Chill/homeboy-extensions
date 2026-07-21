@@ -630,6 +630,28 @@ def matching_delimiter(text, opening, left='{', right='}'):
     return None
 
 
+inline_test_module_ranges = []
+inline_test_module_pattern = re.compile(
+    r'#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]'
+    r'(?:\s*#\s*\[[^]]*\])*'
+    r'\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+\w+\s*\{'
+)
+for test_module_match in inline_test_module_pattern.finditer(masked_content):
+    opening = masked_content.rfind('{', test_module_match.start(), test_module_match.end())
+    closing = matching_delimiter(masked_content, opening)
+    if closing is not None:
+        inline_test_module_ranges.append((test_module_match.start(), closing + 1))
+
+# Keep source offsets stable while excluding test-only declarations from the
+# production aggregate type table and definition scan.
+aggregate_source_chars = list(masked_content)
+for start, end in inline_test_module_ranges:
+    for pos in range(start, end):
+        if aggregate_source_chars[pos] != '\n':
+            aggregate_source_chars[pos] = ' '
+aggregate_source = ''.join(aggregate_source_chars)
+
+
 def split_top_level_spans(text, delimiter=','):
     spans = []
     start = 0
@@ -651,7 +673,7 @@ type_declarations = {}
 struct_fields = {}
 aggregate_definitions = []
 
-for type_match in re.finditer(r'\b(?:pub(?:\([^)]*\))?\s+)?(struct|enum)\s+([A-Z][A-Za-z0-9_]*)\b', masked_content):
+for type_match in re.finditer(r'\b(?:pub(?:\([^)]*\))?\s+)?(struct|enum)\s+([A-Z][A-Za-z0-9_]*)\b', aggregate_source):
     type_declarations[type_match.group(2)] = f'{module_id}::{type_match.group(2)}'
 
 primitive_types = {
@@ -717,13 +739,17 @@ def resolve_type(type_text, impl_type=None):
     return None
 
 
-for struct_match in re.finditer(r'\b(?:pub(?:\([^)]*\))?\s+)?struct\s+([A-Z][A-Za-z0-9_]*)(?:\s*<[^>{;]*>)?\s*\{', masked_content):
+named_struct_pattern = re.compile(
+    r'\b(?:pub(?:\([^)]*\))?\s+)?struct\s+([A-Z][A-Za-z0-9_]*)'
+    r'(?:\s*<[^>{;]*>)?(?:\s+where\b[^{};]*)?\s*\{'
+)
+for struct_match in named_struct_pattern.finditer(aggregate_source):
     name = struct_match.group(1)
-    opening = masked_content.find('{', struct_match.start(), struct_match.end())
-    closing = matching_delimiter(masked_content, opening)
+    opening = aggregate_source.find('{', struct_match.start(), struct_match.end())
+    closing = matching_delimiter(aggregate_source, opening)
     if closing is None:
         continue
-    body = masked_content[opening + 1:closing]
+    body = aggregate_source[opening + 1:closing]
     fields = []
     field_names = set()
     for start, end in split_top_level_spans(body):
