@@ -13,6 +13,7 @@ const supportedPhpVersions = new Set(['7.4', '8.0', '8.1', '8.2', '8.3', '8.4', 
 
 export async function buildRecipe(settings = {}, cwd = process.cwd()) {
   const fixturePlugin = path.join(packageRoot, 'fixtures/network-fixture');
+  const syntheticFixture = settings.wordpress_multisite_synthetic_fixture !== false;
   const phpVersion = runtimePhpVersion(settings);
   const themes = await extraThemes(settings.wp_codebox_extra_themes);
   const activeTheme = themes.find((theme) => theme.activate);
@@ -43,12 +44,12 @@ export async function buildRecipe(settings = {}, cwd = process.cwd()) {
     },
     inputs: {
       extra_plugins: [
-        {
+        ...(syntheticFixture ? [{
           source: fixturePlugin,
           slug: 'synthetic-network-fixture',
           pluginFile: 'synthetic-network-fixture/network-fixture.php',
           activate: false,
-        },
+        }] : []),
         ...(settings.wp_codebox_extra_plugins || []),
       ],
       mounts: themes.map((theme) => ({
@@ -66,39 +67,41 @@ export async function buildRecipe(settings = {}, cwd = process.cwd()) {
     },
     workflow: {
       steps: [
-        phpFileStep('network-seed.php'),
+        ...(syntheticFixture ? [phpFileStep('network-seed.php')] : []),
         ...(activeTheme ? [activateThemeStep(activeTheme.slug)] : []),
         ...prepareSteps,
         ...workloadSteps,
-        phpFileStep('network-assert.php'),
-        {
-          command: 'wordpress.browser-probe',
-          args: [
-            'url=http://localhost/alpha/fixture-check/',
-            'route-host=localhost',
-            'assert=exists:#synthetic-site-alpha',
-            'assert=exists:#synthetic-auth-anonymous',
-            'assert=no-console-errors',
-            'assert=no-page-errors',
-            'capture=console,errors,html,network,screenshot',
-          ],
-        },
-        {
-          command: 'wordpress.browser-actions',
-          args: [
-            'auth=wordpress-admin',
-            'auth-user-id=1',
-            `steps-json=${JSON.stringify([
-              { kind: 'navigate', url: '/alpha/fixture-check/', waitFor: 'load' },
-              { kind: 'expect', selector: '#synthetic-site-alpha', state: 'visible' },
-              { kind: 'expect', selector: '#synthetic-auth-authenticated', state: 'visible' },
-              { kind: 'navigate', url: '/beta/fixture-check/', waitFor: 'load' },
-              { kind: 'expect', selector: '#synthetic-site-beta', state: 'visible' },
-              { kind: 'expect', selector: '#synthetic-auth-authenticated', state: 'visible' },
-            ])}`,
-            'capture=steps,console,errors,html,network,screenshot,dom-snapshot',
-          ],
-        },
+        ...(syntheticFixture ? [
+          phpFileStep('network-assert.php'),
+          {
+            command: 'wordpress.browser-probe',
+            args: [
+              'url=http://localhost/alpha/fixture-check/',
+              'route-host=localhost',
+              'assert=exists:#synthetic-site-alpha',
+              'assert=exists:#synthetic-auth-anonymous',
+              'assert=no-console-errors',
+              'assert=no-page-errors',
+              'capture=console,errors,html,network,screenshot',
+            ],
+          },
+          {
+            command: 'wordpress.browser-actions',
+            args: [
+              'auth=wordpress-admin',
+              'auth-user-id=1',
+              `steps-json=${JSON.stringify([
+                { kind: 'navigate', url: '/alpha/fixture-check/', waitFor: 'load' },
+                { kind: 'expect', selector: '#synthetic-site-alpha', state: 'visible' },
+                { kind: 'expect', selector: '#synthetic-auth-authenticated', state: 'visible' },
+                { kind: 'navigate', url: '/beta/fixture-check/', waitFor: 'load' },
+                { kind: 'expect', selector: '#synthetic-site-beta', state: 'visible' },
+                { kind: 'expect', selector: '#synthetic-auth-authenticated', state: 'visible' },
+              ])}`,
+              'capture=steps,console,errors,html,network,screenshot,dom-snapshot',
+            ],
+          },
+        ] : []),
         ...scenarioSteps,
         ...postSteps,
       ],

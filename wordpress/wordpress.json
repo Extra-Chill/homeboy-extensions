@@ -1231,6 +1231,13 @@
       "description": "Existing WP Codebox dependency overlay entries forwarded by the wordpress-multisite-e2e rig for immutable Composer package replacement."
     },
     {
+      "id": "wordpress_multisite_synthetic_fixture",
+      "label": "WordPress multisite synthetic fixture",
+      "type": "boolean",
+      "default": true,
+      "description": "Run the wordpress-multisite-e2e rig's built-in alpha/beta self-test. Set false when consumer prepare/scenario/post steps own the complete network topology and journey."
+    },
+    {
       "id": "wordpress_runtime_workloads",
       "label": "WordPress runtime workloads",
       "type": "array",

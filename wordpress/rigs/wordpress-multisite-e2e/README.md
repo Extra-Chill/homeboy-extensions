@@ -56,6 +56,9 @@ settings. Consumers do not edit the rig:
 - `wp_codebox_dependency_overlays` forwards existing WP Codebox Composer package
   overlays for replacing a consumer plugin's bundled dependency from an
   immutable checkout.
+- `wordpress_multisite_synthetic_fixture` defaults to `true` for the rig's
+  alpha/beta self-test. Set it to `false` when consumer prepare, scenario, and
+  post steps own the complete network topology and journey.
 - `wordpress_runtime_prepare_steps` adds seed/setup recipe steps.
 - `wordpress_runtime_workloads` runs consumer workloads through
   `wordpress.bench` after network setup.

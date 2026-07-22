@@ -137,6 +137,19 @@ try {
   assert.deepEqual(withoutRuntimeInputs.inputs.dependency_overlays, []);
   assert.equal(withoutRuntimeInputs.workflow.steps.some((step) => step.metadata?.kind === 'wordpress-theme-activation'), false);
 
+  const consumerTopology = await buildRecipe({
+    wordpress_multisite_synthetic_fixture: false,
+    wp_codebox_extra_plugins: [{ source: '/tmp/consumer-plugin', slug: 'consumer-plugin', activate: false }],
+    wordpress_runtime_prepare_steps: [prepareStep],
+    wp_codebox_scenario_manifests: [{ id: 'consumer-owned-topology', url: '/' }],
+  }, root);
+  assert.equal(consumerTopology.inputs.extra_plugins.some((plugin) => plugin.slug === 'synthetic-network-fixture'), false);
+  assert.equal(consumerTopology.workflow.steps.some((step) => step.args?.some((arg) => arg.includes('network-seed.php'))), false);
+  assert.equal(consumerTopology.workflow.steps.some((step) => step.args?.some((arg) => arg.includes('network-assert.php'))), false);
+  assert.equal(consumerTopology.workflow.steps.some((step) => step.command === 'wordpress.browser-probe'), false);
+  assert.equal(consumerTopology.workflow.steps.some((step) => step.command === 'wordpress.browser-actions'), false);
+  assert.equal(consumerTopology.workflow.steps.some((step) => step.command === 'wordpress.browser-scenario'), true);
+
   await assert.rejects(buildRecipe({ wordpress_runtime_php_version: '' }, root), /must be a non-empty/);
   await assert.rejects(buildRecipe({ wordpress_runtime_php_version: '8.4.1' }, root), /Unsupported/);
   await assert.rejects(buildRecipe({ wordpress_runtime_php_version: '8.6' }, root), /Unsupported/);
