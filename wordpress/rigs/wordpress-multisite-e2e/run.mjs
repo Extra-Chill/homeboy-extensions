@@ -325,7 +325,10 @@ async function browserScenarioSteps(value, cwd) {
     const scenario = typeof entry === 'string'
       ? JSON.parse(await readFile(path.resolve(cwd, entry), 'utf8'))
       : entry;
-    scenarios.push({ command: 'wordpress.browser-scenario', args: [`scenario-json=${JSON.stringify(scenario)}`] });
+    scenarios.push({
+      command: 'wordpress.browser-scenario',
+      args: [`scenario-json=${JSON.stringify(scenario)}`, 'route-host=localhost'],
+    });
   }
   return scenarios;
 }

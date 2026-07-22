@@ -105,6 +105,7 @@ try {
   }]);
   assert.ok(recipe.workflow.steps.some((step) => step.command === 'wordpress.bench'));
   assert.ok(recipe.workflow.steps.some((step) => step.command === 'wordpress.browser-scenario'));
+  assert.ok(recipe.workflow.steps.some((step) => step.command === 'wordpress.browser-scenario' && step.args.includes('route-host=localhost')));
   assert.ok(recipe.workflow.steps.some((step) => step.command === 'wordpress.browser-probe'));
   assert.ok(recipe.workflow.steps.some((step) => step.command === 'wordpress.browser-actions'));
   const seedIndex = recipe.workflow.steps.findIndex((step) => step.args?.some((arg) => arg.includes('network-seed.php')));
