@@ -16,6 +16,7 @@ export async function buildRecipe(settings = {}, cwd = process.cwd()) {
   const phpVersion = runtimePhpVersion(settings);
   const themes = await extraThemes(settings.wp_codebox_extra_themes);
   const activeTheme = themes.find((theme) => theme.activate);
+  const dependencyOverlays = recipeArray(settings.wp_codebox_dependency_overlays, 'wp_codebox_dependency_overlays');
   const blueprint = mergeMultisiteBlueprint(settings.wordpress_runtime_blueprint, activeTheme?.slug);
   const prepareSteps = recipeSteps(settings.wordpress_runtime_prepare_steps);
   const postSteps = recipeSteps(settings.wordpress_runtime_post_steps);
@@ -61,6 +62,7 @@ export async function buildRecipe(settings = {}, cwd = process.cwd()) {
           slug: theme.slug,
         },
       })),
+      dependency_overlays: dependencyOverlays,
     },
     workflow: {
       steps: [
@@ -295,11 +297,15 @@ function phpFileStep(file) {
 }
 
 function recipeSteps(value) {
+  return recipeArray(value, 'WordPress runtime recipe steps');
+}
+
+function recipeArray(value, label) {
   if (value === undefined) {
     return [];
   }
   if (!Array.isArray(value)) {
-    throw new Error('WordPress runtime recipe steps must be arrays.');
+    throw new Error(`${label} must be an array.`);
   }
   return value;
 }

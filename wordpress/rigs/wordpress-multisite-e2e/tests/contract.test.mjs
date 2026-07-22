@@ -62,6 +62,13 @@ try {
       activate: true,
       metadata: { provenance: { revision: '0123456789abcdef' } },
     }],
+    wp_codebox_dependency_overlays: [{
+      kind: 'composer-package',
+      package: 'example/runtime-package',
+      source: '/tmp/runtime-package',
+      consumer: 'consumer-plugin',
+      metadata: { provenance: { revision: 'fedcba9876543210' } },
+    }],
     wordpress_runtime_prepare_steps: [prepareStep],
     wordpress_runtime_workloads: [{ id: 'consumer-workload', run: [] }],
     wp_codebox_scenario_manifests: [{ id: 'consumer-browser-journey', url: '/beta/' }],
@@ -88,6 +95,13 @@ try {
       kind: 'wordpress-theme',
       slug: 'consumer-theme',
     },
+  }]);
+  assert.deepEqual(recipe.inputs.dependency_overlays, [{
+    kind: 'composer-package',
+    package: 'example/runtime-package',
+    source: '/tmp/runtime-package',
+    consumer: 'consumer-plugin',
+    metadata: { provenance: { revision: 'fedcba9876543210' } },
   }]);
   assert.ok(recipe.workflow.steps.some((step) => step.command === 'wordpress.bench'));
   assert.ok(recipe.workflow.steps.some((step) => step.command === 'wordpress.browser-scenario'));
@@ -120,6 +134,7 @@ try {
   const withoutRuntimeInputs = await buildRecipe({}, root);
   assert.equal(Object.hasOwn(withoutRuntimeInputs.runtime, 'phpVersion'), false);
   assert.deepEqual(withoutRuntimeInputs.inputs.mounts, []);
+  assert.deepEqual(withoutRuntimeInputs.inputs.dependency_overlays, []);
   assert.equal(withoutRuntimeInputs.workflow.steps.some((step) => step.metadata?.kind === 'wordpress-theme-activation'), false);
 
   await assert.rejects(buildRecipe({ wordpress_runtime_php_version: '' }, root), /must be a non-empty/);
@@ -127,6 +142,7 @@ try {
   await assert.rejects(buildRecipe({ wordpress_runtime_php_version: '8.6' }, root), /Unsupported/);
   await assert.rejects(buildRecipe({ wordpress_runtime_php_version: '5.2' }, root), /Unsupported/);
   await assert.rejects(buildRecipe({ wp_codebox_extra_themes: {} }, root), /must be an array/);
+  await assert.rejects(buildRecipe({ wp_codebox_dependency_overlays: {} }, root), /wp_codebox_dependency_overlays must be an array/);
   await assert.rejects(buildRecipe({ wp_codebox_extra_themes: [null] }, root), /must be an object/);
   await assert.rejects(buildRecipe({ wp_codebox_extra_themes: [{ source: 'relative/theme', slug: 'theme' }] }, root), /absolute path/);
   await assert.rejects(buildRecipe({ wp_codebox_extra_themes: [{ source: path.join(temporary, 'missing'), slug: 'theme' }] }, root), /does not exist/);

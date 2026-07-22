@@ -53,6 +53,9 @@ settings. Consumers do not edit the rig:
   8 KB. Standalone themes need a WordPress-supported index template; child themes
   need their standalone parent in the same mount list. At most one theme may be
   active, and supplied metadata remains in WP Codebox recipe evidence.
+- `wp_codebox_dependency_overlays` forwards existing WP Codebox Composer package
+  overlays for replacing a consumer plugin's bundled dependency from an
+  immutable checkout.
 - `wordpress_runtime_prepare_steps` adds seed/setup recipe steps.
 - `wordpress_runtime_workloads` runs consumer workloads through
   `wordpress.bench` after network setup.

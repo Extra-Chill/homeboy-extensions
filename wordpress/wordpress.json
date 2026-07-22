@@ -1224,6 +1224,13 @@
       "description": "Immutable local theme checkouts for the wordpress-multisite-e2e rig. Each entry is {source,slug,activate?,metadata?}; the rig validates the theme and maps it to a readonly WP Codebox mount. At most one theme may be active."
     },
     {
+      "id": "wp_codebox_dependency_overlays",
+      "label": "WP Codebox dependency overlays",
+      "type": "array",
+      "default": [],
+      "description": "Existing WP Codebox dependency overlay entries forwarded by the wordpress-multisite-e2e rig for immutable Composer package replacement."
+    },
+    {
       "id": "wordpress_runtime_workloads",
       "label": "WordPress runtime workloads",
       "type": "array",
