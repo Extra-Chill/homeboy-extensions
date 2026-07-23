@@ -62,6 +62,9 @@ settings. Consumers do not edit the rig:
 - `wordpress_runtime_prepare_steps` adds seed/setup recipe steps.
 - `wordpress_runtime_workloads` runs consumer workloads through
   `wordpress.bench` after network setup.
+- `wordpress_runtime_workload_plugin_slug` selects the mounted plugin that owns
+  configured workloads. It defaults to the synthetic fixture only while that
+  fixture is enabled and is required for consumer-owned topology workloads.
 - `wp_codebox_scenario_manifests` adds inline or file-backed browser journeys.
 - `wordpress_runtime_post_steps` adds final assertions or evidence steps.
 - `wordpress_runtime_version` pins the disposable WordPress version.

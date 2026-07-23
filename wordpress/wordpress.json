@@ -1245,6 +1245,13 @@
       "description": "Backend-neutral WordPress workload declarations passed to the selected runtime adapter after dependency mounts and component load. Each workload declares an id, optional label, run steps ({type: 'php', code|file}, {type: 'ability', ability|name, input}, or {type: 'wp-cli', command}), and optional metrics/artifacts/metadata."
     },
     {
+      "id": "wordpress_runtime_workload_plugin_slug",
+      "label": "WordPress runtime workload plugin slug",
+      "type": "string",
+      "default": "",
+      "description": "Mounted plugin slug that owns wordpress-multisite-e2e workloads. Defaults to the synthetic fixture only while that fixture is enabled; consumer-owned topology workloads must name a declared wp_codebox_extra_plugins entry."
+    },
+    {
       "id": "wordpress_runtime_prepare_steps",
       "label": "WordPress runtime prepare steps",
       "type": "array",
