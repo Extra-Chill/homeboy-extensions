@@ -8,6 +8,8 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
+const WP_CODEBOX_MAX_BUFFER_BYTES = 20 * 1024 * 1024;
+
 const packageRoot = path.dirname(fileURLToPath(import.meta.url));
 const supportedPhpVersions = new Set(['7.4', '8.0', '8.1', '8.2', '8.3', '8.4', '8.5']);
 
@@ -361,9 +363,13 @@ async function main() {
   }
 }
 
-function runCodebox(args, capture = false) {
+export function runCodebox(args, capture = false) {
   const executable = process.env.HOMEBOY_WP_CODEBOX_BIN || process.env.WP_CODEBOX_BIN || 'wp-codebox';
-  const result = spawnSync(executable, args, { encoding: 'utf8', stdio: capture ? 'pipe' : 'inherit' });
+  const result = spawnSync(executable, args, {
+    encoding: 'utf8',
+    stdio: capture ? 'pipe' : 'inherit',
+    maxBuffer: WP_CODEBOX_MAX_BUFFER_BYTES,
+  });
   if (result.error) {
     throw result.error;
   }

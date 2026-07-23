@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 /**
  * Internal dependencies
  */
-import { buildRecipe } from '../run.mjs';
+import { buildRecipe, runCodebox } from '../run.mjs';
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const temporary = await mkdtemp(path.join(os.tmpdir(), 'wordpress-multisite-e2e-contract-'));
@@ -150,6 +150,19 @@ try {
   assert.equal(consumerTopology.workflow.steps.some((step) => step.command === 'wordpress.browser-probe'), false);
   assert.equal(consumerTopology.workflow.steps.some((step) => step.command === 'wordpress.browser-actions'), false);
   assert.equal(consumerTopology.workflow.steps.some((step) => step.command === 'wordpress.browser-scenario'), true);
+
+  const previousCodeboxBin = process.env.HOMEBOY_WP_CODEBOX_BIN;
+  process.env.HOMEBOY_WP_CODEBOX_BIN = process.execPath;
+  try {
+    const largeOutput = runCodebox(['-e', "process.stdout.write('x'.repeat(2 * 1024 * 1024))"], true);
+    assert.equal(largeOutput.stdout.length, 2 * 1024 * 1024);
+  } finally {
+    if (previousCodeboxBin === undefined) {
+      delete process.env.HOMEBOY_WP_CODEBOX_BIN;
+    } else {
+      process.env.HOMEBOY_WP_CODEBOX_BIN = previousCodeboxBin;
+    }
+  }
 
   await assert.rejects(buildRecipe({ wordpress_runtime_php_version: '' }, root), /must be a non-empty/);
   await assert.rejects(buildRecipe({ wordpress_runtime_php_version: '8.4.1' }, root), /Unsupported/);
