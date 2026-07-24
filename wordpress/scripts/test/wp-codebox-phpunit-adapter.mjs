@@ -20,6 +20,7 @@ const root = settings.wp_codebox_source_root || componentPath;
 const subpath = settings.wp_codebox_source_subpath || undefined;
 const pluginSourceDirectory = subpath ? path.join(root, subpath) : root;
 const multisite = await resolveMultisite(settings, pluginSourceDirectory);
+const databaseService = resolveDatabaseService(settings, process.env);
 runPrepareSteps(settings.wp_codebox_prepare_steps, pluginSourceDirectory);
 const directory = await mkdtemp(path.join(tmpdir(), 'homeboy-wp-codebox-phpunit-'));
 const optionsPath = path.join(directory, 'options.json');
@@ -35,6 +36,7 @@ const options = clean({
   wordpressVersion: settings.wordpress_runtime_version,
   phpVersion: settings.wordpress_runtime_php_version,
   databaseType: settings.database_type,
+  services: databaseService ? [databaseService.service] : undefined,
   pluginSlug: slug,
   extra_plugins: [
     { source: root, sourceSubpath: subpath, slug, activate: false },
@@ -118,8 +120,9 @@ async function runCaptured(args) {
 }
 function configuredSecretValues() {
   const configured = settings.bench_env && typeof settings.bench_env === 'object' ? settings.bench_env : {};
+  const databaseSecretNames = databaseService?.secretEnv || [];
   return Object.entries({ ...process.env, ...configured })
-    .filter(([name, value]) => /(?:auth|cookie|credential|key|nonce|passw|secret|session|token)/i.test(name) && typeof value === 'string' && value.length >= 8)
+    .filter(([name, value]) => typeof value === 'string' && value.length > 0 && (databaseSecretNames.includes(name) || (/(?:auth|cookie|credential|key|nonce|passw|secret|session|token)/i.test(name) && value.length >= 8)))
     .map(([, value]) => value)
     .sort((left, right) => right.length - left.length);
 }
@@ -214,6 +217,64 @@ function sandboxPluginDirectory(pluginSlug) {
 }
 function canonicalMounts(value) {
   return Array.isArray(value) ? value : [];
+}
+function resolveDatabaseService(configuration, environment) {
+  const value = configuration.wp_codebox_database_service;
+  if (value === undefined || value === null || (isObject(value) && Object.keys(value).length === 0)) {
+    return undefined;
+  }
+  if (!isObject(value)) {
+    throw new Error('wp_codebox_database_service must be an object shaped as {provider,secret_env}');
+  }
+  const unknownKeys = Object.keys(value).filter((key) => !['provider', 'secret_env'].includes(key));
+  if (unknownKeys.length > 0) {
+    throw new Error(`wp_codebox_database_service contains unsupported fields: ${unknownKeys.join(', ')}`);
+  }
+  if (configuration.database_type !== 'mysql') {
+    throw new Error('wp_codebox_database_service requires database_type=mysql');
+  }
+  if (typeof value.provider !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(value.provider)) {
+    throw new Error('wp_codebox_database_service.provider must name a registered WP Codebox provider');
+  }
+  if (!isObject(value.secret_env)) {
+    throw new Error('wp_codebox_database_service.secret_env must contain provider secret environment references');
+  }
+  const unknownSecretFields = Object.keys(value.secret_env).filter((key) => !['host', 'port', 'username', 'password'].includes(key));
+  if (unknownSecretFields.length > 0) {
+    throw new Error(`wp_codebox_database_service.secret_env contains unsupported fields: ${unknownSecretFields.join(', ')}`);
+  }
+  const requiredSecretFields = ['host', 'username', 'password'];
+  const missingSecretFields = requiredSecretFields.filter((field) => value.secret_env[field] === undefined);
+  if (missingSecretFields.length > 0) {
+    throw new Error(`wp_codebox_database_service.secret_env is missing required references: ${missingSecretFields.join(', ')}`);
+  }
+  for (const [field, name] of Object.entries(value.secret_env)) {
+    if (typeof name !== 'string' || !/^[A-Z_][A-Z0-9_]*$/.test(name)) {
+      throw new Error('wp_codebox_database_service.secret_env must map provider fields to environment variable names');
+    }
+    if (typeof environment[name] !== 'string' || (field !== 'password' && environment[name].trim() === '')) {
+      throw new Error(`wp_codebox_database_service secret environment variable is unavailable: ${name}`);
+    }
+  }
+  const secretEnv = [...new Set(Object.values(value.secret_env))];
+  return {
+    service: {
+      id: 'wordpress-database',
+      kind: 'mysql',
+      configuration: {
+        provider: value.provider,
+        hostEnv: value.secret_env.host,
+        ...(value.secret_env.port ? { portEnv: value.secret_env.port } : {}),
+        usernameEnv: value.secret_env.username,
+        passwordEnv: value.secret_env.password,
+      },
+      outputs: { host: 'DB_HOST', port: 'DB_PORT', username: 'DB_USER', password: 'DB_PASSWORD', database: 'DB_NAME' },
+    },
+    secretEnv,
+  };
+}
+function isObject(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 function runPrepareSteps(steps, sourceRoot) {
   if (!Array.isArray(steps)) {
