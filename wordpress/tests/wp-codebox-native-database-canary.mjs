@@ -2,7 +2,7 @@
  * External dependencies
  */
 import { strict as assert } from 'node:assert';
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { access, chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -31,14 +31,22 @@ const runner = path.join(extension, 'scripts/test/test-runner-wp-codebox.sh');
 const root = await mkdtemp(path.join(os.tmpdir(), 'wp-codebox-native-database-canary-'));
 const component = path.join(root, 'native-database-canary');
 const artifacts = path.join(root, 'artifacts');
+const routingGuardBin = path.join(root, 'routing-guard-bin');
+const dockerMarker = path.join(root, 'docker-selected');
 try {
   await mkdir(path.join(component, 'tests'), { recursive: true });
+  await mkdir(routingGuardBin, { recursive: true });
+  const dockerGuard = path.join(routingGuardBin, 'docker');
+  await writeFile(dockerGuard, '#!/bin/sh\n: > "$WP_CODEBOX_NATIVE_CANARY_DOCKER_MARKER"\nexit 97\n');
+  await chmod(dockerGuard, 0o755);
   await writeFile(path.join(component, 'native-database-canary.php'), '<?php\n/* Plugin Name: Native Database Canary */\n');
   await writeFile(path.join(component, 'tests/test-native-database.php'), `<?php
 class Native_Database_Canary_Test extends WP_UnitTestCase {
     public function test_managed_mysql_connection(): void {
         global $wpdb;
-        $this->assertSame( 'mysql', $wpdb->get_var( 'SELECT @@version_comment IS NOT NULL' ) ? 'mysql' : 'unavailable' );
+        $version = $wpdb->get_var( 'SELECT VERSION()' );
+        $this->assertIsString( $version );
+        $this->assertStringContainsString( 'MariaDB', $version );
     }
 }
 `);
@@ -46,10 +54,12 @@ class Native_Database_Canary_Test extends WP_UnitTestCase {
   const run = spawnSync(runner, [], {
     env: {
       ...process.env,
+      PATH: `${routingGuardBin}${path.delimiter}${process.env.PATH || ''}`,
       HOMEBOY_COMPONENT_PATH: component,
       COMPONENT_ID: 'native-database-canary',
       HOMEBOY_WP_CODEBOX_BIN: cli,
       HOMEBOY_WP_CODEBOX_ARTIFACTS_DIR: artifacts,
+      WP_CODEBOX_NATIVE_CANARY_DOCKER_MARKER: dockerMarker,
       HOMEBOY_SETTINGS_JSON: JSON.stringify({
         database_type: 'mysql',
         wp_codebox_database_service: { provider: 'native', engine: 'mariadb' },
@@ -59,6 +69,7 @@ class Native_Database_Canary_Test extends WP_UnitTestCase {
     timeout: 180_000,
   });
   assert.equal(run.status, 0, `${run.stdout}\n${run.stderr}`);
+  await assert.rejects(access(dockerMarker), { code: 'ENOENT' }, 'native provider routing must not invoke Docker');
   const runDirectory = (await readdir(artifacts)).find((entry) => entry.startsWith('wp-codebox-phpunit.'));
   assert.ok(runDirectory, 'adapter must retain the WP Codebox run artifacts');
   const pointer = JSON.parse(await readFile(path.join(artifacts, runDirectory, 'latest-runtime.json'), 'utf8'));
