@@ -1,3 +1,6 @@
+/**
+ * External dependencies
+ */
 import { strict as assert } from 'node:assert';
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
@@ -30,6 +33,17 @@ const artifacts = args[args.indexOf('--artifacts') + 1];
 const runtime = path.join(artifacts, 'runtime-fixture');
 fs.mkdirSync(path.join(runtime, 'files'), { recursive: true });
 fs.writeFileSync(path.join(artifacts, 'latest-runtime.json'), JSON.stringify({ paths: { runtimeDirectory: 'runtime-fixture' } }));
+fs.writeFileSync(path.join(runtime, 'metadata.json'), JSON.stringify({
+  managedRuntimeServices: [{
+    id: 'wordpress-database',
+    kind: 'mysql',
+    provider: 'native',
+    version: 'mariadb',
+    readiness: 'ready',
+    lifecycle: 'released',
+    generatedSecrets: [{ target: 'DB_PASSWORD', source: 'provider-generated' }],
+  }],
+}));
 fs.writeFileSync(path.join(runtime, 'files', 'test-results.json'), JSON.stringify({
   schema: 'wp-codebox/test-results/v1',
   status: 'failed',
@@ -92,6 +106,7 @@ try {
   assert.equal(run.status, 1, run.stderr);
   assert.match(run.stdout, /Structured PHPUnit evidence: artifact:\/\/files\/test-results\.json/);
   assert.match(run.stdout, /Full PHPUnit output: artifact:\/\/files\/phpunit-output\.log/);
+  assert.match(run.stdout, /Managed runtime service evidence: artifact:\/\/metadata\.json/);
 
   const runDirectory = (await readdir(artifacts)).find((entry) => entry.startsWith('wp-codebox-phpunit.'));
   assert.ok(runDirectory);
@@ -112,7 +127,12 @@ try {
   assert.deepEqual(artifactResults.evidenceReferences, [
     { kind: 'structured-test-results', uri: 'artifact://files/test-results.json' },
     { kind: 'raw-phpunit-output', uri: 'artifact://files/phpunit-output.log' },
+    { kind: 'managed-runtime-services', uri: 'artifact://metadata.json' },
   ]);
+  const runtimeMetadata = JSON.parse(await readFile(path.join(runtime, 'metadata.json'), 'utf8'));
+  assert.equal(runtimeMetadata.managedRuntimeServices[0].lifecycle, 'released');
+  assert.deepEqual(runtimeMetadata.managedRuntimeServices[0].generatedSecrets, [{ target: 'DB_PASSWORD', source: 'provider-generated' }]);
+  assert.equal(JSON.stringify(runtimeMetadata).includes('fixture-secret-value'), false, 'provider-neutral lifecycle handoff contains no secret values');
   assert.deepEqual(JSON.parse(await readFile(resultsFile, 'utf8')), { total: 3, passed: 0, failed: 2, skipped: 1 });
 
   const analysisInput = JSON.parse(await readFile(failuresFile, 'utf8'));

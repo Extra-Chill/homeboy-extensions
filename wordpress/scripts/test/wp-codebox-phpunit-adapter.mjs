@@ -15,12 +15,14 @@ const componentPath = required(process.env.HOMEBOY_COMPONENT_PATH, 'HOMEBOY_COMP
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const extensionRoot = path.resolve(scriptDirectory, '../..');
 const harnessSource = path.join(extensionRoot, 'vendor');
+const NATIVE_MARIADB_CAPABILITY = 'runtime-service:mysql:native:mariadb';
 const slug = process.env.COMPONENT_ID || path.basename(componentPath);
 const root = settings.wp_codebox_source_root || componentPath;
 const subpath = settings.wp_codebox_source_subpath || undefined;
 const pluginSourceDirectory = subpath ? path.join(root, subpath) : root;
 const multisite = await resolveMultisite(settings, pluginSourceDirectory);
 const databaseService = resolveDatabaseService(settings, process.env);
+requireDatabaseServiceCapability(databaseService);
 runPrepareSteps(settings.wp_codebox_prepare_steps, pluginSourceDirectory);
 const directory = await mkdtemp(path.join(tmpdir(), 'homeboy-wp-codebox-phpunit-'));
 const optionsPath = path.join(directory, 'options.json');
@@ -62,7 +64,7 @@ try {
   await applyDatabaseServiceAuthorization(recipePath);
   await mkdir(runArtifacts, { recursive: true });
   const executionArgs = ['recipe-run', '--recipe', recipePath, '--artifacts', runArtifacts, '--json'];
-  if (databaseService) {
+  if (databaseService?.boundary) {
     executionArgs.push('--approve-external-service-writes', '--policy', JSON.stringify(databaseService.policy));
   }
   const execution = await runCaptured(executionArgs);
@@ -257,7 +259,7 @@ function resolveDatabaseService(configuration, environment) {
     return undefined;
   }
   if (!isObject(value)) {
-    throw new Error('wp_codebox_database_service must be an object shaped as {provider,secret_env}');
+    throw new Error('wp_codebox_database_service must be an object');
   }
   const unknownKeys = Object.keys(value).filter((key) => !['provider', 'engine', 'allowed_hosts', 'secret_env'].includes(key));
   if (unknownKeys.length > 0) {
@@ -266,8 +268,27 @@ function resolveDatabaseService(configuration, environment) {
   if (configuration.database_type !== 'mysql') {
     throw new Error('wp_codebox_database_service requires database_type=mysql');
   }
-  if (value.provider !== 'external') {
-    throw new Error('wp_codebox_database_service.provider must be external');
+  if (!['external', 'native'].includes(value.provider)) {
+    throw new Error('wp_codebox_database_service.provider must be external or native');
+  }
+  if (value.provider === 'native') {
+    const nativeUnknownKeys = Object.keys(value).filter((key) => !['provider', 'engine'].includes(key));
+    if (nativeUnknownKeys.length > 0) {
+      throw new Error(`wp_codebox_database_service native provider contains unsupported fields: ${nativeUnknownKeys.join(', ')}`);
+    }
+    if (value.engine !== 'mariadb') {
+      throw new Error('wp_codebox_database_service native provider requires engine=mariadb');
+    }
+    return {
+      service: {
+        id: 'wordpress-database',
+        kind: 'mysql',
+        configuration: { provider: 'native', engine: 'mariadb' },
+        outputs: { host: 'DB_HOST', port: 'DB_PORT', username: 'DB_USER', password: 'DB_PASSWORD', database: 'DB_NAME' },
+      },
+      secretEnv: [],
+      requiredCapability: NATIVE_MARIADB_CAPABILITY,
+    };
   }
   if (value.engine !== undefined && !['mysql', 'mariadb'].includes(value.engine)) {
     throw new Error('wp_codebox_database_service.engine must be mysql or mariadb');
@@ -333,6 +354,25 @@ function resolveDatabaseService(configuration, environment) {
     },
   };
 }
+function requireDatabaseServiceCapability(service) {
+  if (!service?.requiredCapability) {
+    return;
+  }
+  const result = spawnSync(process.env.HOMEBOY_WP_CODEBOX_BIN || process.env.WP_CODEBOX_BIN || 'wp-codebox', ['runtime', 'descriptor', '--json'], {
+    cwd: componentPath,
+    env: environmentWithoutDatabaseAdministration(),
+    encoding: 'utf8',
+  });
+  let descriptor;
+  try {
+    descriptor = result.status === 0 ? JSON.parse(result.stdout) : null;
+  } catch {
+    descriptor = null;
+  }
+  if (!descriptor || !Array.isArray(descriptor.capabilities) || !descriptor.capabilities.includes(service.requiredCapability)) {
+    throw new Error('WP Codebox runtime does not advertise the required native MariaDB service capability');
+  }
+}
 function isObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
@@ -344,7 +384,7 @@ function environmentWithoutDatabaseAdministration() {
   return environment;
 }
 async function applyDatabaseServiceAuthorization(target) {
-  if (!databaseService) {
+  if (!databaseService?.boundary) {
     return;
   }
   let recipe;
@@ -419,6 +459,7 @@ async function preservePhpunitOutput(artifactDirectory, execution) {
   const logsDirectory = path.join(artifactDirectory, 'logs');
   const testResultsPath = path.join(filesDirectory, 'test-results.json');
   const phpunitOutputPath = path.join(filesDirectory, 'phpunit-output.log');
+  const runtimeMetadataPath = path.join(artifactDirectory, 'metadata.json');
   await mkdir(filesDirectory, { recursive: true });
   await mkdir(logsDirectory, { recursive: true });
   await copyFile(execution.stdoutPath, path.join(logsDirectory, 'recipe-run.stdout.log'));
@@ -439,15 +480,28 @@ async function preservePhpunitOutput(artifactDirectory, execution) {
       { path: 'logs/recipe-run.stdout.log', kind: 'recipe-run-stdout' },
       { path: 'logs/recipe-run.stderr.log', kind: 'recipe-run-stderr' },
     ];
-    results.evidenceReferences = [
+    const evidenceReferences = [
       { kind: 'structured-test-results', uri: 'artifact://files/test-results.json' },
       { kind: 'raw-phpunit-output', uri: 'artifact://files/phpunit-output.log' },
     ];
+    try {
+      const runtimeMetadata = json(await readFile(runtimeMetadataPath, 'utf8'), null);
+      if (Array.isArray(runtimeMetadata?.managedRuntimeServices)) {
+        evidenceReferences.push({ kind: 'managed-runtime-services', uri: 'artifact://metadata.json' });
+      }
+    } catch {}
+    results.evidenceReferences = evidenceReferences;
     await writeFile(testResultsPath, `${JSON.stringify(results, null, 2)}\n`);
   }
 
   process.stdout.write('Structured PHPUnit evidence: artifact://files/test-results.json\n');
   process.stdout.write('Full PHPUnit output: artifact://files/phpunit-output.log\n');
+  try {
+    const runtimeMetadata = json(await readFile(runtimeMetadataPath, 'utf8'), null);
+    if (Array.isArray(runtimeMetadata?.managedRuntimeServices)) {
+      process.stdout.write('Managed runtime service evidence: artifact://metadata.json\n');
+    }
+  } catch {}
 }
 function extractPhpunitOutput(stdout, stderr) {
   const payload = json(stdout.trim(), null);
