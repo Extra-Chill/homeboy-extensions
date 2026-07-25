@@ -22,7 +22,15 @@ import { appendFile, readFile, writeFile } from 'node:fs/promises';
 const args = process.argv.slice(2);
 if (args[0] === 'runtime' && args[1] === 'descriptor') {
   const capabilities = process.env.OMIT_NATIVE_DATABASE_CAPABILITY === '1' ? [] : ['runtime-service:mysql:native:mariadb'];
-  process.stdout.write(JSON.stringify({ schema: 'wp-codebox/runtime-descriptor/v1', capabilities }));
+  process.stdout.write(JSON.stringify({
+    schema: 'wp-codebox/runtime-descriptor/v1',
+    capabilities,
+    contractManifest: {
+      capabilities: {
+        runtimeServices: { schema: 'wp-codebox/runtime-service-capabilities/v1', capabilities },
+      },
+    },
+  }));
   process.exit(0);
 }
 if (args[0] === 'recipe' && args[1] === 'build') {

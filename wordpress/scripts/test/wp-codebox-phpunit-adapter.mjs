@@ -16,6 +16,7 @@ const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const extensionRoot = path.resolve(scriptDirectory, '../..');
 const harnessSource = path.join(extensionRoot, 'vendor');
 const NATIVE_MARIADB_CAPABILITY = 'runtime-service:mysql:native:mariadb';
+const RUNTIME_SERVICE_CAPABILITIES_SCHEMA = 'wp-codebox/runtime-service-capabilities/v1';
 const slug = process.env.COMPONENT_ID || path.basename(componentPath);
 const root = settings.wp_codebox_source_root || componentPath;
 const subpath = settings.wp_codebox_source_subpath || undefined;
@@ -369,7 +370,15 @@ function requireDatabaseServiceCapability(service) {
   } catch {
     descriptor = null;
   }
-  if (!descriptor || !Array.isArray(descriptor.capabilities) || !descriptor.capabilities.includes(service.requiredCapability)) {
+  const runtimeServices = descriptor?.contractManifest?.capabilities?.runtimeServices;
+  if (
+    descriptor?.schema !== 'wp-codebox/runtime-descriptor/v1'
+    || !Array.isArray(descriptor.capabilities)
+    || !descriptor.capabilities.includes(service.requiredCapability)
+    || runtimeServices?.schema !== RUNTIME_SERVICE_CAPABILITIES_SCHEMA
+    || !Array.isArray(runtimeServices.capabilities)
+    || !runtimeServices.capabilities.includes(service.requiredCapability)
+  ) {
     throw new Error('WP Codebox runtime does not advertise the required native MariaDB service capability');
   }
 }
@@ -440,13 +449,14 @@ async function requireHarness(source) {
 }
 async function handoffArtifacts(artifactRoot, execution) {
   let pointer;
-  try { pointer = await readFile(path.join(artifactRoot, 'latest-runtime.json'), 'utf8'); } catch { return; }
-  const runtime = json(pointer, {}).paths?.runtimeDirectory;
+  try { pointer = json(await readFile(path.join(artifactRoot, 'latest-runtime.json'), 'utf8'), null); } catch { return; }
+  const runtime = pointer?.paths?.runtimeDirectory;
   if (typeof runtime !== 'string' || !/^runtime-[A-Za-z0-9][A-Za-z0-9-]*$/.test(runtime)) {
     return;
   }
   const artifactDirectory = path.join(artifactRoot, runtime);
-  await preservePhpunitOutput(artifactDirectory, execution);
+  const managedRuntimeServices = Array.isArray(pointer.managedRuntimeServices) ? pointer.managedRuntimeServices : [];
+  await preservePhpunitOutput(artifactDirectory, execution, managedRuntimeServices);
   if (process.env.HOMEBOY_TEST_RESULTS_FILE) {
     runScript('parse-test-results.sh', [artifactDirectory]);
   }
@@ -454,12 +464,12 @@ async function handoffArtifacts(artifactRoot, execution) {
     runScript('parse-test-failures.sh', [artifactDirectory, componentPath]);
   }
 }
-async function preservePhpunitOutput(artifactDirectory, execution) {
+async function preservePhpunitOutput(artifactDirectory, execution, managedRuntimeServices) {
   const filesDirectory = path.join(artifactDirectory, 'files');
   const logsDirectory = path.join(artifactDirectory, 'logs');
   const testResultsPath = path.join(filesDirectory, 'test-results.json');
   const phpunitOutputPath = path.join(filesDirectory, 'phpunit-output.log');
-  const runtimeMetadataPath = path.join(artifactDirectory, 'metadata.json');
+  const managedRuntimeServicesPath = path.join(filesDirectory, 'managed-runtime-services.json');
   await mkdir(filesDirectory, { recursive: true });
   await mkdir(logsDirectory, { recursive: true });
   await copyFile(execution.stdoutPath, path.join(logsDirectory, 'recipe-run.stdout.log'));
@@ -469,6 +479,9 @@ async function preservePhpunitOutput(artifactDirectory, execution) {
   const stderr = await readFile(execution.stderrPath, 'utf8');
   const output = extractPhpunitOutput(stdout, stderr);
   await writeFile(phpunitOutputPath, output);
+  if (managedRuntimeServices.length > 0) {
+    await writeFile(managedRuntimeServicesPath, `${JSON.stringify(managedRuntimeServices, null, 2)}\n`);
+  }
 
   let results;
   try { results = json(await readFile(testResultsPath, 'utf8'), null); } catch { results = null; }
@@ -484,24 +497,18 @@ async function preservePhpunitOutput(artifactDirectory, execution) {
       { kind: 'structured-test-results', uri: 'artifact://files/test-results.json' },
       { kind: 'raw-phpunit-output', uri: 'artifact://files/phpunit-output.log' },
     ];
-    try {
-      const runtimeMetadata = json(await readFile(runtimeMetadataPath, 'utf8'), null);
-      if (Array.isArray(runtimeMetadata?.managedRuntimeServices)) {
-        evidenceReferences.push({ kind: 'managed-runtime-services', uri: 'artifact://metadata.json' });
-      }
-    } catch {}
+    if (managedRuntimeServices.length > 0) {
+      evidenceReferences.push({ kind: 'managed-runtime-services', uri: 'artifact://files/managed-runtime-services.json' });
+    }
     results.evidenceReferences = evidenceReferences;
     await writeFile(testResultsPath, `${JSON.stringify(results, null, 2)}\n`);
   }
 
   process.stdout.write('Structured PHPUnit evidence: artifact://files/test-results.json\n');
   process.stdout.write('Full PHPUnit output: artifact://files/phpunit-output.log\n');
-  try {
-    const runtimeMetadata = json(await readFile(runtimeMetadataPath, 'utf8'), null);
-    if (Array.isArray(runtimeMetadata?.managedRuntimeServices)) {
-      process.stdout.write('Managed runtime service evidence: artifact://metadata.json\n');
-    }
-  } catch {}
+  if (managedRuntimeServices.length > 0) {
+    process.stdout.write('Managed runtime service evidence: artifact://files/managed-runtime-services.json\n');
+  }
 }
 function extractPhpunitOutput(stdout, stderr) {
   const payload = json(stdout.trim(), null);
