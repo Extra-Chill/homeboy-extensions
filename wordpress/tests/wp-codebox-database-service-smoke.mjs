@@ -200,8 +200,17 @@ try {
   const missingProvider = expectPreflightFailure({
     database_type: 'mysql',
     wp_codebox_database_service: { secret_env: { host: 'PROVIDER_ADMIN_HOST', username: 'PROVIDER_ADMIN_USER', password: 'PROVIDER_ADMIN_PASSWORD' } },
-  }, /provider must name a registered WP Codebox provider/, secretValues);
+  }, /provider must be external/, secretValues);
   assert.deepEqual(await observations(missingProvider.observed), [], 'missing provider fails before WP Codebox execution');
+
+  for (const provider of ['docker', 'unregistered', 42]) {
+    const rejectedProvider = expectPreflightFailure({
+      ...configured,
+      wp_codebox_database_service: { ...configured.wp_codebox_database_service, provider },
+    }, /provider must be external/, secretValues);
+    assert.deepEqual(await observations(rejectedProvider.observed), [], 'non-external providers fail before recipe build');
+    assert.equal(rejectedProvider.result.stderr.includes(String(provider)), false, 'provider diagnostics omit rejected values');
+  }
 
   expectPreflightFailure({
     database_type: 'mysql',
@@ -236,11 +245,6 @@ try {
     wp_codebox_database_service: { provider: 'external', secret_env: { host: 'PROVIDER_ADMIN_HOST', username: 'PROVIDER_ADMIN_USER', password: 'PROVIDER_ADMIN_PASSWORD' } },
   }, /requires database_type=mysql/, secretValues);
 
-  const unsupported = expectPreflightFailure({
-    database_type: 'mysql',
-    wp_codebox_database_service: { provider: 'unregistered', allowed_hosts: ['database.internal.example'], secret_env: { host: 'PROVIDER_ADMIN_HOST', username: 'PROVIDER_ADMIN_USER', password: 'PROVIDER_ADMIN_PASSWORD' } },
-  }, /Unsupported managed runtime service provider: unregistered/, secretValues);
-  assert.deepEqual((await observations(unsupported.observed)).map(({ phase }) => phase), ['build'], 'unsupported providers fail before workload execution');
 } finally {
   await rm(root, { recursive: true, force: true });
 }

@@ -253,8 +253,8 @@ function resolveDatabaseService(configuration, environment) {
   if (configuration.database_type !== 'mysql') {
     throw new Error('wp_codebox_database_service requires database_type=mysql');
   }
-  if (typeof value.provider !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(value.provider)) {
-    throw new Error('wp_codebox_database_service.provider must name a registered WP Codebox provider');
+  if (value.provider !== 'external') {
+    throw new Error('wp_codebox_database_service.provider must be external');
   }
   if (value.engine !== undefined && !['mysql', 'mariadb'].includes(value.engine)) {
     throw new Error('wp_codebox_database_service.engine must be mysql or mariadb');
