@@ -59,8 +59,13 @@ const options = clean({
 try {
   await writeFile(optionsPath, `${JSON.stringify(options)}\n`);
   run(['recipe', 'build', 'phpunit', '--options', optionsPath, '--output', recipePath]);
+  await applyDatabaseServiceAuthorization(recipePath);
   await mkdir(runArtifacts, { recursive: true });
-  const execution = await runCaptured(['recipe-run', '--recipe', recipePath, '--artifacts', runArtifacts, '--json']);
+  const executionArgs = ['recipe-run', '--recipe', recipePath, '--artifacts', runArtifacts, '--json'];
+  if (databaseService) {
+    executionArgs.push('--approve-external-service-writes', '--policy', JSON.stringify(databaseService.policy));
+  }
+  const execution = await runCaptured(executionArgs);
   await handoffArtifacts(runArtifacts, execution);
   if (execution.status !== 0) {
     process.exitCode = execution.status;
@@ -241,7 +246,7 @@ function resolveDatabaseService(configuration, environment) {
   if (!isObject(value)) {
     throw new Error('wp_codebox_database_service must be an object shaped as {provider,secret_env}');
   }
-  const unknownKeys = Object.keys(value).filter((key) => !['provider', 'engine', 'secret_env'].includes(key));
+  const unknownKeys = Object.keys(value).filter((key) => !['provider', 'engine', 'allowed_hosts', 'secret_env'].includes(key));
   if (unknownKeys.length > 0) {
     throw new Error(`wp_codebox_database_service contains unsupported fields: ${unknownKeys.join(', ')}`);
   }
@@ -253,6 +258,9 @@ function resolveDatabaseService(configuration, environment) {
   }
   if (value.engine !== undefined && !['mysql', 'mariadb'].includes(value.engine)) {
     throw new Error('wp_codebox_database_service.engine must be mysql or mariadb');
+  }
+  if (!Array.isArray(value.allowed_hosts) || value.allowed_hosts.length === 0 || !value.allowed_hosts.every((host) => typeof host === 'string' && /^[a-z0-9.-]+(?::\d+)?$/i.test(host))) {
+    throw new Error('wp_codebox_database_service.allowed_hosts must contain hostnames with optional ports');
   }
   if (!isObject(value.secret_env)) {
     throw new Error('wp_codebox_database_service.secret_env must contain provider secret environment references');
@@ -275,6 +283,7 @@ function resolveDatabaseService(configuration, environment) {
     }
   }
   const secretEnv = [...new Set(Object.values(value.secret_env))];
+  const allowedHosts = [...new Set(value.allowed_hosts.map((host) => host.toLowerCase()))];
   const benchEnv = isObject(configuration.bench_env) ? configuration.bench_env : {};
   const collisions = secretEnv.filter((name) => Object.hasOwn(benchEnv, name));
   if (collisions.length > 0) {
@@ -286,6 +295,7 @@ function resolveDatabaseService(configuration, environment) {
       kind: 'mysql',
       configuration: {
         provider: value.provider,
+        externalService: 'wordpress-database-administration',
         ...(value.engine ? { engine: value.engine } : {}),
         hostEnv: value.secret_env.host,
         ...(value.secret_env.port ? { portEnv: value.secret_env.port } : {}),
@@ -295,6 +305,19 @@ function resolveDatabaseService(configuration, environment) {
       outputs: { host: 'DB_HOST', port: 'DB_PORT', username: 'DB_USER', password: 'DB_PASSWORD', database: 'DB_NAME' },
     },
     secretEnv,
+    boundary: {
+      id: 'wordpress-database-administration',
+      environment: 'external',
+      allowedHosts,
+      writes: 'allowed-with-approval',
+    },
+    policy: {
+      network: { allowHosts: allowedHosts },
+      filesystem: 'readwrite-mounts',
+      commands: ['inspect-mounted-inputs', 'wordpress.run-php', 'wordpress.phpunit'],
+      secrets: 'connector-scoped',
+      approvals: 'on-write',
+    },
   };
 }
 function isObject(value) {
@@ -306,6 +329,28 @@ function environmentWithoutDatabaseAdministration() {
     delete environment[name];
   }
   return environment;
+}
+async function applyDatabaseServiceAuthorization(target) {
+  if (!databaseService) {
+    return;
+  }
+  let recipe;
+  try {
+    recipe = JSON.parse(await readFile(target, 'utf8'));
+  } catch {
+    throw new Error('WP Codebox produced an invalid PHPUnit recipe');
+  }
+  if (!isObject(recipe) || !isObject(recipe.inputs) || !Array.isArray(recipe.inputs.services)) {
+    throw new Error('WP Codebox PHPUnit recipe omitted configured runtime services');
+  }
+  const service = recipe.inputs.services.find((candidate) => candidate?.id === databaseService.service.id);
+  if (!isObject(service) || !isObject(service.configuration)) {
+    throw new Error('WP Codebox PHPUnit recipe omitted the configured database service');
+  }
+  service.configuration.externalService = databaseService.boundary.id;
+  const boundaries = Array.isArray(recipe.inputs.externalServices) ? recipe.inputs.externalServices : [];
+  recipe.inputs.externalServices = [...boundaries.filter((boundary) => boundary?.id !== databaseService.boundary.id), databaseService.boundary];
+  await writeFile(target, `${JSON.stringify(recipe)}\n`);
 }
 function runPrepareSteps(steps, sourceRoot) {
   if (!Array.isArray(steps)) {

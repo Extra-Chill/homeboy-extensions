@@ -36,7 +36,7 @@ if (args[0] === 'recipe' && args[1] === 'build') {
 }
 if (args[0] === 'recipe-run') {
   const recipe = JSON.parse(await readFile(args[args.indexOf('--recipe') + 1], 'utf8'));
-  await appendFile(process.env.OBSERVED, JSON.stringify({ phase: 'run', recipe }) + '\\n');
+  await appendFile(process.env.OBSERVED, JSON.stringify({ phase: 'run', recipe, args }) + '\\n');
   const configuration = recipe.inputs.services?.[0]?.configuration || {};
   for (const name of [configuration.hostEnv, configuration.portEnv, configuration.usernameEnv, configuration.passwordEnv].filter(Boolean)) {
     process.stdout.write('provider stdout ' + process.env[name] + '\\n');
@@ -104,6 +104,7 @@ try {
     wp_codebox_multisite: true,
     wp_codebox_database_service: {
       provider: 'external',
+      allowed_hosts: ['database.internal.example:3306'],
       secret_env: {
         host: 'PROVIDER_ADMIN_HOST',
         port: 'PROVIDER_ADMIN_PORT',
@@ -130,6 +131,7 @@ try {
     kind: 'mysql',
     configuration: {
       provider: 'external',
+      externalService: 'wordpress-database-administration',
       hostEnv: 'PROVIDER_ADMIN_HOST',
       portEnv: 'PROVIDER_ADMIN_PORT',
       usernameEnv: 'PROVIDER_ADMIN_USER',
@@ -141,10 +143,22 @@ try {
   const serializedRecipe = JSON.stringify(externalObservations[1].recipe);
   for (const value of Object.values(secretValues)) {
     assert.equal(serializedOptions.includes(value), false, 'builder options omit provider credential values');
-    assert.equal(serializedRecipe.includes(value), false, 'generated recipe omits provider credential values');
     assert.equal(externalInvocation.result.stdout.includes(value), false, 'Homeboy stdout omits provider credential values');
     assert.equal(externalInvocation.result.stderr.includes(value), false, 'Homeboy stderr omits provider credential values');
   }
+  for (const value of [secretValues.PROVIDER_ADMIN_USER, secretValues.PROVIDER_ADMIN_PASSWORD]) {
+    assert.equal(serializedRecipe.includes(value), false, 'generated recipe omits provider credential values');
+  }
+  assert.deepEqual(externalObservations[1].recipe.inputs.externalServices, [{
+    id: 'wordpress-database-administration',
+    environment: 'external',
+    allowedHosts: ['database.internal.example:3306'],
+    writes: 'allowed-with-approval',
+  }]);
+  assert.equal(externalObservations[1].args.includes('--approve-external-service-writes'), true);
+  const policy = JSON.parse(externalObservations[1].args[externalObservations[1].args.indexOf('--policy') + 1]);
+  assert.deepEqual(policy.network, { allowHosts: ['database.internal.example:3306'] });
+  assert.equal(policy.approvals, 'on-write');
   assert.match(externalInvocation.result.stdout, /provider stdout \[REDACTED\]/);
   assert.match(externalInvocation.result.stderr, /provider stderr \[REDACTED\]/);
 
@@ -191,19 +205,23 @@ try {
 
   expectPreflightFailure({
     database_type: 'mysql',
-    wp_codebox_database_service: { provider: 'external' },
+    wp_codebox_database_service: { provider: 'external', secret_env: configured.wp_codebox_database_service.secret_env },
+  }, /allowed_hosts must contain hostnames with optional ports/, secretValues);
+  expectPreflightFailure({
+    database_type: 'mysql',
+    wp_codebox_database_service: { provider: 'external', allowed_hosts: ['database.internal.example'] },
   }, /secret_env must contain provider secret environment references/);
   expectPreflightFailure({
     database_type: 'mysql',
-    wp_codebox_database_service: { provider: 'external', secret_env: { host: 'PROVIDER_ADMIN_HOST' } },
+    wp_codebox_database_service: { provider: 'external', allowed_hosts: ['database.internal.example'], secret_env: { host: 'PROVIDER_ADMIN_HOST' } },
   }, /missing required references: username, password/, secretValues);
   expectPreflightFailure({
     database_type: 'mysql',
-    wp_codebox_database_service: { provider: 'external', secret_env: { host: 'MISSING_PROVIDER_HOST', username: 'PROVIDER_ADMIN_USER', password: 'PROVIDER_ADMIN_PASSWORD' } },
+    wp_codebox_database_service: { provider: 'external', allowed_hosts: ['database.internal.example'], secret_env: { host: 'MISSING_PROVIDER_HOST', username: 'PROVIDER_ADMIN_USER', password: 'PROVIDER_ADMIN_PASSWORD' } },
   }, /secret environment variable is unavailable: MISSING_PROVIDER_HOST/, secretValues);
   expectPreflightFailure({
     database_type: 'mysql',
-    wp_codebox_database_service: { provider: 'external', secret_env: ['PROVIDER_ADMIN_HOST'] },
+    wp_codebox_database_service: { provider: 'external', allowed_hosts: ['database.internal.example'], secret_env: ['PROVIDER_ADMIN_HOST'] },
   }, /secret_env must contain provider secret environment references/);
   expectPreflightFailure({
     ...configured,
@@ -220,7 +238,7 @@ try {
 
   const unsupported = expectPreflightFailure({
     database_type: 'mysql',
-    wp_codebox_database_service: { provider: 'unregistered', secret_env: { host: 'PROVIDER_ADMIN_HOST', username: 'PROVIDER_ADMIN_USER', password: 'PROVIDER_ADMIN_PASSWORD' } },
+    wp_codebox_database_service: { provider: 'unregistered', allowed_hosts: ['database.internal.example'], secret_env: { host: 'PROVIDER_ADMIN_HOST', username: 'PROVIDER_ADMIN_USER', password: 'PROVIDER_ADMIN_PASSWORD' } },
   }, /Unsupported managed runtime service provider: unregistered/, secretValues);
   assert.deepEqual((await observations(unsupported.observed)).map(({ phase }) => phase), ['build'], 'unsupported providers fail before workload execution');
 } finally {

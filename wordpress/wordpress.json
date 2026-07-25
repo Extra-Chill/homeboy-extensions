@@ -1291,7 +1291,7 @@
       "label": "WP Codebox database service provider",
       "type": "object",
       "default": {},
-      "description": "Optional operator-owned WP Codebox MySQL runtime-service selection shaped as {provider,engine?,secret_env:{host,port?,username,password}}. provider names a registered WP Codebox provider; engine may be mysql or mariadb; secret_env maps administrative connection fields to host environment variable names. Administrative names must not collide with bench_env. Values are resolved by WP Codebox and never serialized into component settings or recipes. Omit this setting to preserve the default WP Codebox provider and engine."
+      "description": "Optional operator-owned WP Codebox MySQL runtime-service selection shaped as {provider,engine?,allowed_hosts,secret_env:{host,port?,username,password}}. provider names a registered WP Codebox provider; engine may be mysql or mariadb; allowed_hosts declares the non-secret external-service network boundary; secret_env maps administrative connection fields to host environment variable names. Administrative names must not collide with bench_env. Credential values are resolved by WP Codebox and never serialized into component settings or recipes. Omit this setting to preserve the default WP Codebox provider and engine."
     },
     {
       "id": "wp_codebox_phpunit_project_bootstrap",
