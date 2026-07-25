@@ -27,10 +27,10 @@ const optionsPath = path.join(directory, 'options.json');
 const recipePath = path.join(directory, 'recipe.json');
 const artifacts = process.env.HOMEBOY_WP_CODEBOX_ARTIFACTS_DIR || path.join(directory, 'artifacts');
 const runArtifacts = path.join(artifacts, `wp-codebox-phpunit.${process.pid}`);
-const dependencies = dependencyPaths(settings).map((source) => {
+const dependencies = await Promise.all(dependencyPaths(settings).map(async (source) => {
   const dependencySlug = path.basename(source).replace(/@[^/]+$/, '');
-  return { source, slug: dependencySlug, sandboxDirectory: sandboxPluginDirectory(dependencySlug) };
-});
+  return { source, slug: dependencySlug, sandboxDirectory: sandboxPluginDirectory(dependencySlug), composer: await composerPreparation(source) };
+}));
 await requireHarness(harnessSource);
 const options = clean({
   wordpressVersion: settings.wordpress_runtime_version,
@@ -40,7 +40,7 @@ const options = clean({
   pluginSlug: slug,
   extra_plugins: [
     { source: root, sourceSubpath: subpath, slug, activate: false },
-    ...dependencies.map(({ source, slug: dependencySlug }) => ({ source, slug: dependencySlug, activate: false })),
+    ...dependencies.map(({ source, slug: dependencySlug, composer }) => clean({ source, slug: dependencySlug, activate: false, composer })),
   ],
   dependencyMounts: [...new Set([sandboxPluginDirectory(slug), ...dependencies.map(({ sandboxDirectory }) => sandboxDirectory)])],
   testRoot: settings.wp_codebox_phpunit_test_root,
@@ -231,6 +231,19 @@ function dependencyPaths(configuration) {
   const configured = Array.isArray(configuration.validation_dependencies) ? configuration.validation_dependencies : [];
   const canonical = (process.env.HOMEBOY_WORDPRESS_DEPENDENCY_PATHS || '').split('\n');
   return [...new Set([...canonical, ...configured].filter((value) => typeof value === 'string' && path.isAbsolute(value)))];
+}
+async function composerPreparation(source) {
+  try {
+    await access(path.join(source, 'composer.json'));
+  } catch {
+    return undefined;
+  }
+  try {
+    await access(path.join(source, 'vendor/autoload.php'));
+    return undefined;
+  } catch {
+    return 'install';
+  }
 }
 function sandboxPluginDirectory(pluginSlug) {
   return `/wordpress/wp-content/plugins/${pluginSlug}`;

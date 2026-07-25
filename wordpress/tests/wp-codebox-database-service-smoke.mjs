@@ -8,9 +8,12 @@ const extension = path.resolve(import.meta.dirname, '..');
 const runner = path.join(extension, 'scripts/test/test-runner-wp-codebox.sh');
 const root = await mkdtemp(path.join(os.tmpdir(), 'wp-codebox-database-service-'));
 const component = path.join(root, 'plugin');
+const dependency = path.join(root, 'dependency');
 const cli = path.join(root, 'wp-codebox');
 await mkdir(component, { recursive: true });
+await mkdir(dependency, { recursive: true });
 await writeFile(path.join(component, 'plugin.php'), '<?php\n/**\n * Plugin Name: Provider Test\n */\n');
+await writeFile(path.join(dependency, 'composer.json'), '{}\n');
 await writeFile(cli, `#!/usr/bin/env node
 import { appendFile, readFile, writeFile } from 'node:fs/promises';
 const args = process.argv.slice(2);
@@ -102,6 +105,7 @@ try {
   const configured = {
     database_type: 'mysql',
     wp_codebox_multisite: true,
+    validation_dependencies: [dependency],
     wp_codebox_database_service: {
       provider: 'external',
       allowed_hosts: ['database.internal.example:3306'],
@@ -125,6 +129,7 @@ try {
   }, 'recipe build receives administrative names without host values');
   assert.equal(options.databaseType, 'mysql');
   assert.equal(options.multisite, true, 'external MySQL remains compatible with multisite PHPUnit');
+  assert.equal(options.extra_plugins[1].composer, 'install', 'source-form validation dependencies explicitly request staged Composer preparation');
   assert.equal('secretEnv' in options, false, 'administrative credentials are not forwarded into the sandbox runtime');
   assert.deepEqual(options.services, [{
     id: 'wordpress-database',
