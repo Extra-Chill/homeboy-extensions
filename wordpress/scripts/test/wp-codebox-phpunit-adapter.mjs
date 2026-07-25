@@ -10,7 +10,7 @@ import { StringDecoder } from 'node:string_decoder';
 import { fileURLToPath } from 'node:url';
 import { spawn, spawnSync } from 'node:child_process';
 
-const settings = json(process.env.HOMEBOY_SETTINGS_JSON, {});
+const settings = parseSettings(process.env.HOMEBOY_SETTINGS_JSON);
 const componentPath = required(process.env.HOMEBOY_COMPONENT_PATH, 'HOMEBOY_COMPONENT_PATH');
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const extensionRoot = path.resolve(scriptDirectory, '../..');
@@ -152,7 +152,7 @@ function createLineRedactor(secretValues) {
 }
 
 function run(args) {
-  const result = spawnSync(process.env.HOMEBOY_WP_CODEBOX_BIN || process.env.WP_CODEBOX_BIN || 'wp-codebox', args, { cwd: componentPath, encoding: 'utf8', stdio: 'inherit' });
+  const result = spawnSync(process.env.HOMEBOY_WP_CODEBOX_BIN || process.env.WP_CODEBOX_BIN || 'wp-codebox', args, { cwd: componentPath, env: environmentWithoutDatabaseAdministration(), encoding: 'utf8', stdio: 'inherit' });
   if (result.error) {
     throw result.error;
   }
@@ -205,6 +205,21 @@ function truthy(value) {
   if (typeof value !== 'string') { return false; }
   return ['1', 'true', 'yes', 'on'].includes(value.trim().toLowerCase());
 }
+function parseSettings(value) {
+  if (value === undefined || value === '') {
+    return {};
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw new Error('HOMEBOY_SETTINGS_JSON must contain a valid JSON object');
+  }
+  if (!isObject(parsed)) {
+    throw new Error('HOMEBOY_SETTINGS_JSON must contain a valid JSON object');
+  }
+  return parsed;
+}
 function json(value, fallback) { try { return value ? JSON.parse(value) : fallback; } catch { return fallback; } }
 function clean(value) { return Object.fromEntries(Object.entries(value).filter(([, entry]) => entry !== undefined && entry !== '' && !(Array.isArray(entry) && entry.length === 0))); }
 function dependencyPaths(configuration) {
@@ -226,7 +241,7 @@ function resolveDatabaseService(configuration, environment) {
   if (!isObject(value)) {
     throw new Error('wp_codebox_database_service must be an object shaped as {provider,secret_env}');
   }
-  const unknownKeys = Object.keys(value).filter((key) => !['provider', 'secret_env'].includes(key));
+  const unknownKeys = Object.keys(value).filter((key) => !['provider', 'engine', 'secret_env'].includes(key));
   if (unknownKeys.length > 0) {
     throw new Error(`wp_codebox_database_service contains unsupported fields: ${unknownKeys.join(', ')}`);
   }
@@ -235,6 +250,9 @@ function resolveDatabaseService(configuration, environment) {
   }
   if (typeof value.provider !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(value.provider)) {
     throw new Error('wp_codebox_database_service.provider must name a registered WP Codebox provider');
+  }
+  if (value.engine !== undefined && !['mysql', 'mariadb'].includes(value.engine)) {
+    throw new Error('wp_codebox_database_service.engine must be mysql or mariadb');
   }
   if (!isObject(value.secret_env)) {
     throw new Error('wp_codebox_database_service.secret_env must contain provider secret environment references');
@@ -257,12 +275,18 @@ function resolveDatabaseService(configuration, environment) {
     }
   }
   const secretEnv = [...new Set(Object.values(value.secret_env))];
+  const benchEnv = isObject(configuration.bench_env) ? configuration.bench_env : {};
+  const collisions = secretEnv.filter((name) => Object.hasOwn(benchEnv, name));
+  if (collisions.length > 0) {
+    throw new Error(`bench_env must not expose database service administration environment: ${collisions.join(', ')}`);
+  }
   return {
     service: {
       id: 'wordpress-database',
       kind: 'mysql',
       configuration: {
         provider: value.provider,
+        ...(value.engine ? { engine: value.engine } : {}),
         hostEnv: value.secret_env.host,
         ...(value.secret_env.port ? { portEnv: value.secret_env.port } : {}),
         usernameEnv: value.secret_env.username,
@@ -275,6 +299,13 @@ function resolveDatabaseService(configuration, environment) {
 }
 function isObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+function environmentWithoutDatabaseAdministration() {
+  const environment = { ...process.env };
+  for (const name of databaseService?.secretEnv || []) {
+    delete environment[name];
+  }
+  return environment;
 }
 function runPrepareSteps(steps, sourceRoot) {
   if (!Array.isArray(steps)) {
@@ -290,7 +321,7 @@ function runPrepareSteps(steps, sourceRoot) {
     if (relative.startsWith('..') || path.isAbsolute(relative)) {
       throw new Error(`wp_codebox_prepare_steps cwd escapes the source root: ${step.cwd}`);
     }
-    const result = spawnSync(step.command, args, { cwd, encoding: 'utf8', stdio: 'inherit' });
+    const result = spawnSync(step.command, args, { cwd, env: environmentWithoutDatabaseAdministration(), encoding: 'utf8', stdio: 'inherit' });
     if (result.error) {
       throw result.error;
     }
@@ -375,7 +406,7 @@ function extractPhpunitOutput(stdout, stderr) {
   return stdout + stderr;
 }
 function runScript(script, args) {
-  const result = spawnSync('bash', [path.join(scriptDirectory, script), ...args], { cwd: componentPath, encoding: 'utf8', stdio: 'inherit' });
+  const result = spawnSync('bash', [path.join(scriptDirectory, script), ...args], { cwd: componentPath, env: environmentWithoutDatabaseAdministration(), encoding: 'utf8', stdio: 'inherit' });
   if (result.error) {
     throw result.error;
   }

@@ -16,7 +16,16 @@ import { appendFile, readFile, writeFile } from 'node:fs/promises';
 const args = process.argv.slice(2);
 if (args[0] === 'recipe' && args[1] === 'build') {
   const options = JSON.parse(await readFile(args[args.indexOf('--options') + 1], 'utf8'));
-  await appendFile(process.env.OBSERVED, JSON.stringify({ phase: 'build', options }) + '\\n');
+  const configuration = options.services?.[0]?.configuration || {};
+  const adminNames = [configuration.hostEnv, configuration.portEnv, configuration.usernameEnv, configuration.passwordEnv].filter(Boolean);
+  const adminEnvironment = Object.fromEntries(adminNames.map((name) => [name, Object.hasOwn(process.env, name)]));
+  await appendFile(process.env.OBSERVED, JSON.stringify({ phase: 'build', options, adminEnvironment }) + '\\n');
+  for (const name of adminNames) {
+    if (process.env[name] !== undefined) {
+      process.stdout.write('build stdout ' + process.env[name] + '\\n');
+      process.stderr.write('build stderr ' + process.env[name] + '\\n');
+    }
+  }
   if (options.services?.[0]?.configuration?.provider === 'unregistered') {
     process.stderr.write('Unsupported managed runtime service provider: unregistered\\n');
     process.exit(2);
@@ -39,6 +48,10 @@ await chmod(cli, 0o755);
 
 let scenario = 0;
 function invoke(settings, env = {}) {
+  return invokeSettingsJson(JSON.stringify(settings), env);
+}
+
+function invokeSettingsJson(settingsJson, env = {}) {
   scenario += 1;
   const observed = path.join(root, `observed-${scenario}.jsonl`);
   const result = spawnSync(runner, [], {
@@ -47,7 +60,7 @@ function invoke(settings, env = {}) {
       HOMEBOY_COMPONENT_PATH: component,
       COMPONENT_ID: 'provider-test',
       HOMEBOY_WP_CODEBOX_BIN: cli,
-      HOMEBOY_SETTINGS_JSON: JSON.stringify(settings),
+      HOMEBOY_SETTINGS_JSON: settingsJson,
       OBSERVED: observed,
       ...env,
     },
@@ -103,6 +116,12 @@ try {
   assert.equal(externalInvocation.result.status, 0, externalInvocation.result.stderr);
   const externalObservations = await observations(externalInvocation.observed);
   const options = externalObservations[0].options;
+  assert.deepEqual(externalObservations[0].adminEnvironment, {
+    PROVIDER_ADMIN_HOST: false,
+    PROVIDER_ADMIN_PORT: false,
+    PROVIDER_ADMIN_USER: false,
+    PROVIDER_ADMIN_PASSWORD: false,
+  }, 'recipe build receives administrative names without host values');
   assert.equal(options.databaseType, 'mysql');
   assert.equal(options.multisite, true, 'external MySQL remains compatible with multisite PHPUnit');
   assert.equal('secretEnv' in options, false, 'administrative credentials are not forwarded into the sandbox runtime');
@@ -129,6 +148,41 @@ try {
   assert.match(externalInvocation.result.stdout, /provider stdout \[REDACTED\]/);
   assert.match(externalInvocation.result.stderr, /provider stderr \[REDACTED\]/);
 
+  const prepareInvocation = invoke({
+    ...configured,
+    wp_codebox_prepare_steps: [{
+      command: process.execPath,
+      args: ['-e', "process.stdout.write(process.env.PROVIDER_ADMIN_PASSWORD || 'prepare-admin-env-absent')"],
+    }],
+  }, secretValues);
+  assert.equal(prepareInvocation.result.status, 0, prepareInvocation.result.stderr);
+  assert.match(prepareInvocation.result.stdout, /prepare-admin-env-absent/);
+  assert.equal(prepareInvocation.result.stdout.includes(secretValues.PROVIDER_ADMIN_PASSWORD), false, 'prepare steps cannot observe database administration values');
+
+  const mariaDbInvocation = invoke({
+    ...configured,
+    wp_codebox_database_service: { ...configured.wp_codebox_database_service, engine: 'mariadb' },
+  }, secretValues);
+  assert.equal(mariaDbInvocation.result.status, 0, mariaDbInvocation.result.stderr);
+  const mariaDbOptions = (await observations(mariaDbInvocation.observed))[0].options;
+  assert.equal(mariaDbOptions.services[0].configuration.engine, 'mariadb', 'MariaDB selects WP Codebox MariaDB client semantics');
+
+  const malformedSettings = invokeSettingsJson('{"database_type":', secretValues);
+  assert.notEqual(malformedSettings.result.status, 0);
+  assert.match(malformedSettings.result.stderr, /HOMEBOY_SETTINGS_JSON must contain a valid JSON object/);
+  assert.equal(malformedSettings.result.stderr.includes('{"database_type":'), false, 'malformed settings diagnostics omit input values');
+  assert.deepEqual(await observations(malformedSettings.observed), [], 'malformed settings fail before recipe build');
+
+  const collision = expectPreflightFailure({
+    ...configured,
+    bench_env: { PROVIDER_ADMIN_HOST: 'serialized-administrative-host' },
+  }, /bench_env must not expose database service administration environment: PROVIDER_ADMIN_HOST/, secretValues);
+  assert.deepEqual(await observations(collision.observed), [], 'bench_env collisions fail before options are serialized');
+  for (const value of [...Object.values(secretValues), 'serialized-administrative-host']) {
+    assert.equal(collision.result.stdout.includes(value), false);
+    assert.equal(collision.result.stderr.includes(value), false);
+  }
+
   const missingProvider = expectPreflightFailure({
     database_type: 'mysql',
     wp_codebox_database_service: { secret_env: { host: 'PROVIDER_ADMIN_HOST', username: 'PROVIDER_ADMIN_USER', password: 'PROVIDER_ADMIN_PASSWORD' } },
@@ -151,6 +205,10 @@ try {
     database_type: 'mysql',
     wp_codebox_database_service: { provider: 'external', secret_env: ['PROVIDER_ADMIN_HOST'] },
   }, /secret_env must contain provider secret environment references/);
+  expectPreflightFailure({
+    ...configured,
+    wp_codebox_database_service: { ...configured.wp_codebox_database_service, engine: 'unsupported' },
+  }, /engine must be mysql or mariadb/, secretValues);
   expectPreflightFailure({
     database_type: 'mysql',
     wp_codebox_database_service: { provider: 'external', secret_env: { host: 'PROVIDER_ADMIN_HOST', username: 'PROVIDER_ADMIN_USER', password: 'PROVIDER_ADMIN_PASSWORD' }, password: 'plaintext' },
