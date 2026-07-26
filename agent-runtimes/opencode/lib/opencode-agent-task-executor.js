@@ -500,7 +500,7 @@ function opencodeSuccessOutcome(context) {
 }
 
 function structuredOpenCodeReviewOutput(context = {}) {
-	if (context.request?.inputs?.cook_loop?.review_form_required !== true) {
+	if (!requiresReviewForm(context.request)) {
 		return {};
 	}
 	const textEvents = parseJsonObjectsFromText(context.spawnResult?.stdout)
@@ -518,15 +518,32 @@ function structuredOpenCodeReviewOutput(context = {}) {
 				review_form_status: 'harvested',
 			};
 		}
-		return reviewFormOutputDiagnostic(
+		return {
+			outputs: { review_form: envelope.review_form },
+			...reviewFormOutputDiagnostic(
 			'invalid',
 			'OpenCode emitted a review_form with an invalid schema.'
-		);
+			),
+		};
 	}
 	return reviewFormOutputDiagnostic(
 		'missing',
 		'OpenCode completed without a structured review_form in its final answer.'
 	);
+}
+
+function requiresReviewForm(request = {}) {
+	const requiredOutputs = request.inputs?.required_outputs;
+	if (Array.isArray(requiredOutputs)) {
+		return requiredOutputs.some((output) => (
+			output
+			&& output.name === 'review_form'
+			&& output.required === true
+			&& output.schema === 'homeboy/agent-task-review-form/v1'
+		));
+	}
+	// Retain compatibility for Cook recipes persisted before the typed contract.
+	return request.inputs?.cook_loop?.review_form_required === true;
 }
 
 function openCodeTextParts(frame = {}) {
@@ -1003,8 +1020,16 @@ function opencodeRunArgs(request = {}, config = {}, commandSpec = {}) {
 		...(config.agent ? ['--agent', config.agent] : []),
 		...(config.variant ? ['--variant', config.variant] : []),
 		...(config.title ? ['--title', config.title] : []),
-		request.instructions,
+		`${request.instructions}${requiredOutputInstructions(request)}`,
 	];
+}
+
+function requiredOutputInstructions(request = {}) {
+	const outputs = request.inputs?.required_outputs;
+	if (!Array.isArray(outputs) || outputs.length === 0) {
+		return '';
+	}
+	return `\n\nReturn the required outputs as JSON using an \`outputs\` object. The OpenCode adapter parses the response against this contract: ${JSON.stringify(outputs)}.`;
 }
 
 function resolveOpenCodeCwd(request = {}, config = {}) {

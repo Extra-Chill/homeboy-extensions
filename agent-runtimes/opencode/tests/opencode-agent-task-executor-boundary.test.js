@@ -1039,6 +1039,10 @@ process.stdout.write(JSON.stringify({ type: 'result', result: { summary: 'Review
 	const structuredReviewCliPath = path.join(root, 'mock-opencode-structured-review.cjs');
 	fs.writeFileSync(structuredReviewCliPath, `#!/usr/bin/env node
 const mode = process.env.REVIEW_FORM_MODE;
+const prompt = process.argv.at(-1);
+if (!prompt.includes('homeboy/agent-task-review-form/v1')) {
+  throw new Error('OpenCode did not receive the required-output schema.');
+}
 const text = mode === 'valid'
 	? ${JSON.stringify(`\`\`\`json\n${JSON.stringify({ review_form: {
 		summary: 'Preserve the reviewed cleanup scope in the apply command.',
@@ -1057,7 +1061,18 @@ process.stdout.write(JSON.stringify({
 	const structuredReviewRequest = {
 		...request,
 		task_id: 'opencode-structured-review',
-		inputs: { cook_loop: { review_form_required: true } },
+	inputs: {
+		cook_loop: { review_form_required: true },
+		required_outputs: [{
+			name: 'review_form',
+			required: true,
+			schema: 'homeboy/agent-task-review-form/v1',
+			json_schema: {
+				type: 'object',
+				required: ['summary', 'what_changed', 'compatibility', 'used_for'],
+			},
+		}],
+	},
 		workspace: { root: reviewWorkspace },
 		executor: {
 			...request.executor,
@@ -1073,6 +1088,7 @@ process.stdout.write(JSON.stringify({
 	assert.equal(structuredReviewResult.status, 'no_op');
 	assert.deepEqual(structuredReviewResult.outputs.review_form, structuredReviewForm);
 	assert.equal(structuredReviewResult.metadata.review_form_status, 'harvested');
+	assert.equal(structuredReviewResult.metadata.opencode_session.status, 'not_discovered');
 	const structuredAgentResult = structuredReviewResult.artifacts.find((artifact) => artifact.name === 'agent_result');
 	const structuredAgentResultPayload = JSON.parse(fs.readFileSync(structuredAgentResult.path, 'utf8'));
 	assert.equal(structuredAgentResultPayload.status, 'no_op');
@@ -1093,8 +1109,11 @@ process.stdout.write(JSON.stringify({
 				},
 			},
 		}, { env: fixtureEnv });
-		assert.equal(incompleteReviewResult.status, 'succeeded');
-		assert.deepEqual(incompleteReviewResult.outputs, {});
+		assert.equal(incompleteReviewResult.status, mode === 'invalid' ? 'no_op' : 'succeeded');
+		assert.deepEqual(
+			incompleteReviewResult.outputs,
+			mode === 'invalid' ? { review_form: { summary: [] } } : {}
+		);
 		assert.equal(incompleteReviewResult.diagnostics.some((diagnostic) => diagnostic.class === diagnosticClass), true);
 	}
 } finally {
