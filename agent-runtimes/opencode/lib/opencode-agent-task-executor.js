@@ -62,6 +62,8 @@ const OPENCODE_GIT_CAPTURE_OPTIONS = {
 	encoding: 'utf8',
 	maxBuffer: 16 * 1024 * 1024,
 };
+const MAX_STRUCTURED_OUTPUT_BYTES = 64 * 1024;
+const MAX_STRUCTURED_ANSWER_BYTES = MAX_STRUCTURED_OUTPUT_BYTES + 16 * 1024;
 
 const OPENCODE_CAPABILITIES = [
 	'cli_runtime',
@@ -509,20 +511,27 @@ function structuredOpenCodeReviewOutput(context = {}) {
 	const candidates = finalAnswers.length > 0 ? finalAnswers : textEvents.slice(-1);
 	for (const event of candidates.reverse()) {
 		const envelope = parseStructuredAnswer(event.text);
-		if (!envelope || !Object.hasOwn(envelope, 'review_form')) {
+		const reviewForm = structuredReviewFormValue(envelope);
+		if (reviewForm === undefined) {
 			continue;
 		}
-		if (validReviewForm(envelope.review_form)) {
+		if (!boundedStructuredOutput(reviewForm)) {
+			return reviewFormOutputDiagnostic(
+				'invalid',
+				'OpenCode emitted a review_form that exceeded the structured output size limit.'
+			);
+		}
+		if (validReviewForm(reviewForm)) {
 			return {
-				outputs: { review_form: envelope.review_form },
+				outputs: { review_form: reviewForm },
 				review_form_status: 'harvested',
 			};
 		}
 		return {
-			outputs: { review_form: envelope.review_form },
+			outputs: { review_form: reviewForm },
 			...reviewFormOutputDiagnostic(
-			'invalid',
-			'OpenCode emitted a review_form with an invalid schema.'
+				'invalid',
+				'OpenCode emitted a review_form with an invalid schema.'
 			),
 		};
 	}
@@ -530,6 +539,27 @@ function structuredOpenCodeReviewOutput(context = {}) {
 		'missing',
 		'OpenCode completed without a structured review_form in its final answer.'
 	);
+}
+
+function structuredReviewFormValue(envelope) {
+	if (!envelope || typeof envelope !== 'object' || Array.isArray(envelope)) {
+		return undefined;
+	}
+	// The canonical adapter contract places values under `outputs`. Accept the
+	// direct form emitted by earlier Cook prompts while their persisted recipes age out.
+	if (envelope.outputs && typeof envelope.outputs === 'object' && !Array.isArray(envelope.outputs)
+		&& Object.hasOwn(envelope.outputs, 'review_form')) {
+		return envelope.outputs.review_form;
+	}
+	return Object.hasOwn(envelope, 'review_form') ? envelope.review_form : undefined;
+}
+
+function boundedStructuredOutput(value) {
+	try {
+		return Buffer.byteLength(JSON.stringify(value)) <= MAX_STRUCTURED_OUTPUT_BYTES;
+	} catch {
+		return false;
+	}
 }
 
 function requiresReviewForm(request = {}) {
@@ -564,6 +594,9 @@ function parseStructuredAnswer(text = '') {
 		candidates.unshift(match[1].trim());
 	}
 	for (const candidate of candidates) {
+		if (Buffer.byteLength(candidate) > MAX_STRUCTURED_ANSWER_BYTES) {
+			continue;
+		}
 		try {
 			const parsed = JSON.parse(candidate);
 			if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
