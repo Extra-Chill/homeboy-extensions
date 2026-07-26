@@ -39,6 +39,7 @@ assert panic["schema"] == "homeboy/test-failure-diagnostic/v1", panic
 assert len(panic["evidence"]["sha256"]) == 64, panic
 assert panic["evidence"]["relationship"] == "full_output", panic
 assert panic["stdout_excerpt"]
+assert panic["rerun_command"] == "cargo test crate::tests::panic_before_summary", panic
 PY
 
 printf 'thread malformed panic output\n' > "$OUTPUT"
@@ -54,6 +55,8 @@ assert len(records) == 1, records
 assert records[0]["test_id"] == "cargo test", records
 assert records[0]["failure_type"] == "infrastructure", records
 assert len(records[0]["evidence"]["sha256"]) == 64, records
+assert records[0]["rerun_action"]["arguments"] == [], records
+assert records[0]["rerun_command"] == "cargo test", records
 PY
 
 {
@@ -72,6 +75,31 @@ with open(sys.argv[1], encoding="utf-8") as handle:
 assert record["test_id"] == "crate::tests::bounded", record
 assert len(record["message"].encode()) == 1024, record
 assert record["diagnostic"]["location"] == "src/lib.rs:7:3", record
+PY
+
+cat > "$OUTPUT" <<'EOF'
+---- crate::tests::unicode_☃ stdout ----
+thread 'tokio-runtime-worker' panicked at /project/src/lib.rs:9:5:
+assertion failed: worker panic maps to the enclosing test
+
+failures:
+    crate::tests::unicode_☃
+
+test result: FAILED. 0 passed; 1 failed
+EOF
+python3 "$SCRIPT_DIR/parse-test-failures.py" /project "$OUTPUT" "$RESULTS"
+python3 - "$RESULTS" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    records = json.load(handle)
+
+assert len(records) == 1, records
+record = records[0]
+assert record["test_id"] == "crate::tests::unicode_☃", record
+assert record["diagnostic"]["location"] == "src/lib.rs:9:5", record
+assert "worker panic" in record["diagnostic"]["summary"], record
 PY
 
 printf 'Rust test-failure parser smoke passed\n'

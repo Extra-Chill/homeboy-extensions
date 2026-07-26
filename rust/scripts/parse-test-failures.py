@@ -28,12 +28,14 @@ def relpath(value, project):
     return relative if not relative.startswith("../") else value
 
 
-def failure(test_id, output, output_sha256, location=None, message=None):
+def failure(test_id, output, output_sha256, project, location=None, message=None,
+            failure_type="test_failure"):
     identity = bounded(test_id, MAX_FIELD_BYTES) or "cargo test"
-    location = bounded(relpath(location, PROJECT), MAX_FIELD_BYTES) if location else None
+    location = bounded(relpath(location, project), MAX_FIELD_BYTES) if location else None
     message = bounded(message or "Rust test failed; inspect the complete Cargo output.", MAX_FIELD_BYTES)
     fingerprint_namespace = "rust:cargo-test:failed" if identity == "cargo test" else "rust:test:" + identity
     fingerprint = hashlib.sha256(fingerprint_namespace.encode()).hexdigest()
+    rerun_arguments = [] if identity == "cargo test" else [identity]
     return {
         # v1 fields remain authoritative for existing sidecar consumers.
         "test_id": identity,
@@ -41,7 +43,7 @@ def failure(test_id, output, output_sha256, location=None, message=None):
         "file": location.rsplit(":", 2)[0] if location else None,
         "line": int(location.rsplit(":", 2)[1]) if location and re.search(r":\d+:\d+$", location) else None,
         "message": message,
-        "failure_type": "test_failure",
+        "failure_type": failure_type,
         "fingerprint": fingerprint,
         "stdout_excerpt": bounded(output[-MAX_EXCERPT_BYTES:], MAX_EXCERPT_BYTES),
         "stderr_excerpt": "",
@@ -57,9 +59,9 @@ def failure(test_id, output, output_sha256, location=None, message=None):
         "rerun_action": {
             "producer": PRODUCER,
             "id": "cargo.test",
-            "arguments": [identity],
+            "arguments": rerun_arguments,
         },
-        "rerun_command": "cargo test " + identity,
+        "rerun_command": "cargo test" + (" " + identity if rerun_arguments else ""),
         "evidence": {
             "relationship": "full_output",
             "sha256": output_sha256,
@@ -67,83 +69,90 @@ def failure(test_id, output, output_sha256, location=None, message=None):
     }
 
 
-def add(records, seen, test_id, output, output_sha256, location=None, message=None):
+def add(records, seen, test_id, output, output_sha256, project, location=None, message=None):
     if not test_id:
         return
     if test_id in seen:
         if location or message:
             for index, record in enumerate(records):
                 if record["test_id"] == test_id:
-                    records[index] = failure(test_id, output, output_sha256, location, message)
+                    records[index] = failure(test_id, output, output_sha256, project, location, message)
                     break
         return
     if len(records) >= MAX_FAILURES:
         return
     seen.add(test_id)
-    records.append(failure(test_id, output, output_sha256, location, message))
+    records.append(failure(test_id, output, output_sha256, project, location, message))
 
 
-def parse(output, output_sha256):
+def panic_message(lines, start):
+    for raw in lines[start:]:
+        candidate = raw.strip()
+        if not candidate:
+            return None
+        if candidate.startswith("note:"):
+            continue
+        if candidate.startswith(("---- ", "test ", "failures:", "error:")):
+            return None
+        return candidate
+    return None
+
+
+def parse(output, output_sha256, project):
     records = []
     seen = set()
     lines = output.splitlines()
-    sections = {}
     current = None
 
     for index, raw in enumerate(lines):
         section = re.match(r"^---- (?P<name>.+) stdout ----$", raw)
         if section:
             current = section.group("name")
-            sections.setdefault(current, [])
             continue
         if raw.startswith("---- ") and raw.endswith(" ----"):
             current = None
             continue
-        if current:
-            sections[current].append(raw)
 
         failed = re.match(r"^test (?P<name>.+) \.\.\. FAILED$", raw)
         if failed:
-            add(records, seen, failed.group("name"), output, output_sha256)
+            add(records, seen, failed.group("name"), output, output_sha256, project)
 
         panic = re.match(r"^thread '(?P<name>.+)' panicked at (?P<location>.+):$", raw)
         if panic:
-            message = next((line.strip() for line in lines[index + 1:] if line.strip() and not line.startswith("note:")), None)
-            add(records, seen, panic.group("name"), output, output_sha256, panic.group("location"), message)
-
-    for name, section_lines in sections.items():
-        section = "\n".join(section_lines)
-        panic = re.search(r"^thread '.+' panicked at (?P<location>.+):$", section, re.MULTILINE)
-        message = None
-        if panic:
-            after_panic = section[panic.end():].splitlines()
-            message = next((line.strip() for line in after_panic if line.strip() and not line.startswith("note:")), None)
-        add(records, seen, name, output, output_sha256, panic.group("location") if panic else None, message)
+            # A libtest section names the failed test even when the panic came
+            # from a worker thread instead of the test thread itself.
+            add(records, seen, current or panic.group("name"), output, output_sha256, project,
+                panic.group("location"), panic_message(lines, index + 1))
 
     failures_header = next((index for index, line in enumerate(lines) if line.strip() == "failures:"), None)
     if failures_header is not None:
         for raw in lines[failures_header + 1:]:
-            if raw.startswith("test result:") or raw.strip() == "":
-                continue
-            if raw.startswith("error:") or raw.startswith("failures:"):
+            if raw.startswith("test result:") or raw.startswith(("error:", "failures:")):
+                break
+            if not raw.startswith((" ", "\t")):
                 break
             candidate = raw.strip()
-            if re.match(r"^[A-Za-z0-9_:./#\-\[\] ]+$", candidate):
-                add(records, seen, candidate, output, output_sha256)
+            if candidate:
+                add(records, seen, candidate, output, output_sha256, project)
 
     return records
 
+
+if len(sys.argv) != 4:
+    raise SystemExit("usage: parse-test-failures.py PROJECT OUTPUT_FILE TARGET")
 
 PROJECT, OUTPUT_FILE, TARGET = sys.argv[1:]
 with open(OUTPUT_FILE, encoding="utf-8", errors="replace") as handle:
     OUTPUT = handle.read()
 
 OUTPUT_SHA256 = hashlib.sha256(OUTPUT.encode()).hexdigest()
-failures = parse(OUTPUT, OUTPUT_SHA256)
+failures = parse(OUTPUT, OUTPUT_SHA256, PROJECT)
 if not failures:
-    fallback = failure("cargo test", OUTPUT, OUTPUT_SHA256,
-                       message="cargo test failed before individual test failures could be parsed")
-    fallback["failure_type"] = "infrastructure"
+    fallback = failure(
+        "cargo test", OUTPUT, OUTPUT_SHA256, PROJECT,
+        message="cargo test failed before individual test failures could be parsed",
+        failure_type="infrastructure",
+    )
     failures = [fallback]
 
 with open(TARGET, "w", encoding="utf-8") as handle:
