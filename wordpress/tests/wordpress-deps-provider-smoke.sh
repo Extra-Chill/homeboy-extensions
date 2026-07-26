@@ -6,7 +6,8 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
-PROJECT_DIR="$TMP_DIR/project"
+REPOSITORY_DIR="$TMP_DIR/repository"
+PROJECT_DIR="$REPOSITORY_DIR/fixture-wordpress-component"
 BIN_DIR="$TMP_DIR/bin"
 mkdir -p "$PROJECT_DIR" "$BIN_DIR"
 
@@ -44,7 +45,9 @@ JSON
 cat >"$BIN_DIR/composer" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"${HOMEBOY_FAKE_COMPOSER_LOG:?}"
-exit 0
+mkdir -p vendor/composer
+printf '%s\n' "${HOMEBOY_FAKE_COMPOSER_METADATA:-hydrated metadata}" >vendor/composer/installed.php
+exit "${HOMEBOY_FAKE_COMPOSER_EXIT:-0}"
 SH
 cat >"$BIN_DIR/npm" <<'SH'
 #!/usr/bin/env bash
@@ -57,6 +60,14 @@ export HOMEBOY_COMPONENT_PATH="$PROJECT_DIR"
 export HOMEBOY_FAKE_COMPOSER_LOG="$TMP_DIR/composer.log"
 export HOMEBOY_FAKE_NPM_LOG="$TMP_DIR/npm.log"
 export PATH="$BIN_DIR:$PATH"
+
+mkdir -p "$PROJECT_DIR/vendor/composer"
+printf '%s\n' 'tracked metadata' >"$PROJECT_DIR/vendor/composer/installed.php"
+git -C "$REPOSITORY_DIR" init -q
+git -C "$REPOSITORY_DIR" config user.email 'homeboy-test@example.invalid'
+git -C "$REPOSITORY_DIR" config user.name 'Homeboy Test'
+git -C "$REPOSITORY_DIR" add fixture-wordpress-component
+git -C "$REPOSITORY_DIR" commit -qm 'fixture'
 
 status_json="$("$ROOT_DIR/scripts/deps/deps-runner.sh" status)"
 STATUS_JSON="$status_json" node <<'NODE'
@@ -84,6 +95,42 @@ if [ "$(cat "$HOMEBOY_FAKE_COMPOSER_LOG")" != "install --no-interaction --prefer
 fi
 if [ "$(cat "$HOMEBOY_FAKE_NPM_LOG")" != "ci" ]; then
     echo "expected npm ci command" >&2
+    exit 1
+fi
+if [ "$(cat "$PROJECT_DIR/vendor/composer/installed.php")" != 'tracked metadata' ]; then
+    echo "expected tracked Composer metadata to be restored after hydration" >&2
+    exit 1
+fi
+if ! git -C "$PROJECT_DIR" diff --quiet -- vendor/composer/installed.php; then
+    echo "expected successful hydration to leave tracked Composer metadata clean" >&2
+    exit 1
+fi
+
+export HOMEBOY_FAKE_COMPOSER_METADATA='failed hydration metadata'
+export HOMEBOY_FAKE_COMPOSER_EXIT=17
+if "$ROOT_DIR/scripts/deps/deps-runner.sh" install >/dev/null 2>&1; then
+    echo "expected Composer hydration failure" >&2
+    exit 1
+fi
+unset HOMEBOY_FAKE_COMPOSER_EXIT
+if [ "$(cat "$PROJECT_DIR/vendor/composer/installed.php")" != 'tracked metadata' ]; then
+    echo "expected tracked Composer metadata to be restored after failed hydration" >&2
+    exit 1
+fi
+if ! git -C "$PROJECT_DIR" diff --quiet -- vendor/composer/installed.php; then
+    echo "expected failed hydration to leave tracked Composer metadata clean" >&2
+    exit 1
+fi
+
+printf '%s\n' 'pre-existing user metadata' >"$PROJECT_DIR/vendor/composer/installed.php"
+export HOMEBOY_FAKE_COMPOSER_METADATA='hydrated metadata over user change'
+"$ROOT_DIR/scripts/deps/deps-runner.sh" install >/dev/null
+if [ "$(cat "$PROJECT_DIR/vendor/composer/installed.php")" != 'pre-existing user metadata' ]; then
+    echo "expected pre-existing tracked Composer metadata change to be retained" >&2
+    exit 1
+fi
+if git -C "$PROJECT_DIR" diff --quiet -- vendor/composer/installed.php; then
+    echo "expected pre-existing tracked Composer metadata change to remain visible" >&2
     exit 1
 fi
 
