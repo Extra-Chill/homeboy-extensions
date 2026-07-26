@@ -40,12 +40,13 @@
       ]
     },
     {
+      "schema": "homeboy/extension-contract-producer/v1",
       "id": "rust.test-results",
       "phase": "result",
       "invocation": { "script": "scripts/test-runner.sh" },
       "produces": [
         { "kind": "artifact", "name": "test.results" },
-        { "kind": "artifact", "name": "test.failures" }
+        { "kind": "artifact", "name": "test.failures", "schema": "homeboy/test-failure-diagnostic/v1" }
       ]
     },
     {
