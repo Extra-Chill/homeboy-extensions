@@ -62,6 +62,7 @@ const runner = fs.readFileSync(runnerPath, 'utf8');
 if (!manifest.provides?.capabilities?.includes('fuzz')) throw new Error('Node.js manifest does not advertise fuzz capability');
 if (manifest.fuzz?.extension_script !== 'scripts/fuzz/fuzz-runner.sh') throw new Error('fuzz runner path is not declared in nodejs.json');
 if (!manifest.fuzz?.capabilities?.includes('nodejs-fuzz-workload')) throw new Error('Node.js fuzz workload capability missing');
+if (!manifest.fuzz?.runtime_helpers?.some((helper) => helper.id === 'runtime-settings')) throw new Error('Node.js fuzz runner must declare the runtime-settings helper capability');
 for (const token of [
   'HOMEBOY_FUZZ_RESULTS_FILE',
   'HOMEBOY_FUZZ_WORKLOAD_PATH',
