@@ -69,7 +69,7 @@ const output = 'x'.repeat(70 * 1024) + '\\n' + [
   .replaceAll('SamplePluginRunner', ['SamplePlugin', 'Runner'].join(String.fromCharCode(92)));
 fs.writeFileSync('${expectedOutputFile}', output);
 process.stdout.write(JSON.stringify({ success: false, executions: [{ stdout: output, stderr: '' }] }));
-process.exit(1);
+process.exitCode = 1;
 `);
 await chmod(cli, 0o755);
 
