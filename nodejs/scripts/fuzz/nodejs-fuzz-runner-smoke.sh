@@ -98,7 +98,12 @@ mkdir -p "$ISOLATED_EXTENSION/scripts/fuzz" "$ISOLATED_EXTENSION/scripts/lib"
 cp "$RUNNER" "$ISOLATED_EXTENSION/scripts/fuzz/fuzz-runner.sh"
 cp "$EXTENSION_DIR/scripts/lib/node-helpers.sh" "$ISOLATED_EXTENSION/scripts/lib/node-helpers.sh"
 ISOLATED_RESULTS="$TMP_DIR/isolated-results.json"
-HOMEBOY_RUNTIME_SETTINGS_HELPER="$EXTENSION_DIR/../scripts/lib/settings.sh" \
+ISOLATED_SETTINGS_HELPER="${HOMEBOY_RUNTIME_SETTINGS_HELPER:?HOMEBOY_RUNTIME_SETTINGS_HELPER must name the core-declared settings helper}"
+if [ ! -f "$ISOLATED_SETTINGS_HELPER" ]; then
+    echo "Missing core-declared settings helper: $ISOLATED_SETTINGS_HELPER" >&2
+    exit 1
+fi
+HOMEBOY_RUNTIME_SETTINGS_HELPER="$ISOLATED_SETTINGS_HELPER" \
 HOMEBOY_RUNTIME_PROJECT_SCRIPTS="$EXTENSION_DIR/../scripts/lib/project-scripts.sh" \
     run_fuzz "$SCRIPT_PROJECT" "$ISOLATED_RESULTS" "$WORKLOAD_SCRIPT" \
         "$ISOLATED_EXTENSION/scripts/fuzz/fuzz-runner.sh" "$ISOLATED_EXTENSION" >/dev/null
