@@ -1,6 +1,6 @@
 {
   "name": "Rust",
-  "version": "1.29.1",
+  "version": "1.29.2",
   "icon": "gearshape.2.fill",
   "description": "Cargo CLI integration for Rust components",
   "author": "Extra Chill",
@@ -40,13 +40,12 @@
       ]
     },
     {
-      "schema": "homeboy/extension-contract-producer/v1",
       "id": "rust.test-results",
       "phase": "result",
       "invocation": { "script": "scripts/test-runner.sh" },
       "produces": [
         { "kind": "artifact", "name": "test.results" },
-        { "kind": "artifact", "name": "test.failures", "schema": "homeboy/test-failure-diagnostic/v1" }
+        { "kind": "artifact", "name": "test.failures" }
       ]
     },
     {

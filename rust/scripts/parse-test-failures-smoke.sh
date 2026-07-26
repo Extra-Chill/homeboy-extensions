@@ -32,14 +32,13 @@ with open(sys.argv[1], encoding="utf-8") as handle:
 
 assert len(records) == 2, records
 panic = next(record for record in records if record["test_id"] == "crate::tests::panic_before_summary")
-assert panic["diagnostic"]["location"] == "src/lib.rs:42:9", panic
+assert panic["file"] == "src/lib.rs", panic
+assert panic["line"] == 42, panic
 assert "expected provider execution count 1" in panic["message"], panic
-assert panic["rerun_action"] == {"producer": "rust.cargo-test", "id": "cargo.test", "arguments": ["crate::tests::panic_before_summary"]}, panic
-assert panic["schema"] == "homeboy/test-failure-diagnostic/v1", panic
-assert len(panic["evidence"]["sha256"]) == 64, panic
-assert panic["evidence"]["relationship"] == "full_output", panic
 assert panic["stdout_excerpt"]
-assert panic["rerun_command"] == "cargo test crate::tests::panic_before_summary", panic
+# Generic gate diagnostics require a Homeboy-owned evidence ref. Until Homeboy
+# provides that handoff, this remains its established test-failures sidecar.
+assert "schema" not in panic, panic
 PY
 
 printf 'thread malformed panic output\n' > "$OUTPUT"
@@ -54,9 +53,6 @@ with open(sys.argv[1], encoding="utf-8") as handle:
 assert len(records) == 1, records
 assert records[0]["test_id"] == "cargo test", records
 assert records[0]["failure_type"] == "infrastructure", records
-assert len(records[0]["evidence"]["sha256"]) == 64, records
-assert records[0]["rerun_action"]["arguments"] == [], records
-assert records[0]["rerun_command"] == "cargo test", records
 PY
 
 {
@@ -74,7 +70,8 @@ with open(sys.argv[1], encoding="utf-8") as handle:
 
 assert record["test_id"] == "crate::tests::bounded", record
 assert len(record["message"].encode()) == 1024, record
-assert record["diagnostic"]["location"] == "src/lib.rs:7:3", record
+assert record["file"] == "src/lib.rs", record
+assert record["line"] == 7, record
 PY
 
 cat > "$OUTPUT" <<'EOF'
@@ -98,8 +95,22 @@ with open(sys.argv[1], encoding="utf-8") as handle:
 assert len(records) == 1, records
 record = records[0]
 assert record["test_id"] == "crate::tests::unicode_☃", record
-assert record["diagnostic"]["location"] == "src/lib.rs:9:5", record
-assert "worker panic" in record["diagnostic"]["summary"], record
+assert record["file"] == "src/lib.rs", record
+assert record["line"] == 9, record
+assert "worker panic" in record["message"], record
+PY
+
+printf '\xff\xfe' > "$OUTPUT"
+python3 "$SCRIPT_DIR/parse-test-failures.py" /project "$OUTPUT" "$RESULTS"
+python3 - "$RESULTS" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    record = json.load(handle)[0]
+
+assert record["test_id"] == "cargo test", record
+assert record["failure_type"] == "infrastructure", record
 PY
 
 printf 'Rust test-failure parser smoke passed\n'
