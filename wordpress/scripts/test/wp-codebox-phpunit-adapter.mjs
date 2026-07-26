@@ -2,8 +2,8 @@
 /**
  * External dependencies
  */
-import { createWriteStream, existsSync } from 'node:fs';
-import { access, copyFile, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { createWriteStream } from 'node:fs';
+import { access, copyFile, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
@@ -31,7 +31,7 @@ const optionsPath = path.join(directory, 'options.json');
 const recipePath = path.join(directory, 'recipe.json');
 const artifacts = process.env.HOMEBOY_WP_CODEBOX_ARTIFACTS_DIR || path.join(directory, 'artifacts');
 const runArtifacts = path.join(artifacts, `wp-codebox-phpunit.${process.pid}`);
-const dependencies = await Promise.all(dependencyPaths(settings).map(async (source) => {
+const dependencies = await Promise.all((await dependencyPaths(settings, [componentPath, pluginSourceDirectory])).map(async (source) => {
   const dependencySlug = path.basename(source).replace(/@[^/]+$/, '');
   return { source, slug: dependencySlug, sandboxDirectory: sandboxPluginDirectory(dependencySlug), composer: await composerPreparation(source) };
 }));
@@ -135,6 +135,7 @@ function configuredSecretValues() {
 function createLineRedactor(secretValues) {
   const decoder = new StringDecoder('utf8');
   let pending = '';
+  const overlap = Math.max(0, ...secretValues.map((secret) => secret.length - 1));
   const redact = (text) => {
     for (const secret of secretValues) {
       text = text.replaceAll(secret, '[REDACTED]');
@@ -149,8 +150,9 @@ function createLineRedactor(secretValues) {
       // Flush bounded chunks so a crashed PHPUnit run cannot deadlock at 64 KiB.
       if (boundary === 0) {
         if (pending.length < 8192) { return ''; }
-        const buffered = pending;
-        pending = '';
+        // Keep enough input to redact a secret split across the flush boundary.
+        const buffered = pending.slice(0, Math.max(0, pending.length - overlap));
+        pending = pending.slice(buffered.length);
         return redact(buffered);
       }
       const completeLines = pending.slice(0, boundary);
@@ -235,7 +237,7 @@ function parseSettings(value) {
 }
 function json(value, fallback) { try { return value ? JSON.parse(value) : fallback; } catch { return fallback; } }
 function clean(value) { return Object.fromEntries(Object.entries(value).filter(([, entry]) => entry !== undefined && entry !== '' && !(Array.isArray(entry) && entry.length === 0))); }
-function dependencyPaths(configuration) {
+async function dependencyPaths(configuration, primarySources) {
   const configured = Array.isArray(configuration.validation_dependencies) ? configuration.validation_dependencies : [];
   const canonical = (process.env.HOMEBOY_WORDPRESS_DEPENDENCY_PATHS || '').split('\n');
   const declared = configured.map((value) => {
@@ -247,14 +249,19 @@ function dependencyPaths(configuration) {
   if (unresolved.length > 0) {
     throw new Error(`Declared WordPress validation dependencies were not resolved to source paths: ${unresolved.join(', ')}`);
   }
-  const sources = [...new Set([...canonical, ...declared].filter((value) => typeof value === 'string' && path.isAbsolute(value)))];
-  const missing = sources.filter((source) => {
-    try { return !existsSync(source); } catch { return true; }
-  });
-  if (missing.length > 0) {
-    throw new Error(`Declared WordPress validation dependency sources are unavailable: ${missing.join(', ')}`);
-  }
-  return sources;
+  // Preserve explicitly declared paths in recipe provenance while canonicalizing
+  // aliases solely for identity and duplicate detection.
+  const sources = [...new Set([...declared, ...canonical].filter((value) => typeof value === 'string' && path.isAbsolute(value)))];
+  const resolved = await Promise.all(sources.map(async (source) => {
+    try { return { source, canonicalSource: await realpath(source) }; } catch { throw new Error(`Declared WordPress validation dependency sources are unavailable: ${source}`); }
+  }));
+  const primary = new Set(await Promise.all(primarySources.map(async (source) => {
+    try { return await realpath(source); } catch { return path.resolve(source); }
+  })));
+  const seen = new Set();
+  return resolved
+    .filter(({ canonicalSource }) => !primary.has(canonicalSource) && !seen.has(canonicalSource) && Boolean(seen.add(canonicalSource)))
+    .map(({ source }) => source);
 }
 async function composerPreparation(source) {
   try {
@@ -524,7 +531,7 @@ async function preservePhpunitOutput(artifactDirectory, execution, managedRuntim
   }
   if (results && typeof results === 'object') {
     const summary = isObject(results.summary) ? results.summary : {};
-    if (aggregate && Number(summary.total || 0) < aggregate.total) {
+    if (aggregate) {
       results.summary = { ...summary, ...aggregate };
     }
     const references = Array.isArray(results.rawLogReferences) ? results.rawLogReferences : [];
