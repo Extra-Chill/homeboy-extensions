@@ -36,9 +36,22 @@ jobs:
           - swift
           - wordpress
         include:
-          # Two WordPress self_checks cannot pass in this job today. The runner
-          # reports every skip as a GitHub Actions warning so they stay visible
-          # instead of rotting silently.
+          # Some already-declared self_checks cannot pass in this job today.
+          # Every skip is reported by the runner as a GitHub Actions warning so
+          # it stays visible instead of rotting silently. Nothing is removed
+          # from any homeboy.json, so release-preflight coverage is unchanged.
+          #
+          #   rust tests/zero-test-scope-fallback-smoke.sh
+          #     Fails with "HOMEBOY_RUNTIME_RUNNER_PRELUDE is required" (run
+          #     30700539989). Same #2507 class as the WordPress entry below.
+          #     Note it self-skips with `SKIP: cargo is not installed`, so it is
+          #     silently green anywhere without a Rust toolchain and only fails
+          #     on a runner that has one.
+          - component: rust
+            self_check_skip: |
+              bash tests/zero-test-scope-fallback-smoke.sh
+
+          # Two WordPress self_checks cannot pass in this job today.
           #
           #   scripts/test/full-suite-no-phpunit-smoke.sh
           #     Routes through scripts/test/test-runner.sh, which hard-requires
