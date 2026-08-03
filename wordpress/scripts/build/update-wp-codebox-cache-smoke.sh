@@ -38,7 +38,14 @@ while [ "$#" -gt 0 ]; do
 done
 [ -n "$prefix" ] || { echo "missing --prefix" >&2; exit 2; }
 case "${args[*]}" in
-    install*)
+    ci*)
+        case " ${args[*]} " in
+            *" --include=optional "*) ;;
+            *)
+                echo "expected npm ci to include optional dependencies: ${args[*]}" >&2
+                exit 2
+                ;;
+        esac
         touch "${prefix}/npm-install-ran"
         ;;
     "run build")

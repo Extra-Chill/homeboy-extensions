@@ -95,9 +95,13 @@ while [ "$#" -gt 0 ]; do
             prefix="$2"
             shift 2
             ;;
-        install)
-            if [[ " $* " != *" --omit=optional "* ]]; then
-                printf 'expected wp-codebox source install to omit optional dependencies: %s\n' "$*" >&2
+        ci)
+            if [[ " $* " != *" --include=optional "* ]]; then
+                printf 'expected wp-codebox source install to include optional dependencies: %s\n' "$*" >&2
+                exit 1
+            fi
+            if [[ " $* " == *" --omit=optional "* ]]; then
+                printf 'wp-codebox source install must not omit optional dependencies: %s\n' "$*" >&2
                 exit 1
             fi
             exit 0
@@ -195,13 +199,9 @@ if ! grep -q '^WP_CODEBOX_SOURCE_SHA=0123456789abcdef0123456789abcdef01234567$' 
     exit 1
 fi
 
-# Cold-cache regression: a later CI step picks up a cached wp-codebox CLI via
-# HOMEBOY_WP_CODEBOX_BIN, but HOMEBOY_WP_CODEBOX_CORE_MODULE did not survive the
-# step/process boundary. The runtime-core module is still on disk from the
-# earlier install. Setup must re-derive the core package module from the known install
-# locations instead of leaving it unset (which made the recipe loader hard-fail
-# with "@automattic/wp-codebox-core not found" and "No tests ran"). The CLI bin
-# is already present, so this path must NOT trigger a network install.
+# Cached native-runtime regression: a later CI step finds a CLI and core module
+# on disk, but its platform optional dependency is unavailable. Setup must probe
+# the CLI and rebuild from the source lockfile instead of trusting node_modules.
 COLD_HOME="${TMPDIR}/cold-home"
 COLD_INSTALL_DIR="${TMPDIR}/cold-install"
 COLD_GITHUB_ENV_FILE="${TMPDIR}/cold-github-env"
@@ -213,20 +213,15 @@ mkdir -p \
 
 cat > "${COLD_BIN}" <<'SH'
 #!/usr/bin/env bash
+if [ "${1:-}" = "commands" ]; then
+    printf '%s\n' 'Could not load native optional runtime dependency' >&2
+    exit 1
+fi
 printf '%s\n' 'wp-codebox cached stub'
 SH
 chmod +x "${COLD_BIN}"
 printf '%s\n' 'module.exports = { fixture: true };' > "${COLD_INSTALL_DIR}/source/node_modules/@automattic/wp-codebox-core/dist/index.js"
 printf '%s\n' 'module.exports = { runtimeContractManifest() { return {}; } };' > "${COLD_INSTALL_DIR}/source/node_modules/@automattic/wp-codebox-core/dist/contracts.js"
-
-# A network would be a hard failure here: the bin already exists, so no curl/git
-# install should run. Point curl/git at stubs that fail loudly if invoked.
-cat > "${FAKE_BIN}/curl-fail" <<'SH'
-#!/usr/bin/env bash
-printf 'cold-cache path must not download via curl: %s\n' "$*" >&2
-exit 1
-SH
-chmod +x "${FAKE_BIN}/curl-fail"
 
 (
     cd "${EXTENSION_DIR}"
@@ -235,6 +230,7 @@ chmod +x "${FAKE_BIN}/curl-fail"
     GITHUB_ENV="${COLD_GITHUB_ENV_FILE}" \
     HOMEBOY_WP_CODEBOX_BIN="${COLD_BIN}" \
     HOMEBOY_WP_CODEBOX_INSTALL_DIR="${COLD_INSTALL_DIR}" \
+    FAKE_WP_CODEBOX_RELEASE_MISSING="1" \
     bash "${ROOT_DIR}/scripts/build/setup.sh" > "${TMPDIR}/cold-setup.out"
 )
 
@@ -246,12 +242,12 @@ fi
 
 cold_core_module="$(grep '^HOMEBOY_WP_CODEBOX_CORE_MODULE=' "${COLD_GITHUB_ENV_FILE}" | tail -n 1 | cut -d= -f2-)"
 if [ "${cold_core_module}" != "${COLD_INSTALL_DIR}/source/node_modules/@automattic/wp-codebox-core/dist/contracts.js" ]; then
-    echo "Expected cold-cache setup to resolve the on-disk core package module, got: ${cold_core_module}" >&2
+    echo "Expected cold-cache setup to rebuild and export the runtime core module, got: ${cold_core_module}" >&2
     exit 1
 fi
 
-if grep -qi 'Installing WP Codebox CLI' "${TMPDIR}/cold-setup.out"; then
-    echo "Cold-cache path must not reinstall the CLI when a cached bin and module exist" >&2
+if ! grep -q 'Installing WP Codebox CLI' "${TMPDIR}/cold-setup.out"; then
+    echo "Broken cached runtime must be rebuilt instead of reused" >&2
     cat "${TMPDIR}/cold-setup.out" >&2
     exit 1
 fi

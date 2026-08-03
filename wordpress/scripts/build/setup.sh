@@ -38,6 +38,19 @@ install_wp_codebox() {
         return 0
     }
 
+    probe_wp_codebox_runtime() {
+        local bin_path="$1"
+
+        # `commands` initializes the CLI runtime, including native optional
+        # dependencies, without starting a WordPress workload.
+        if ! "${bin_path}" commands >/dev/null 2>&1; then
+            echo "WP Codebox CLI runtime probe failed: ${bin_path}" >&2
+            return 1
+        fi
+
+        return 0
+    }
+
     first_non_empty_env() {
         local name
         for name in "$@"; do
@@ -76,7 +89,7 @@ install_wp_codebox() {
             configured_core_module=1
         fi
 
-        if [ "${configured_bin}" -eq 1 ] && { [ "${configured_core_module}" -eq 1 ] || resolve_core_module_from_known_locations; }; then
+        if [ "${configured_bin}" -eq 1 ] && { [ "${configured_core_module}" -eq 1 ] || resolve_core_module_from_known_locations; } && probe_wp_codebox_runtime "${HOMEBOY_WP_CODEBOX_BIN}"; then
             node "${EXTENSION_PATH}/scripts/build/persist-wp-codebox-overrides.mjs" "${EXTENSION_PATH}/wordpress.json"
             return 0
         fi
@@ -120,10 +133,10 @@ install_wp_codebox() {
 
     if [ "${source_install_requested}" -eq 0 ] && [ -n "${HOMEBOY_WP_CODEBOX_BIN:-}" ] && [ -x "${HOMEBOY_WP_CODEBOX_BIN}" ]; then
         echo "WP Codebox already configured: ${HOMEBOY_WP_CODEBOX_BIN}"
-        if resolve_core_module_from_known_locations; then
+        if resolve_core_module_from_known_locations && probe_wp_codebox_runtime "${HOMEBOY_WP_CODEBOX_BIN}"; then
             return 0
         fi
-        echo "WP Codebox CLI is configured without a runtime core module; (re)installing source module" >&2
+        echo "WP Codebox CLI is configured without a ready runtime; (re)installing source module" >&2
     fi
 
     if [ "${source_install_requested}" -eq 0 ] && command -v wp-codebox >/dev/null 2>&1; then
@@ -131,10 +144,10 @@ install_wp_codebox() {
         detected_bin="$(command -v wp-codebox)"
         echo "WP Codebox already available: ${detected_bin}"
         write_github_env "HOMEBOY_WP_CODEBOX_BIN" "${detected_bin}"
-        if resolve_core_module_from_known_locations; then
+        if resolve_core_module_from_known_locations && probe_wp_codebox_runtime "${detected_bin}"; then
             return 0
         fi
-        echo "WP Codebox CLI is available without a runtime core module; (re)installing source module" >&2
+        echo "WP Codebox CLI is available without a ready runtime; (re)installing source module" >&2
     fi
 
     local install_mode install_root bin_dir bin_path platform arch artifact_name download_url artifact_path extract_dir
@@ -184,11 +197,11 @@ EOF
             write_github_env "PATH" "${bin_dir}:${PATH}"
 
             echo "WP Codebox installed: ${bin_path}"
-            if resolve_core_module_from_known_locations; then
+            if resolve_core_module_from_known_locations && probe_wp_codebox_runtime "${bin_path}"; then
                 return 0
             fi
 
-            echo "WP Codebox release artifact did not include a runtime core module; falling back to source install" >&2
+            echo "WP Codebox release artifact did not provide a ready runtime; falling back to source install" >&2
         fi
 
         if [ "${release_artifact_downloaded}" -eq 0 ]; then
@@ -219,7 +232,7 @@ EOF
     write_github_env "WP_CODEBOX_SOURCE_REF" "${ref}"
     write_github_env "WP_CODEBOX_SOURCE_SHA" "${source_sha}"
 
-    npm --prefix "${repo_dir}" install --quiet --no-fund --no-audit --omit=optional
+    npm --prefix "${repo_dir}" ci --quiet --no-fund --no-audit --include=optional
     npm --prefix "${repo_dir}" run build --silent
 
     resolve_core_module_from_known_locations || {
@@ -233,6 +246,11 @@ EOF
         echo "Built WP Codebox source did not contain an executable CLI at ${source_bin_path}" >&2
         exit 1
     fi
+
+    probe_wp_codebox_runtime "${source_bin_path}" || {
+        echo "Built WP Codebox source CLI runtime is not ready" >&2
+        exit 1
+    }
 
     bin_path="${source_bin_path}"
 
