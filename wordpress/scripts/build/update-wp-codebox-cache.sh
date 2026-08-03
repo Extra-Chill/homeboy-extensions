@@ -128,6 +128,8 @@ echo "Fetching WP Codebox ref: $REQUESTED_REF"
 git -C "$CACHE_DIR" fetch --quiet --tags origin "$REQUESTED_REF" || fail "failed to fetch ref '$REQUESTED_REF' from $SOURCE"
 git -C "$CACHE_DIR" reset --hard --quiet FETCH_HEAD || fail "failed to reset cache checkout to FETCH_HEAD"
 
+[ -f "$CACHE_DIR/package-lock.json" ] || [ -f "$CACHE_DIR/npm-shrinkwrap.json" ] || fail "WP Codebox source cache requires an npm lockfile (package-lock.json or npm-shrinkwrap.json) for deterministic npm ci: $SOURCE"
+
 echo "Installing WP Codebox dependencies..."
 "$NPM_BIN" --prefix "$CACHE_DIR" ci --include=optional --no-fund --no-audit || fail "npm ci failed in $CACHE_DIR"
 

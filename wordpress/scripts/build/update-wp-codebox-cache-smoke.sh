@@ -65,7 +65,8 @@ git clone --quiet "$REMOTE_REPO" "$SOURCE_WORK"
 git -C "$SOURCE_WORK" config user.email smoke@example.com
 git -C "$SOURCE_WORK" config user.name Smoke
 printf '%s\n' '{"scripts":{"build":"node -e 0"}}' > "${SOURCE_WORK}/package.json"
-git -C "$SOURCE_WORK" add package.json
+printf '%s\n' '{"lockfileVersion":3,"packages":{}}' > "${SOURCE_WORK}/package-lock.json"
+git -C "$SOURCE_WORK" add package.json package-lock.json
 git -C "$SOURCE_WORK" commit --quiet -m 'initial wp-codebox fixture'
 INITIAL_SHA="$(git -C "$SOURCE_WORK" rev-parse HEAD)"
 git -C "$SOURCE_WORK" push --quiet origin HEAD:main
