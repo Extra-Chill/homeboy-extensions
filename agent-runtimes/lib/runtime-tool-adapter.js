@@ -4,11 +4,11 @@ const RESOLVED_RUNTIME_TOOL_SCHEMA = 'homeboy/resolved-agent-task-runtime-tool/v
 const RUNTIME_TOOLS_ENV = 'HOMEBOY_AGENT_TASK_RUNTIME_TOOLS_JSON';
 
 function resolvedRuntimeTools(request = {}, env = process.env) {
-	if (Array.isArray(request.resolved_runtime_tools)) {
-		return request.resolved_runtime_tools.map(validateRuntimeTool);
-	}
 	if (hasRuntimeToolDeclarations(request) || hasRuntimeToolDeclarationsEnv(env)) {
 		throw new Error('Runtime tool declarations must be resolved by Homeboy before provider dispatch.');
+	}
+	if (Array.isArray(request.resolved_runtime_tools)) {
+		return request.resolved_runtime_tools.map(validateRuntimeTool);
 	}
 	return [];
 }
