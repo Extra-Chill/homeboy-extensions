@@ -1,15 +1,18 @@
 'use strict';
 
 const RESOLVED_RUNTIME_TOOL_SCHEMA = 'homeboy/resolved-agent-task-runtime-tool/v1';
-const RUNTIME_TOOLS_ENV = 'HOMEBOY_AGENT_TASK_RUNTIME_TOOLS_JSON';
+const RAW_RUNTIME_TOOLS_ENV = 'HOMEBOY_AGENT_TASK_RUNTIME_TOOLS_JSON';
+const RESOLVED_RUNTIME_TOOLS_ENV = 'HOMEBOY_AGENT_TASK_RESOLVED_RUNTIME_TOOLS_JSON';
 
 function resolvedRuntimeTools(request = {}, env = process.env) {
-	if (hasRuntimeToolDeclarations(request) || hasRuntimeToolDeclarationsEnv(env)) {
+	if (hasRuntimeToolDeclarations(request) || hasRawRuntimeToolDeclarationsEnv(env)) {
 		throw new Error('Runtime tool declarations must be resolved by Homeboy before provider dispatch.');
 	}
 	if (Array.isArray(request.resolved_runtime_tools)) {
 		return request.resolved_runtime_tools.map(validateRuntimeTool);
 	}
+	const projected = resolvedRuntimeToolsFromEnv(env);
+	if (projected) return projected.map(validateRuntimeTool);
 	return [];
 }
 
@@ -44,12 +47,23 @@ function hasRuntimeToolDeclarations(request) {
 	return Array.isArray(request?.runtime_tools) && request.runtime_tools.length > 0;
 }
 
-function hasRuntimeToolDeclarationsEnv(env) {
+function hasRawRuntimeToolDeclarationsEnv(env) {
 	try {
-		const declarations = JSON.parse(env?.[RUNTIME_TOOLS_ENV] || '[]');
+		const declarations = JSON.parse(env?.[RAW_RUNTIME_TOOLS_ENV] || '[]');
 		return Array.isArray(declarations) && declarations.length > 0;
 	} catch {
-		return Boolean(env?.[RUNTIME_TOOLS_ENV]);
+		return Boolean(env?.[RAW_RUNTIME_TOOLS_ENV]);
+	}
+}
+
+function resolvedRuntimeToolsFromEnv(env) {
+	if (!env?.[RESOLVED_RUNTIME_TOOLS_ENV]) return null;
+	try {
+		const tools = JSON.parse(env[RESOLVED_RUNTIME_TOOLS_ENV]);
+		if (!Array.isArray(tools)) throw new Error('not an array');
+		return tools;
+	} catch {
+		throw new Error('Invalid resolved runtime tool projection from Homeboy.');
 	}
 }
 
@@ -141,7 +155,8 @@ function objectValue(value) {
 
 module.exports = {
 	RESOLVED_RUNTIME_TOOL_SCHEMA,
-	RUNTIME_TOOLS_ENV,
+	RAW_RUNTIME_TOOLS_ENV,
+	RESOLVED_RUNTIME_TOOLS_ENV,
 	adapterRuntimeToolRequest,
 	applyOpenCodeRuntimeTools,
 	codexRuntimeToolConfigArgs,

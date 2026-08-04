@@ -6,7 +6,8 @@ const {
 	applyOpenCodeRuntimeTools,
 	codexRuntimeToolConfigArgs,
 	RESOLVED_RUNTIME_TOOL_SCHEMA,
-	RUNTIME_TOOLS_ENV,
+	RAW_RUNTIME_TOOLS_ENV,
+	RESOLVED_RUNTIME_TOOLS_ENV,
 	resolvedRuntimeTools,
 } = require('./runtime-tool-adapter');
 
@@ -27,6 +28,7 @@ const request = {
 const env = { FIXTURE_TOKEN: 'private-token' };
 
 assert.deepEqual(resolvedRuntimeTools(request, env)[0].argv, ['/fixture/mcp', '--isolated']);
+assert.deepEqual(resolvedRuntimeTools({}, { [RESOLVED_RUNTIME_TOOLS_ENV]: JSON.stringify(request.resolved_runtime_tools) })[0].argv, ['/fixture/mcp', '--isolated']);
 const openCode = applyOpenCodeRuntimeTools({}, request, env);
 assert.deepEqual(openCode.mcp['fixture.mcp'], {
 	type: 'local', command: '/fixture/mcp', args: ['--isolated'], environment: { FIXTURE_MODE: 'isolated', FIXTURE_TOKEN: 'private-token' },
@@ -42,7 +44,7 @@ assert.throws(() => resolvedRuntimeTools({ resolved_runtime_tools: [{ ...request
 assert.throws(() => resolvedRuntimeTools({ resolved_runtime_tools: [{ ...request.resolved_runtime_tools[0], lifecycle: 'caller_owned' }] }), /unready/);
 assert.throws(() => resolvedRuntimeTools({ runtime_tools: [{ id: 'raw.echo', command: ['/bin/echo', 'unsafe'] }] }), /resolved by Homeboy/);
 assert.throws(() => resolvedRuntimeTools({ resolved_runtime_tools: [], runtime_tools: [{ id: 'raw.echo', command: ['/bin/echo', 'unsafe'] }] }), /resolved by Homeboy/);
-assert.throws(() => resolvedRuntimeTools({}, { [RUNTIME_TOOLS_ENV]: JSON.stringify([{ id: 'raw.echo', command: ['/bin/echo', 'unsafe'] }]) }), /resolved by Homeboy/);
+assert.throws(() => resolvedRuntimeTools({ resolved_runtime_tools: [] }, { [RAW_RUNTIME_TOOLS_ENV]: JSON.stringify([{ id: 'raw.echo', command: ['/bin/echo', 'unsafe'] }]) }), /resolved by Homeboy/);
 assert.throws(() => resolvedRuntimeTools({ resolved_runtime_tools: [{ ...request.resolved_runtime_tools[0], readiness: { status: 'ready' } }] }), /unready/);
 
 process.stdout.write('Runtime tool adapter boundary passed\n');
