@@ -41,6 +41,8 @@ try {
 	assert.equal(report.sha256, crypto.createHash('sha256').update('# Report\n').digest('hex'));
 	assert.deepEqual(report.metadata, { source: 'agent' });
 	assert.equal(fs.readFileSync(report.path, 'utf8'), '# Report\n');
+	fs.writeFileSync(path.join(workspace, 'report.md'), 'changed after staging\n');
+	assert.equal(fs.readFileSync(report.path, 'utf8'), '# Report\n');
 	assert.equal(screenshots.file_count, 2);
 	assert.deepEqual(fs.readFileSync(path.join(screenshots.path, 'image.bin')), binary);
 	assert.equal(screenshots.sha256, '831c9f2aacaee843fd4a84b4ae13732902470e83baed13fc52fb08c901cbde6f');
@@ -52,6 +54,19 @@ try {
 	});
 	assert.equal(rejected.errors[0].code, 'unsafe_path');
 	assert.equal(rejected.artifacts.length, 0);
+	const missingPath = harvestDeclaredArtifacts({
+		request: { artifact_declarations: [{ name: 'required-path', required: true }] },
+		cwd: workspace,
+		artifactDir: artifacts,
+	});
+	assert.equal(missingPath.errors[0].code, 'invalid_path');
+	const collision = harvestDeclaredArtifacts({
+		request: { artifact_declarations: [{ name: 'same/name', path: 'report.md' }, { name: 'same-name', path: 'report.md' }] },
+		cwd: workspace,
+		artifactDir: artifacts,
+	});
+	assert.deepEqual(collision.errors.map((error) => error.code), ['destination_collision', 'destination_collision']);
+	assert.equal(collision.artifacts.length, 0);
 
 	fs.writeFileSync(path.join(root, 'outside.txt'), 'outside workspace\n');
 	fs.symlinkSync(path.join(root, 'outside.txt'), path.join(workspace, 'escaped-link'));

@@ -28,7 +28,21 @@ function harvestDeclaredArtifacts({ request = {}, config = {}, cwd = '', artifac
 	const root = path.resolve(artifactDir);
 	const budget = artifactBudget(request, config);
 	const result = emptyResult();
+	const destinations = declarationDestinations(declarations, root, request.task_id);
+	const prepared = [];
 	for (const declaration of declarations) {
+		if (!validDeclaredPath(declaration.path)) {
+			if (declaration.required) {
+				result.errors.push({ artifact: declaration.name, code: 'invalid_path', message: 'Required declared artifacts need an explicit workspace-relative path.' });
+			} else {
+				result.missing.optional.push({ name: declaration.name, path: '', required: false });
+			}
+			continue;
+		}
+		if (destinations.collisions.has(declaration)) {
+			result.errors.push({ artifact: declaration.name, code: 'destination_collision', message: 'Declared artifact destination collides with another declaration.' });
+			continue;
+		}
 		const source = resolveSource(workspaceRoot, declaration.path);
 		if (source.error) {
 			result.errors.push({ artifact: declaration.name, code: 'unsafe_path', message: source.error });
@@ -44,10 +58,16 @@ function harvestDeclaredArtifacts({ request = {}, config = {}, cwd = '', artifac
 				throw new Error('Declared artifact source must not contain the scheduler artifact root.');
 			}
 			const collected = collectSource(source.path, workspaceRoot, budget);
-			const destination = path.join(root, 'declared', safeFileSegment(request.task_id), safeFileSegment(declaration.name));
-			copyEntries(collected.entries, source.path, destination, collected.directory);
+			prepared.push({ declaration, source: source.path, destination: destinations.paths.get(declaration), collected });
+		} catch (error) {
+			result.errors.push({ artifact: declaration.name, code: 'capture_failed', message: error.message });
+		}
+	}
+	for (const { declaration, source, destination, collected } of prepared) {
+		try {
+			copyEntries(collected.entries, source, destination, collected.directory);
 			const digest = collected.directory
-				? digestTree(collected.entries, source.path)
+				? digestTree(collected.entries, source)
 				: collected.entries[0].digest;
 			const artifact = {
 				id: declaration.id || declaration.name,
@@ -77,8 +97,23 @@ function declaredArtifacts(request = {}) {
 	const source = Array.isArray(request.artifact_declarations)
 		? request.artifact_declarations
 		: (Array.isArray(request.executor?.artifact_declarations) ? request.executor.artifact_declarations : []);
-	return source.filter((artifact) => artifact && typeof artifact === 'object' && typeof artifact.path === 'string' && artifact.path && (artifact.name || artifact.id))
+	return source.filter((artifact) => artifact && typeof artifact === 'object' && (artifact.name || artifact.id))
 		.map((artifact) => ({ ...artifact, name: String(artifact.name || artifact.id) }));
+}
+
+function declarationDestinations(declarations, root, taskId) {
+	const paths = new Map();
+	const counts = new Map();
+	for (const declaration of declarations) {
+		const destination = path.join(root, 'declared', safeFileSegment(taskId), safeFileSegment(declaration.name));
+		paths.set(declaration, destination);
+		counts.set(destination, (counts.get(destination) || 0) + 1);
+	}
+	return { paths, collisions: new Set(declarations.filter((declaration) => counts.get(paths.get(declaration)) > 1)) };
+}
+
+function validDeclaredPath(value) {
+	return typeof value === 'string' && value !== '';
 }
 
 function artifactBudget(request, config) {
@@ -128,11 +163,9 @@ function collectSource(source, workspaceRoot, budget) {
 		if (entries.length >= budget.maxFiles) {
 			throw new Error(`Declared artifact exceeds the ${budget.maxFiles}-file budget.`);
 		}
-		const bytes = stat.size;
-		if (entries.reduce((total, entry) => total + entry.bytes, 0) + bytes > budget.maxBytes) {
-			throw new Error(`Declared artifact exceeds the ${budget.maxBytes}-byte budget.`);
-		}
-		entries.push({ path: current, bytes, digest: sha256File(current) });
+		const usedBytes = entries.reduce((total, entry) => total + entry.bytes, 0);
+		const staged = stagedFile(current, budget.maxBytes - usedBytes);
+		entries.push({ path: current, ...staged });
 	};
 	visit(source, 0);
 	return { entries, bytes: entries.reduce((total, entry) => total + entry.bytes, 0), directory: rootStat.isDirectory() };
@@ -146,7 +179,7 @@ function copyEntries(entries, source, destination, directory) {
 		const relative = path.relative(source, entry.path);
 		const target = relative ? path.join(destination, relative) : destination;
 		fs.mkdirSync(path.dirname(target), { recursive: true });
-		fs.copyFileSync(entry.path, target);
+		fs.writeFileSync(target, entry.content);
 	}
 }
 
@@ -158,8 +191,29 @@ function digestTree(entries, source) {
 	return digest.digest('hex');
 }
 
-function sha256File(filePath) {
-	return crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
+function stagedFile(filePath, maxBytes) {
+	const fd = fs.openSync(filePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+	try {
+		const stat = fs.fstatSync(fd);
+		if (!stat.isFile()) {
+			throw new Error('Declared artifact source must be a regular file.');
+		}
+		if (stat.size > maxBytes) {
+			throw new Error('Declared artifact exceeds the byte budget.');
+		}
+		const content = Buffer.alloc(stat.size);
+		let offset = 0;
+		while (offset < content.length) {
+			const bytes = fs.readSync(fd, content, offset, content.length - offset, offset);
+			if (bytes === 0) {
+				throw new Error('Declared artifact changed while it was being staged.');
+			}
+			offset += bytes;
+		}
+		return { bytes: stat.size, content, digest: crypto.createHash('sha256').update(content).digest('hex') };
+	} finally {
+		fs.closeSync(fd);
+	}
 }
 
 function realDirectory(value) {
