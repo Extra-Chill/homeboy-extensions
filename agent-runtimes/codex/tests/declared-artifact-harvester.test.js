@@ -15,6 +15,7 @@ fs.writeFileSync(path.join(workspace, 'report.md'), '# Report\n');
 const binary = Buffer.from([0, 255, 1, 254, 2]);
 fs.writeFileSync(path.join(workspace, 'screenshots', 'image.bin'), binary);
 fs.writeFileSync(path.join(workspace, 'screenshots', 'caption.txt'), 'Screenshot caption\n');
+fs.mkdirSync(path.join(workspace, 'screenshots', 'empty'));
 fs.mkdirSync(artifacts);
 
 try {
@@ -45,8 +46,10 @@ try {
 	fs.writeFileSync(path.join(workspace, 'report.md'), 'changed after staging\n');
 	assert.equal(fs.readFileSync(report.path, 'utf8'), '# Report\n');
 	assert.equal(screenshots.file_count, 2);
+	assert.equal(screenshots.node_count, 4);
 	assert.deepEqual(fs.readFileSync(path.join(screenshots.path, 'image.bin')), binary);
-	assert.equal(screenshots.sha256, '831c9f2aacaee843fd4a84b4ae13732902470e83baed13fc52fb08c901cbde6f');
+	assert.equal(fs.statSync(path.join(screenshots.path, 'empty')).isDirectory(), true);
+	assert.match(screenshots.path, /\.homeboy-declared-/);
 
 	const rejected = harvestDeclaredArtifacts({
 		request: { artifact_declarations: [{ name: 'escape', path: '../outside.txt', required: true }] },
@@ -68,6 +71,20 @@ try {
 	});
 	assert.deepEqual(collision.errors.map((error) => error.code), ['destination_collision', 'destination_collision']);
 	assert.equal(collision.artifacts.length, 0);
+	const nodeBudget = harvestDeclaredArtifacts({
+		request: { artifact_declarations: [{ name: 'too-many-nodes', path: 'screenshots' }] },
+		config: { declared_artifact_max_nodes: 3 },
+		cwd: workspace,
+		artifactDir: artifacts,
+	});
+	assert.equal(nodeBudget.errors[0].code, 'capture_failed');
+	fs.rmdirSync(path.join(workspace, 'screenshots', 'empty'));
+	const withoutEmptyDirectory = harvestDeclaredArtifacts({
+		request: { artifact_declarations: [{ name: 'screenshots-without-empty', path: 'screenshots' }] },
+		cwd: workspace,
+		artifactDir: artifacts,
+	});
+	assert.notEqual(withoutEmptyDirectory.artifacts[0].sha256, screenshots.sha256);
 
 	fs.writeFileSync(path.join(root, 'outside.txt'), 'outside workspace\n');
 	fs.symlinkSync(path.join(root, 'outside.txt'), path.join(workspace, 'escaped-link'));
@@ -88,7 +105,7 @@ try {
 		cwd: workspace,
 		artifactDir: artifacts,
 	});
-	assert.equal(finalSymlink.errors[0].code, 'capture_failed');
+	assert.equal(finalSymlink.errors.length, 0);
 	assert.equal(fs.readFileSync(protectedFile, 'utf8'), 'protected\n');
 
 	const ancestorRoot = path.join(root, 'ancestor-artifacts');
@@ -101,20 +118,21 @@ try {
 		cwd: workspace,
 		artifactDir: ancestorRoot,
 	});
-	assert.equal(ancestorSymlink.errors[0].code, 'capture_failed');
+	assert.equal(ancestorSymlink.errors.length, 0);
 	assert.equal(fs.readdirSync(protectedDirectory).length, 0);
 
 	const swapRoot = path.join(root, 'swap-artifacts');
 	const swapTarget = path.join(root, 'swap-target');
 	fs.mkdirSync(swapRoot);
 	fs.mkdirSync(swapTarget);
-	const originalMkdir = fs.mkdirSync;
+	const realSwapRoot = fs.realpathSync(swapRoot);
+	const originalMkdtemp = fs.mkdtempSync;
 	try {
-		fs.mkdirSync = (directory, options) => {
-			const result = originalMkdir(directory, options);
-			if (directory === path.join(swapRoot, 'declared')) {
-				fs.rmSync(directory, { recursive: true, force: true });
-				fs.symlinkSync(swapTarget, directory);
+		fs.mkdtempSync = (prefix, options) => {
+			const result = originalMkdtemp(prefix, options);
+			if (prefix.startsWith(realSwapRoot)) {
+				fs.rmSync(result, { recursive: true, force: true });
+				fs.symlinkSync(swapTarget, result);
 			}
 			return result;
 		};
@@ -123,10 +141,10 @@ try {
 			cwd: workspace,
 			artifactDir: swapRoot,
 		});
-		assert.equal(swap.errors[0].code, 'capture_failed');
+		assert.equal(swap.errors[0].code, 'artifact_root');
 		assert.equal(fs.readdirSync(swapTarget).length, 0);
 	} finally {
-		fs.mkdirSync = originalMkdir;
+		fs.mkdtempSync = originalMkdtemp;
 	}
 } finally {
 	fs.rmSync(root, { recursive: true, force: true });
