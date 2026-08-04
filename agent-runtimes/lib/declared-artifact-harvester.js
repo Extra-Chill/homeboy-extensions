@@ -1,6 +1,7 @@
 'use strict';
 
 const crypto = require('node:crypto');
+const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 
@@ -122,6 +123,7 @@ function collectSource(source, workspaceRoot, budget) {
 			throw new Error('Declared artifact source resolves outside the workspace root.');
 		}
 		if (stat.isDirectory()) {
+			verifyDirectoryDescriptor(current, workspaceRoot);
 			entries.push({ relative, directory: true });
 			for (const name of fs.readdirSync(current).sort()) {
 				visit(path.join(current, name), path.join(relative, name), depth + 1);
@@ -131,7 +133,7 @@ function collectSource(source, workspaceRoot, budget) {
 		if (entries.filter((entry) => !entry.directory).length >= budget.maxFiles) {
 			throw new Error(`Declared artifact exceeds the ${budget.maxFiles}-file budget.`);
 		}
-		const staged = stagedFile(current, budget.maxBytes - bytes);
+		const staged = stagedFile(current, budget.maxBytes - bytes, workspaceRoot);
 		bytes += staged.bytes;
 		entries.push({ relative, directory: false, ...staged });
 	};
@@ -205,13 +207,14 @@ function resolveSource(workspaceRoot, declaredPath) {
 	return isWithin(workspaceRoot, candidate) ? { path: candidate } : { error: 'Declared artifact path escapes the workspace root.' };
 }
 
-function stagedFile(filePath, maxBytes) {
+function stagedFile(filePath, maxBytes, workspaceRoot) {
 	const fd = fs.openSync(filePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
 	try {
 		const stat = fs.fstatSync(fd);
 		if (!stat.isFile() || stat.size > maxBytes) {
 			throw new Error(stat.isFile() ? 'Declared artifact exceeds the byte budget.' : 'Declared artifact source must be a regular file.');
 		}
+		verifyDescriptorPath(fd, workspaceRoot);
 		const content = Buffer.alloc(stat.size);
 		for (let offset = 0; offset < content.length;) {
 			const count = fs.readSync(fd, content, offset, content.length - offset, offset);
@@ -223,6 +226,48 @@ function stagedFile(filePath, maxBytes) {
 		return { bytes: stat.size, content, digest: crypto.createHash('sha256').update(content).digest('hex') };
 	} finally {
 		fs.closeSync(fd);
+	}
+}
+
+function verifyDirectoryDescriptor(directory, workspaceRoot) {
+	const fd = fs.openSync(directory, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW);
+	try {
+		if (!fs.fstatSync(fd).isDirectory()) {
+			throw new Error('Declared artifact source must be a directory.');
+		}
+		verifyDescriptorPath(fd, workspaceRoot);
+	} finally {
+		fs.closeSync(fd);
+	}
+}
+
+function verifyDescriptorPath(fd, workspaceRoot) {
+	const descriptorPath = openedDescriptorPath(fd);
+	if (!descriptorPath || !isWithin(workspaceRoot, descriptorPath)) {
+		throw new Error('Declared artifact descriptor resolves outside the workspace root.');
+	}
+}
+
+function openedDescriptorPath(fd) {
+	for (const base of ['/proc/self/fd', '/dev/fd']) {
+		try {
+			const resolved = fs.realpathSync(path.join(base, String(fd)));
+			if (path.isAbsolute(resolved) && !resolved.startsWith(`${base}/`)) {
+				return resolved;
+			}
+		} catch {
+			// Try the next platform descriptor resolver.
+		}
+	}
+	const result = spawnSync('lsof', ['-Fn', '-a', '-p', String(process.pid), '-d', String(fd)], { encoding: 'utf8' });
+	const line = String(result.stdout || '').split('\n').find((value) => value.startsWith('n'));
+	if (!line || !path.isAbsolute(line.slice(1))) {
+		throw new Error('Descriptor identity proof is unavailable; refusing declared artifact source capture.');
+	}
+	try {
+		return fs.realpathSync(line.slice(1));
+	} catch {
+		throw new Error('Descriptor identity proof could not resolve the opened source path.');
 	}
 }
 

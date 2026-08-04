@@ -95,6 +95,34 @@ try {
 	});
 	assert.equal(symlink.errors[0].code, 'capture_failed');
 
+	const swappedSourceDirectory = path.join(workspace, 'swap-source');
+	const outsideDirectory = path.join(root, 'outside-source');
+	const swappedSourceFile = path.join(fs.realpathSync(workspace), 'swap-source', 'report.md');
+	fs.mkdirSync(swappedSourceDirectory);
+	fs.mkdirSync(outsideDirectory);
+	fs.writeFileSync(swappedSourceFile, 'inside workspace\n');
+	fs.writeFileSync(path.join(outsideDirectory, 'report.md'), 'outside content\n');
+	const originalOpen = fs.openSync;
+	try {
+		fs.openSync = (filePath, flags, ...args) => {
+			if (filePath === swappedSourceFile && typeof flags === 'number') {
+				fs.rmSync(swappedSourceDirectory, { recursive: true, force: true });
+				fs.symlinkSync(outsideDirectory, swappedSourceDirectory);
+			}
+			return originalOpen(filePath, flags, ...args);
+		};
+		const ancestorSwap = harvestDeclaredArtifacts({
+			request: { task_id: 'source-ancestor-swap', artifact_declarations: [{ name: 'report', path: 'swap-source/report.md', required: true }] },
+			cwd: workspace,
+			artifactDir: artifacts,
+		});
+		assert.equal(ancestorSwap.errors[0].code, 'capture_failed');
+		assert.equal(ancestorSwap.artifacts.length, 0);
+		assert.equal(fs.readFileSync(path.join(outsideDirectory, 'report.md'), 'utf8'), 'outside content\n');
+	} finally {
+		fs.openSync = originalOpen;
+	}
+
 	const destination = path.join(artifacts, 'declared', 'destination-symlink', 'report');
 	fs.mkdirSync(path.dirname(destination), { recursive: true });
 	const protectedFile = path.join(root, 'protected-final.txt');
