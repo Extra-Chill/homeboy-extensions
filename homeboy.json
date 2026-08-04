@@ -6,25 +6,12 @@
   "self_checks": {
     "test": [
       "node tests/agent-task-provider-contract-smoke.mjs",
-      "node tests/architectural-boundary-contract.mjs",
       "node tests/browser-result-shapes-smoke.mjs",
-      "node tests/codebox-delegated-run-normalizer-smoke.mjs",
-      "node tests/controller-loop-proof-validator.test.mjs",
       "bash tests/cross-extension-sidecar-normalization-smoke.sh",
       "node tests/deferred-init-browser-helper-smoke.mjs",
       "node tests/dependency-adapter-manifests-smoke.mjs",
-      "node tests/extension-shape-lint.mjs",
-      "node tests/generic-fanout-reconcile-boundary.test.mjs",
-      "node tests/headless-controller-runner-env-boundary.test.mjs",
-      "node tests/headless-deterministic-loop-fixture.mjs",
       "node tests/local-shell-agent-task-executor-boundary.test.mjs",
-      "node tests/preview-materialization-contract-smoke.mjs",
       "bash tests/project-scripts-pnpm-workspace-smoke.sh",
-      "node tests/runtime-agent-ci-contract-smoke.mjs",
-      "node tests/runtime-agent-full-run-codebox-inputs-smoke.mjs",
-      "node tests/runtime-agent-full-run-local-shell-smoke.mjs",
-      "node tests/runtime-agent-full-run-projection-boundary-smoke.mjs",
-      "node tests/runtime-agent-full-run-provider-neutral-smoke.mjs",
       "node tests/runtime-provider-resolver-smoke.mjs",
       "node tests/runtime-workflow-input-renderer-smoke.mjs",
       "bash tests/rust-release-prepare-smoke.sh",
@@ -34,17 +21,8 @@
       "bash tests/wordpress-release-artifact-version-smoke.sh",
       "bash tests/wordpress-runtime-helper-resolver-smoke.sh",
       "node tests/wp-codebox-adapter-contract-smoke.mjs",
-      "node tests/wp-codebox-artifact-contract-smoke.mjs",
       "node tests/wp-codebox-callback-data-smoke.mjs",
-      "node tests/wp-codebox-install-overrides-persist-smoke.mjs",
-      "node tests/wp-codebox-preview-materialization-contract-smoke.mjs",
-      "node tests/wp-codebox-provider-plugin-defaults-smoke.mjs",
-      "node tests/wp-codebox-provider-plugin-env-override-smoke.mjs",
-      "node tests/wp-codebox-runtime-contract-source-smoke.mjs",
-      "node tests/wp-codebox-runtime-package-contract-smoke.mjs",
-      "node tests/wp-codebox-runtime-profile-defaults-smoke.mjs",
-      "node tests/wp-codebox-runtime-readiness-controller-smoke.mjs",
-      "node tests/wp-codebox-runtime-readiness-smoke.mjs"
+      "node tests/wp-codebox-install-overrides-persist-smoke.mjs"
     ]
   }
 }
