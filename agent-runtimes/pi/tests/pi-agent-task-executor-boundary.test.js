@@ -1,5 +1,7 @@
 'use strict';
 
+require('../../../runtime-agent-ci/tests/helpers/runtime-contract-constants-fixture.cjs');
+
 /**
  * External dependencies
  */
@@ -19,8 +21,9 @@ const {
 
 const runtimeRoot = path.join(__dirname, '..');
 const fixtureRuntimeTool = {
+	schema: 'homeboy/resolved-agent-task-runtime-tool/v1',
 	id: 'fixture.mcp', transport: 'stdio', argv: [process.execPath, '--fixture-mcp'],
-	env: { FIXTURE_MODE: 'isolated' }, readiness: 'ready', lifecycle: 'runtime_owned',
+	executable: process.execPath, env: { FIXTURE_MODE: 'isolated' }, readiness: { status: 'ready', evidence: { kind: 'version_command', success: true } }, lifecycle: 'runtime_owned',
 };
 
 const provider = providerContract();

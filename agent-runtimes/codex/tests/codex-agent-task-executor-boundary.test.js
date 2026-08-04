@@ -1,5 +1,7 @@
 'use strict';
 
+require('../../../runtime-agent-ci/tests/helpers/runtime-contract-constants-fixture.cjs');
+
 /**
  * External dependencies
  */
@@ -53,12 +55,14 @@ assert.equal(provider.capabilities.includes('nested_orchestrator'), false);
 assert.equal(provider.capabilities.includes('wordpress_sandbox'), false);
 
 const fixtureRuntimeTool = {
+	schema: 'homeboy/resolved-agent-task-runtime-tool/v1',
 	id: 'fixture.mcp',
 	transport: 'stdio',
 	argv: [process.execPath, '--fixture-mcp', '--isolated'],
+	executable: process.execPath,
 	env: { FIXTURE_MODE: 'isolated' },
 	secret_env_names: ['FIXTURE_MCP_TOKEN'],
-	readiness: 'ready',
+	readiness: { status: 'ready', evidence: { kind: 'version_command', success: true } },
 	lifecycle: 'runtime_owned',
 };
 

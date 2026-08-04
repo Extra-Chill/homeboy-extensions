@@ -1,31 +1,25 @@
 'use strict';
 
+const RESOLVED_RUNTIME_TOOL_SCHEMA = 'homeboy/resolved-agent-task-runtime-tool/v1';
 const RUNTIME_TOOLS_ENV = 'HOMEBOY_AGENT_TASK_RUNTIME_TOOLS_JSON';
 
 function resolvedRuntimeTools(request = {}, env = process.env) {
-	const direct = Array.isArray(request.resolved_runtime_tools) ? request.resolved_runtime_tools : null;
-	const tools = direct || parseRuntimeTools(env?.[RUNTIME_TOOLS_ENV]);
-	return tools.map(validateRuntimeTool);
-}
-
-function parseRuntimeTools(value) {
-	if (!value) {
-		return [];
+	if (Array.isArray(request.resolved_runtime_tools)) {
+		return request.resolved_runtime_tools.map(validateRuntimeTool);
 	}
-	try {
-		const parsed = JSON.parse(value);
-		return Array.isArray(parsed) ? parsed : [];
-	} catch {
-		return [];
+	if (hasRuntimeToolDeclarations(request) || hasRuntimeToolDeclarationsEnv(env)) {
+		throw new Error('Runtime tool declarations must be resolved by Homeboy before provider dispatch.');
 	}
+	return [];
 }
 
 function validateRuntimeTool(tool) {
-	const argv = Array.isArray(tool?.argv) ? tool.argv : tool?.command;
-	if (!tool || typeof tool.id !== 'string' || !validId(tool.id)
+	const argv = tool?.argv;
+	if (!tool || tool.schema !== RESOLVED_RUNTIME_TOOL_SCHEMA || typeof tool.id !== 'string' || !validId(tool.id)
 		|| tool.transport !== 'stdio' || !Array.isArray(argv) || argv.length === 0
 		|| argv.some((part) => typeof part !== 'string' || part.trim() === '')
-		|| (tool.readiness !== undefined && tool.readiness !== 'ready')
+		|| typeof tool.executable !== 'string' || tool.executable !== argv[0]
+		|| !readyRuntimeToolEvidence(tool.readiness, tool.capabilities)
 		|| (tool.lifecycle !== undefined && tool.lifecycle !== 'runtime_owned')) {
 		throw new Error(`Invalid or unready runtime tool projection: ${tool?.id || 'unknown'}.`);
 	}
@@ -35,11 +29,41 @@ function validateRuntimeTool(tool) {
 		throw new Error(`Runtime tool '${tool.id}' has an invalid environment name.`);
 	}
 	return {
+		schema: tool.schema,
 		id: tool.id,
 		argv: [...argv],
+		executable: tool.executable,
 		env: values,
 		secret_env_names: [...new Set(envNames)],
+		capabilities: arrayValue(tool.capabilities),
+		readiness: tool.readiness,
 	};
+}
+
+function hasRuntimeToolDeclarations(request) {
+	return Array.isArray(request?.runtime_tools) && request.runtime_tools.length > 0;
+}
+
+function hasRuntimeToolDeclarationsEnv(env) {
+	try {
+		const declarations = JSON.parse(env?.[RUNTIME_TOOLS_ENV] || '[]');
+		return Array.isArray(declarations) && declarations.length > 0;
+	} catch {
+		return Boolean(env?.[RUNTIME_TOOLS_ENV]);
+	}
+}
+
+function readyRuntimeToolEvidence(readiness, capabilities) {
+	if (!readiness || typeof readiness !== 'object' || Array.isArray(readiness) || readiness.status !== 'ready') {
+		return false;
+	}
+	if (!Array.isArray(capabilities) || capabilities.length === 0) {
+		return true;
+	}
+	const evidence = readiness.evidence;
+	return evidence && typeof evidence === 'object' && !Array.isArray(evidence)
+		&& evidence.success === true
+		&& ['version_command', 'protocol', 'declared_probe'].includes(evidence.kind);
 }
 
 function applyOpenCodeRuntimeTools(content = {}, request = {}, env = process.env) {
@@ -75,13 +99,12 @@ function adapterRuntimeToolRequest(request = {}, env = process.env) {
 	return tools.length === 0 ? request : { ...request, resolved_runtime_tools: tools.map((tool) => ({
 		...tool,
 		env: runtimeToolEnvironment(tool, env),
-		readiness: 'ready',
 		lifecycle: 'runtime_owned',
 	})) };
 }
 
-function runtimeToolSecretEnvNames(request = {}, env = process.env) {
-	return resolvedRuntimeTools(request, env).flatMap((tool) => tool.secret_env_names);
+function runtimeToolSecretEnvNames(request = {}) {
+	return resolvedRuntimeTools(request).flatMap((tool) => tool.secret_env_names);
 }
 
 function runtimeToolEnvironment(tool, env) {
@@ -117,6 +140,7 @@ function objectValue(value) {
 }
 
 module.exports = {
+	RESOLVED_RUNTIME_TOOL_SCHEMA,
 	RUNTIME_TOOLS_ENV,
 	adapterRuntimeToolRequest,
 	applyOpenCodeRuntimeTools,

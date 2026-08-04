@@ -30,8 +30,9 @@ const {
 
 const runtimeRoot = path.join(__dirname, '..');
 const fixtureRuntimeTool = {
+	schema: 'homeboy/resolved-agent-task-runtime-tool/v1',
 	id: 'fixture.mcp', transport: 'stdio', argv: [process.execPath, '--fixture-mcp', '--isolated'],
-	env: { FIXTURE_MODE: 'isolated' }, secret_env_names: ['FIXTURE_MCP_TOKEN'], readiness: 'ready', lifecycle: 'runtime_owned',
+	executable: process.execPath, env: { FIXTURE_MODE: 'isolated' }, secret_env_names: ['FIXTURE_MCP_TOKEN'], readiness: { status: 'ready', evidence: { kind: 'version_command', success: true } }, lifecycle: 'runtime_owned',
 };
 
 function secretEnvRequirementForProvider(contract, provider) {
