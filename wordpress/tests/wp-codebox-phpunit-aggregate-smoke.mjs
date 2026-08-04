@@ -140,6 +140,11 @@ try {
       await readFile(path.join(invocationArtifacts, 'wp-codebox-phpunit/files/phpunit-output.log'), 'utf8'),
       testCase.name,
     );
+    assert.deepEqual(
+      JSON.parse(await readFile(path.join(controllerRun, 'files/phpunit-execution-diagnosis.json'), 'utf8')),
+      JSON.parse(await readFile(path.join(invocationArtifacts, 'wp-codebox-phpunit/files/phpunit-execution-diagnosis.json'), 'utf8')),
+      testCase.name,
+    );
     const options = JSON.parse(await readFile(path.join(runArtifact, 'wp-codebox-phpunit-recipe-options.json'), 'utf8'));
     const profile = JSON.parse(await readFile(path.join(runArtifact, 'wp-codebox-phpunit-profile.json'), 'utf8'));
     const provenance = JSON.parse(await readFile(path.join(runArtifact, 'wp-codebox-phpunit-provenance.json'), 'utf8'));

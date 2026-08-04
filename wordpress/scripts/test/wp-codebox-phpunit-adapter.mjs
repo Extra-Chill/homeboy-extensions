@@ -551,7 +551,7 @@ async function publishPhpunitArtifacts(artifactDirectory, status) {
     // invocation tree that Homeboy preserves after the extension exits.
     if (controllerRunDirectory) {
       await assertDirectoryTree(controllerRunDirectory, ['files']);
-      for (const file of files.slice(0, 2)) {
+      for (const file of files.filter((entry) => entry.copy)) {
         await atomicCopy(path.join(publishedFilesDirectory, file.name), path.join(controllerRunDirectory, 'files', file.name));
       }
     }
