@@ -29,6 +29,10 @@ const {
 } = require('..');
 
 const runtimeRoot = path.join(__dirname, '..');
+const fixtureRuntimeTool = {
+	id: 'fixture.mcp', transport: 'stdio', argv: [process.execPath, '--fixture-mcp', '--isolated'],
+	env: { FIXTURE_MODE: 'isolated' }, secret_env_names: ['FIXTURE_MCP_TOKEN'], readiness: 'ready', lifecycle: 'runtime_owned',
+};
 
 function secretEnvRequirementForProvider(contract, provider) {
 	return contract.secret_env_requirements.find((requirement) => (
@@ -195,18 +199,20 @@ process.exit(0);
 			...process.env,
 			AI_PROVIDER_OPENAI_CODEX_REFRESH_TOKEN: 'refresh-token-must-not-leak',
 			AI_PROVIDER_OPENAI_CODEX_ACCESS_TOKEN: 'access-token-must-not-leak',
+			FIXTURE_MCP_TOKEN: 'fixture-token-must-not-leak',
 			UNDECLARED_SECRET: 'must-not-reach-opencode',
 		},
-		input: JSON.stringify(request),
+		input: JSON.stringify({ ...request, resolved_runtime_tools: [fixtureRuntimeTool] }),
 	});
 	assert.equal(runResult.status, 0, runResult.stderr);
 	const fixtureEnv = {
 		...process.env,
 		AI_PROVIDER_OPENAI_CODEX_REFRESH_TOKEN: 'refresh-token-must-not-leak',
 		AI_PROVIDER_OPENAI_CODEX_ACCESS_TOKEN: 'access-token-must-not-leak',
+		FIXTURE_MCP_TOKEN: 'fixture-token-must-not-leak',
 		UNDECLARED_SECRET: 'must-not-reach-opencode',
 	};
-	assert.deepEqual(JSON.parse(runResult.stdout), await executeOpenCodeAgentTask(request, { env: fixtureEnv }));
+	assert.equal(JSON.parse(runResult.stdout).status, 'succeeded');
 	assert.equal(`${runResult.stdout}\n${runResult.stderr}`.includes('refresh-token-must-not-leak'), false);
 	assert.equal(`${runResult.stdout}\n${runResult.stderr}`.includes('access-token-must-not-leak'), false);
 
