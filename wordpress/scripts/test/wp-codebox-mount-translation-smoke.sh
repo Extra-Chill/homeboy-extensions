@@ -166,11 +166,15 @@ const requiredPluginSources = JSON.parse(process.env.REQUIRED_PLUGIN_SOURCES_JSO
 if (JSON.stringify(pluginSources) !== JSON.stringify(requiredPluginSources)) {
   throw new Error(`unexpected recipe plugin sources:\nexpected:\n${requiredPluginSources.join('\n')}\nactual:\n${pluginSources.join('\n')}`)
 }
-// Dependency materialization is the runtime substrate's concern: WP Codebox
-// prepares Composer autoload for every recipe plugin itself, so this runner must
-// not be shelling out to composer on the way.
-if ((recipe.inputs?.extra_plugins || []).some((plugin) => 'composer' in plugin)) {
-  throw new Error('recipe extra plugins must not carry Composer preparation instructions')
+// The recipe may declare that a validation dependency needs Composer
+// preparation, but the component under review never carries that instruction:
+// its vendor/ comes from the declared dependency-materialization phase.
+const target = (recipe.inputs?.extra_plugins || []).at(-1)
+if (target?.composer !== undefined) {
+  throw new Error(`component under review must not carry a Composer preparation instruction: ${JSON.stringify(target)}`)
+}
+if ((recipe.inputs?.extra_plugins || []).slice(0, -1).some((plugin) => plugin.composer !== 'install')) {
+  throw new Error('validation dependencies must declare Composer preparation for the substrate to own')
 }
 
 const artifactRoot = argValue('--artifacts') || path.join(path.dirname(process.env.FAKE_WP_CODEBOX_ARGS_FILE), 'artifacts')

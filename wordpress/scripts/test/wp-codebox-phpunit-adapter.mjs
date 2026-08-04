@@ -33,13 +33,18 @@ const optionsPath = path.join(directory, 'options.json');
 const recipePath = path.join(directory, 'recipe.json');
 const artifacts = process.env.HOMEBOY_WP_CODEBOX_ARTIFACTS_DIR || path.join(directory, 'artifacts');
 const runArtifacts = path.join(artifacts, `wp-codebox-phpunit.${process.pid}`);
-// Dependency materialization is not this runner's concern. The WordPress
-// extension owns PHP knowledge, but preparing a mounted plugin's Composer
-// autoload belongs to the runtime substrate that mounts it, and WP Codebox
-// already does that for every recipe plugin.
+// Validation dependencies are external checkouts nobody built, so the recipe
+// declares that they may need Composer preparation. It does not decide whether
+// they do: WP Codebox owns the detection (no composer.json, or an existing
+// vendor/autoload.php, are both no-ops) and owns running composer. This runner
+// never inspects a dependency's vendor state and never shells out to composer.
+//
+// The component under review is deliberately absent from this: its vendor/ is
+// produced by the declared dependency-materialization phase before the runner
+// is ever invoked.
 const dependencies = (await dependencyPaths(settings, [componentPath, pluginSourceDirectory])).map((source) => {
   const dependencySlug = path.basename(source).replace(/@[^/]+$/, '');
-  return { source, slug: dependencySlug, sandboxDirectory: sandboxPluginDirectory(dependencySlug) };
+  return { source, slug: dependencySlug, sandboxDirectory: sandboxPluginDirectory(dependencySlug), composer: 'install' };
 });
 const selectedTestFile = (process.env.HOMEBOY_WORDPRESS_PHPUNIT_TEST_FILE || '').trim();
 const changedTestFiles = phpunitChangedTestFiles();
@@ -49,7 +54,7 @@ const changedTestFiles = phpunitChangedTestFiles();
 // Codebox's activation phase and from Composer autoloader preloading, which
 // yields a sandbox that reports zero executed tests.
 const activationPlan = [
-  ...dependencies.map(({ source, slug: dependencySlug }) => ({ role: 'validation-dependency', source, slug: dependencySlug })),
+  ...dependencies.map(({ source, slug: dependencySlug, composer }) => ({ role: 'validation-dependency', source, slug: dependencySlug, composer })),
   { role: 'target', source: root, sourceSubpath: subpath, slug },
 ];
 await requireHarness(harnessSource);
