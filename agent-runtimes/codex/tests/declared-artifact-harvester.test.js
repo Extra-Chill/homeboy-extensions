@@ -15,6 +15,7 @@ fs.writeFileSync(path.join(workspace, 'report.md'), '# Report\n');
 const binary = Buffer.from([0, 255, 1, 254, 2]);
 fs.writeFileSync(path.join(workspace, 'screenshots', 'image.bin'), binary);
 fs.writeFileSync(path.join(workspace, 'screenshots', 'caption.txt'), 'Screenshot caption\n');
+fs.mkdirSync(artifacts);
 
 try {
 	const result = harvestDeclaredArtifacts({
@@ -76,6 +77,57 @@ try {
 		artifactDir: artifacts,
 	});
 	assert.equal(symlink.errors[0].code, 'capture_failed');
+
+	const destination = path.join(artifacts, 'declared', 'destination-symlink', 'report');
+	fs.mkdirSync(path.dirname(destination), { recursive: true });
+	const protectedFile = path.join(root, 'protected-final.txt');
+	fs.writeFileSync(protectedFile, 'protected\n');
+	fs.symlinkSync(protectedFile, destination);
+	const finalSymlink = harvestDeclaredArtifacts({
+		request: { task_id: 'destination-symlink', artifact_declarations: [{ name: 'report', path: 'report.md' }] },
+		cwd: workspace,
+		artifactDir: artifacts,
+	});
+	assert.equal(finalSymlink.errors[0].code, 'capture_failed');
+	assert.equal(fs.readFileSync(protectedFile, 'utf8'), 'protected\n');
+
+	const ancestorRoot = path.join(root, 'ancestor-artifacts');
+	const protectedDirectory = path.join(root, 'protected-directory');
+	fs.mkdirSync(ancestorRoot);
+	fs.mkdirSync(protectedDirectory);
+	fs.symlinkSync(protectedDirectory, path.join(ancestorRoot, 'declared'));
+	const ancestorSymlink = harvestDeclaredArtifacts({
+		request: { task_id: 'ancestor-symlink', artifact_declarations: [{ name: 'report', path: 'report.md' }] },
+		cwd: workspace,
+		artifactDir: ancestorRoot,
+	});
+	assert.equal(ancestorSymlink.errors[0].code, 'capture_failed');
+	assert.equal(fs.readdirSync(protectedDirectory).length, 0);
+
+	const swapRoot = path.join(root, 'swap-artifacts');
+	const swapTarget = path.join(root, 'swap-target');
+	fs.mkdirSync(swapRoot);
+	fs.mkdirSync(swapTarget);
+	const originalMkdir = fs.mkdirSync;
+	try {
+		fs.mkdirSync = (directory, options) => {
+			const result = originalMkdir(directory, options);
+			if (directory === path.join(swapRoot, 'declared')) {
+				fs.rmSync(directory, { recursive: true, force: true });
+				fs.symlinkSync(swapTarget, directory);
+			}
+			return result;
+		};
+		const swap = harvestDeclaredArtifacts({
+			request: { task_id: 'swap-attempt', artifact_declarations: [{ name: 'report', path: 'report.md' }] },
+			cwd: workspace,
+			artifactDir: swapRoot,
+		});
+		assert.equal(swap.errors[0].code, 'capture_failed');
+		assert.equal(fs.readdirSync(swapTarget).length, 0);
+	} finally {
+		fs.mkdirSync = originalMkdir;
+	}
 } finally {
 	fs.rmSync(root, { recursive: true, force: true });
 }

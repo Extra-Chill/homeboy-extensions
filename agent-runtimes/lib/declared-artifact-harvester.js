@@ -25,7 +25,10 @@ function harvestDeclaredArtifacts({ request = {}, config = {}, cwd = '', artifac
 	if (!workspaceRoot) {
 		return captureFailure(declarations, 'workspace_root', 'The declared artifact workspace root does not exist.');
 	}
-	const root = path.resolve(artifactDir);
+	const root = schedulerArtifactRoot(artifactDir);
+	if (!root) {
+		return captureFailure(declarations, 'artifact_root', 'The scheduler-owned artifact root must be an existing non-symlink directory.');
+	}
 	const budget = artifactBudget(request, config);
 	const result = emptyResult();
 	const destinations = declarationDestinations(declarations, root, request.task_id);
@@ -65,7 +68,7 @@ function harvestDeclaredArtifacts({ request = {}, config = {}, cwd = '', artifac
 	}
 	for (const { declaration, source, destination, collected } of prepared) {
 		try {
-			copyEntries(collected.entries, source, destination, collected.directory);
+			copyEntries(root, collected.entries, source, destination, collected.directory);
 			const digest = collected.directory
 				? digestTree(collected.entries, source)
 				: collected.entries[0].digest;
@@ -171,15 +174,61 @@ function collectSource(source, workspaceRoot, budget) {
 	return { entries, bytes: entries.reduce((total, entry) => total + entry.bytes, 0), directory: rootStat.isDirectory() };
 }
 
-function copyEntries(entries, source, destination, directory) {
+function copyEntries(root, entries, source, destination, directory) {
 	if (directory) {
-		fs.mkdirSync(destination, { recursive: true });
+		ensureSafeDirectory(root, destination);
 	}
 	for (const entry of entries) {
 		const relative = path.relative(source, entry.path);
 		const target = relative ? path.join(destination, relative) : destination;
-		fs.mkdirSync(path.dirname(target), { recursive: true });
-		fs.writeFileSync(target, entry.content);
+		ensureSafeDirectory(root, path.dirname(target));
+		writeNewFile(target, entry.content);
+	}
+}
+
+function schedulerArtifactRoot(value) {
+	const root = path.resolve(value);
+	try {
+		const stat = fs.lstatSync(root);
+		return !stat.isSymbolicLink() && stat.isDirectory() ? root : '';
+	} catch {
+		return '';
+	}
+}
+
+function ensureSafeDirectory(root, directory) {
+	if (directory !== root && !directory.startsWith(`${root}${path.sep}`)) {
+		throw new Error('Artifact destination escapes the scheduler artifact root.');
+	}
+	let current = root;
+	for (const segment of path.relative(root, directory).split(path.sep).filter(Boolean)) {
+		current = path.join(current, segment);
+		try {
+			fs.mkdirSync(current, { mode: 0o700 });
+		} catch (error) {
+			if (error.code !== 'EEXIST') {
+				throw error;
+			}
+		}
+		const stat = fs.lstatSync(current);
+		if (stat.isSymbolicLink() || !stat.isDirectory()) {
+			throw new Error('Artifact destination contains a symlink or non-directory ancestor.');
+		}
+		const fd = fs.openSync(current, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW);
+		fs.closeSync(fd);
+	}
+}
+
+function writeNewFile(target, content) {
+	const fd = fs.openSync(target, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o600);
+	try {
+		let offset = 0;
+		while (offset < content.length) {
+			offset += fs.writeSync(fd, content, offset, content.length - offset, offset);
+		}
+		fs.fsyncSync(fd);
+	} finally {
+		fs.closeSync(fd);
 	}
 }
 
