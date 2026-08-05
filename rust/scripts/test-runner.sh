@@ -322,24 +322,7 @@ rust_validate_nextest_membership() {
 import json
 import sys
 
-raw = open(sys.argv[1], encoding="utf-8", errors="replace").read()
-decoder = json.JSONDecoder()
-listed = []
-offset = 0
-while (index := raw.find("{", offset)) != -1:
-    try:
-        candidate, end = decoder.raw_decode(raw[index:])
-    except json.JSONDecodeError:
-        offset = index + 1
-        continue
-    if isinstance(candidate, dict) and "rust-suites" in candidate:
-        listed.append(candidate)
-    offset = index + end
-if len(listed) != 1:
-    raise SystemExit(
-        f"Rust test shard error: expected exactly one nextest list JSON document, found {len(listed)}"
-    )
-listed = listed[0]
+listed = json.load(open(sys.argv[1], encoding="utf-8"))
 expected = {item["id"] for item in json.load(open(sys.argv[2], encoding="utf-8"))["selected"]}
 actual = set()
 for suite in listed.get("rust-suites", {}).values():
@@ -351,6 +334,12 @@ if actual != expected:
     extra = sorted(actual - expected)
     raise SystemExit(f"Rust test shard error: nextest exact filter membership mismatch (missing={missing[:1]}, extra={extra[:1]})")
 PY
+}
+
+rust_capture_stdout() {
+    local stdout_file="$1"
+    shift
+    "$@" > "$stdout_file"
 }
 
 rust_nextest_counts() {
@@ -627,16 +616,19 @@ if [ -n "${HOMEBOY_TEST_SHARD_MANIFEST:-}${HOMEBOY_TEST_INVENTORY_FILE:-}${HOMEB
         # Validate every planned filter before any test batch can execute.
         for NEXTEST_BATCH in "$NEXTEST_BATCH_DIR"/*.json; do
             NEXTEST_FILTER="$(rust_nextest_filter "$NEXTEST_BATCH")"
-            homeboy_run_step_capture NEXTEST_LIST_OUTPUT NEXTEST_LIST_EXIT "cargo nextest list" -- cargo nextest list --workspace --message-format json -E "$NEXTEST_FILTER" || true
-            if [ "$NEXTEST_LIST_EXIT" -ne 0 ] || ! rust_validate_nextest_membership "$NEXTEST_LIST_OUTPUT" "$NEXTEST_BATCH"; then
+            NEXTEST_LIST_JSON="$(mktemp)"
+            homeboy_run_step_capture NEXTEST_LIST_OUTPUT NEXTEST_LIST_EXIT "cargo nextest list" -- rust_capture_stdout "$NEXTEST_LIST_JSON" cargo nextest list --workspace --message-format json -E "$NEXTEST_FILTER" || true
+            if [ "$NEXTEST_LIST_EXIT" -ne 0 ] || ! rust_validate_nextest_membership "$NEXTEST_LIST_JSON" "$NEXTEST_BATCH"; then
                 SHARD_ELAPSED=$(( $(date +%s) - SHARD_STARTED ))
                 rust_emit_shard_result failed "$SHARD_TOTAL" 0 0 0 0 "$((SHARD_ELAPSED*1000))"
-                rm -f "$NEXTEST_LIST_OUTPUT"
+                homeboy_cleanup_step_capture "$NEXTEST_LIST_OUTPUT"
+                homeboy_cleanup_step_capture "$NEXTEST_LIST_JSON"
                 rm -rf "$NEXTEST_BATCH_DIR"
                 rm -f "$SHARD_DATA"
                 exit 1
             fi
-            rm -f "$NEXTEST_LIST_OUTPUT"
+            homeboy_cleanup_step_capture "$NEXTEST_LIST_OUTPUT"
+            homeboy_cleanup_step_capture "$NEXTEST_LIST_JSON"
         done
         echo "Replaying Rust nextest shard: ${SHARD_TOTAL} exact identities in $(printf '%s\n' "$NEXTEST_BATCH_DIR"/*.json | wc -l | tr -d ' ') batches"
         SHARD_EXIT=0

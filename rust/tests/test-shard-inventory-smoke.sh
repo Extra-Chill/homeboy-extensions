@@ -58,6 +58,11 @@ if [ "${1:-}" = 'nextest' ] && [ "${2:-}" = 'list' ]; then
   [ -z "${HOMEBOY_FAKE_NEXTEST_LOG:-}" ] || printf 'list %s\n' "$*" >> "$HOMEBOY_FAKE_NEXTEST_LOG"
   # cargo-nextest writes build progress to stderr before its JSON list payload.
   printf '   Compiling shard-smoke v0.1.0\n' >&2
+  if [ "${HOMEBOY_NEXTEST_LIST_MODE:-pass}" = stderr-json-only ]; then
+    printf '%s\n' '{"rust-suites":{}}' >&2
+    printf 'not json\n'
+    exit 0
+  fi
   if [ "${HOMEBOY_NEXTEST_LIST_MODE:-pass}" = zero ]; then printf '%s\n' '{"rust-suites":{}}'; exit 0; fi
   python3 - "$@" <<'PY'
 import json
@@ -407,6 +412,26 @@ ZERO_LIST_EXIT=$?
 set -e
 if [ "$ZERO_LIST_EXIT" -eq 0 ] || [ -e "$WORK_DIR/zero-list-runs.log" ]; then
   printf 'Expected zero-list validation to fail before any nextest batch executes\n' >&2
+  exit 1
+fi
+
+# JSON-looking diagnostics cannot substitute for a missing stdout payload.
+set +e
+HOMEBOY_EXTENSION_PATH="$EXTENSION_DIR" \
+HOMEBOY_COMPONENT_PATH="$PROJECT_DIR" \
+HOMEBOY_SKIP_LINT=1 \
+HOMEBOY_RUST_TEST_RUNNER=nextest \
+HOMEBOY_NEXTEST_LIST_MODE=stderr-json-only \
+HOMEBOY_TEST_SHARD_MANIFEST="$WORK_DIR/nextest-manifest.json" \
+HOMEBOY_FAKE_NEXTEST_RUN_LOG="$WORK_DIR/stderr-json-runs.log" \
+HOMEBOY_RUNTIME_RUNNER_PRELUDE="$WORK_DIR/runner-prelude.sh" \
+HOMEBOY_RUNTIME_COMMAND_CAPTURE="$WORK_DIR/command-capture.sh" \
+PATH="$BIN_DIR:$PATH" \
+bash "$EXTENSION_DIR/scripts/test-runner.sh" > "$WORK_DIR/stderr-json.out" 2>&1
+STDERR_JSON_EXIT=$?
+set -e
+if [ "$STDERR_JSON_EXIT" -eq 0 ] || [ -e "$WORK_DIR/stderr-json-runs.log" ]; then
+  printf 'Expected stderr JSON to remain diagnostic-only during nextest preflight\n' >&2
   exit 1
 fi
 
