@@ -55,7 +55,9 @@ def cargo_inventory(workspace_root, packages):
             message = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if message.get("reason") != "compiler-artifact" or not message.get("executable"):
+        if (message.get("reason") != "compiler-artifact"
+                or not message.get("executable")
+                or not message.get("profile", {}).get("test")):
             continue
         target = message.get("target", {})
         kinds = target.get("kind", [])

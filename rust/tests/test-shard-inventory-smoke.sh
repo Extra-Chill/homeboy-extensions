@@ -43,7 +43,12 @@ cat > "$BIN_DIR/test-member" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' 'member::member_works: test'
 EOF
-chmod +x "$BIN_DIR/test-lib" "$BIN_DIR/test-api" "$BIN_DIR/test-member"
+cat > "$BIN_DIR/non-test-bin" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' 'non-test executable must not be listed' >&2
+exit 1
+EOF
+chmod +x "$BIN_DIR/test-lib" "$BIN_DIR/test-api" "$BIN_DIR/test-member" "$BIN_DIR/non-test-bin"
 
 cat > "$BIN_DIR/cargo" <<'EOF'
 #!/usr/bin/env bash
@@ -87,9 +92,10 @@ PY
   exit 0
 fi
 if [[ " $* " == *' --workspace '* && " $* " == *' --no-run '* ]]; then
-  printf '{"reason":"compiler-artifact","package_id":"shard-smoke 0.1.0 (path+file:///fixture)","target":{"name":"shard_smoke","kind":["lib"]},"executable":"%s/test-lib"}\n' "$(dirname "$0")"
-  printf '{"reason":"compiler-artifact","package_id":"shard-smoke 0.1.0 (path+file:///fixture)","target":{"name":"api","kind":["test"]},"executable":"%s/test-api"}\n' "$(dirname "$0")"
-  printf '{"reason":"compiler-artifact","package_id":"member-smoke 0.1.0 (path+file:///fixture/member)","target":{"name":"member_smoke","kind":["lib"]},"executable":"%s/test-member"}\n' "$(dirname "$0")"
+  printf '{"reason":"compiler-artifact","package_id":"shard-smoke 0.1.0 (path+file:///fixture)","target":{"name":"shard_smoke","kind":["lib"]},"profile":{"test":true},"executable":"%s/test-lib"}\n' "$(dirname "$0")"
+  printf '{"reason":"compiler-artifact","package_id":"shard-smoke 0.1.0 (path+file:///fixture)","target":{"name":"api","kind":["test"]},"profile":{"test":true},"executable":"%s/test-api"}\n' "$(dirname "$0")"
+  printf '{"reason":"compiler-artifact","package_id":"member-smoke 0.1.0 (path+file:///fixture/member)","target":{"name":"member_smoke","kind":["lib"]},"profile":{"test":true},"executable":"%s/test-member"}\n' "$(dirname "$0")"
+  printf '{"reason":"compiler-artifact","package_id":"shard-smoke 0.1.0 (path+file:///fixture)","target":{"name":"normal","kind":["bin"]},"profile":{"test":false},"executable":"%s/non-test-bin"}\n' "$(dirname "$0")"
   exit 0
 fi
 if [[ " $* " == *' --doc '* && " $* " == *' --list '* ]]; then
