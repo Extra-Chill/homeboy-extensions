@@ -8,9 +8,11 @@ trap 'rm -rf "$WORK_DIR"' EXIT
 
 PROJECT_DIR="$WORK_DIR/project"
 BIN_DIR="$WORK_DIR/bin"
-mkdir -p "$PROJECT_DIR/src" "$BIN_DIR" "$WORK_DIR/annotations"
-printf '[package]\nname = "shard-smoke"\nversion = "0.1.0"\nedition = "2021"\n' > "$PROJECT_DIR/Cargo.toml"
+mkdir -p "$PROJECT_DIR/src" "$PROJECT_DIR/member/src" "$BIN_DIR" "$WORK_DIR/annotations"
+printf '[package]\nname = "shard-smoke"\nversion = "0.1.0"\nedition = "2021"\n\n[workspace]\nmembers = ["member"]\n' > "$PROJECT_DIR/Cargo.toml"
 printf 'pub fn fixture() {}\n' > "$PROJECT_DIR/src/lib.rs"
+printf '[package]\nname = "member-smoke"\nversion = "0.1.0"\nedition = "2021"\n' > "$PROJECT_DIR/member/Cargo.toml"
+printf '#[cfg(test)]\nmod tests { #[test] fn member_works() {} }\n' > "$PROJECT_DIR/member/src/lib.rs"
 
 cat > "$BIN_DIR/test-lib" <<'EOF'
 #!/usr/bin/env bash
@@ -20,7 +22,11 @@ cat > "$BIN_DIR/test-api" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' 'api::works: test'
 EOF
-chmod +x "$BIN_DIR/test-lib" "$BIN_DIR/test-api"
+cat > "$BIN_DIR/test-member" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' 'member::member_works: test'
+EOF
+chmod +x "$BIN_DIR/test-lib" "$BIN_DIR/test-api" "$BIN_DIR/test-member"
 
 cat > "$BIN_DIR/cargo" <<'EOF'
 #!/usr/bin/env bash
@@ -28,10 +34,11 @@ set -euo pipefail
 if [ "${1:-}" = '--version' ]; then printf 'cargo 1.80.0\n'; exit 0; fi
 if [ "${1:-}" = 'nextest' ] && [ "${2:-}" = '--version' ]; then printf 'cargo-nextest 0.9.0\n'; exit 0; fi
 if [ "${1:-}" = 'metadata' ]; then
-  printf '{"packages":[{"id":"shard-smoke 0.1.0 (path+file:///fixture)","name":"shard-smoke"}],"workspace_root":"%s"}\n' "$PWD"
+  printf '{"packages":[{"id":"shard-smoke 0.1.0 (path+file:///fixture)","name":"shard-smoke"},{"id":"member-smoke 0.1.0 (path+file:///fixture/member)","name":"member-smoke"}],"workspace_root":"%s"}\n' "$PWD"
   exit 0
 fi
 if [ "${1:-}" = 'nextest' ] && [ "${2:-}" = 'list' ]; then
+  [ -z "${HOMEBOY_FAKE_NEXTEST_LOG:-}" ] || printf 'list %s\n' "$*" >> "$HOMEBOY_FAKE_NEXTEST_LOG"
   if [ "${HOMEBOY_NEXTEST_LIST_MODE:-pass}" = zero ]; then printf '%s\n' '{"rust-suites":{}}'; exit 0; fi
   python3 - "$@" <<'PY'
 import json
@@ -39,8 +46,8 @@ import os
 import re
 import sys
 
-count = int(os.environ.get("HOMEBOY_NEXTEST_TEST_COUNT", "4"))
-names = ["unit::alpha", "unit::beta", "unit::ignored", "api::works"] if count == 4 else [f"unit::long_test_{index:04d}_{'x' * 100}" for index in range(count)]
+count = int(os.environ.get("HOMEBOY_NEXTEST_TEST_COUNT", "5"))
+names = ["unit::alpha", "unit::beta", "unit::ignored", "api::works", "member::member_works"] if count == 5 else [f"unit::long_test_{index:04d}_{'x' * 100}" for index in range(count)]
 args = sys.argv[1:]
 filter_value = args[args.index("-E") + 1] if "-E" in args else ""
 selected = set(re.findall(r"test\(=([^)]+)\)", filter_value)) if filter_value else set(names)
@@ -48,8 +55,8 @@ suites = {}
 for name in names:
     if name not in selected:
         continue
-    binary, kind = ("api", "test") if name == "api::works" else ("shard_smoke", "lib")
-    suite = suites.setdefault(f"shard-smoke::{binary}", {"package-name": "shard-smoke", "binary-name": binary, "kind": kind, "testcases": {}})
+    package, binary, kind = ("shard-smoke", "api", "test") if name == "api::works" else ("member-smoke", "member_smoke", "lib") if name == "member::member_works" else ("shard-smoke", "shard_smoke", "lib")
+    suite = suites.setdefault(f"{package}::{binary}", {"package-name": package, "binary-name": binary, "kind": kind, "testcases": {}})
     suite["testcases"][name] = {"ignored": name == "unit::ignored", "filter-match": {"status": "matches"}}
 print(json.dumps({"rust-suites": suites}))
 PY
@@ -58,6 +65,7 @@ fi
 if [[ " $* " == *' --workspace '* && " $* " == *' --no-run '* ]]; then
   printf '{"reason":"compiler-artifact","package_id":"shard-smoke 0.1.0 (path+file:///fixture)","target":{"name":"shard_smoke","kind":["lib"]},"executable":"%s/test-lib"}\n' "$(dirname "$0")"
   printf '{"reason":"compiler-artifact","package_id":"shard-smoke 0.1.0 (path+file:///fixture)","target":{"name":"api","kind":["test"]},"executable":"%s/test-api"}\n' "$(dirname "$0")"
+  printf '{"reason":"compiler-artifact","package_id":"member-smoke 0.1.0 (path+file:///fixture/member)","target":{"name":"member_smoke","kind":["lib"]},"executable":"%s/test-member"}\n' "$(dirname "$0")"
   exit 0
 fi
 if [[ " $* " == *' --doc '* && " $* " == *' --list '* ]]; then
@@ -65,6 +73,7 @@ if [[ " $* " == *' --doc '* && " $* " == *' --list '* ]]; then
 fi
 if [ -n "${HOMEBOY_FAKE_CARGO_LOG:-}" ]; then printf '%s\n' "$*" >> "${HOMEBOY_FAKE_CARGO_LOG}"; fi
 if [ "${1:-}" = 'nextest' ] && [ "${2:-}" = 'run' ]; then
+  [ -z "${HOMEBOY_FAKE_NEXTEST_LOG:-}" ] || printf 'run %s\n' "$*" >> "$HOMEBOY_FAKE_NEXTEST_LOG"
   [ -z "${HOMEBOY_FAKE_NEXTEST_RUN_LOG:-}" ] || printf '%s\n' "$*" >> "$HOMEBOY_FAKE_NEXTEST_RUN_LOG"
   python3 - "$@" <<'PY'
 import json
@@ -78,10 +87,10 @@ mode = os.environ.get("HOMEBOY_NEXTEST_MODE", "pass")
 if mode == "zero":
     raise SystemExit(0)
 for name in names:
-    binary = "api" if name == "api::works" else "shard_smoke"
+    package, binary = ("shard-smoke", "api") if name == "api::works" else ("member-smoke", "member_smoke") if name == "member::member_works" else ("shard-smoke", "shard_smoke")
     event = "failed" if mode == "failure" and name == "unit::beta" else "ignored" if name == "unit::ignored" else "ok"
-    print(json.dumps({"type": "test", "name": f"shard-smoke::{binary}${name}", "event": event}))
-raise SystemExit(1 if mode == "failure" else 0)
+    print(json.dumps({"type": "test", "name": f"{package}::{binary}${name}", "event": event}))
+raise SystemExit(1 if mode == "failure" and "unit::beta" in names else 0)
 PY
   exit $?
 fi
@@ -166,6 +175,7 @@ assert first["schema"] == "homeboy/test-inventory/v1", first
 assert nextest["schema"] == "homeboy/test-inventory/v1", nextest
 assert all(set(test) == {"id", "package", "target", "target_kind", "name"} for test in first["tests"]), first
 assert [test["id"] for test in first["tests"]] == [
+    "member-smoke::lib::member_smoke::member::member_works",
     "shard-smoke::lib::shard_smoke::unit::alpha",
     "shard-smoke::lib::shard_smoke::unit::beta",
     "shard-smoke::lib::shard_smoke::unit::ignored",
@@ -214,12 +224,13 @@ python3 - "$WORK_DIR/cargo.log" <<'PY'
 import sys
 
 lines = open(sys.argv[1]).read().splitlines()
-assert len(lines) == 4, lines
+assert len(lines) == 5, lines
 assert all(" --exact --test-threads=1" in line for line in lines), lines
 assert sum("unit::alpha" in line for line in lines) == 1, lines
 assert sum("unit::beta" in line for line in lines) == 1, lines
 assert sum("unit::ignored" in line for line in lines) == 1, lines
 assert sum("api::works" in line for line in lines) == 1, lines
+assert sum("member::member_works" in line for line in lines) == 1, lines
 PY
 
 python3 - "$WORK_DIR/test-results.json" "$WORK_DIR/annotations/rust-test-shard.json" <<'PY'
@@ -227,9 +238,9 @@ import json
 import sys
 
 results = json.load(open(sys.argv[1]))
-assert results == {"total": 4, "passed": 3, "failed": 0, "skipped": 1, "partial": "rust-shard"}, results
+assert results == {"total": 5, "passed": 4, "failed": 0, "skipped": 1, "partial": "rust-shard"}, results
 record = json.load(open(sys.argv[2]))[0]
-assert (record["executed"], record["passed"], record["failed"], record["skipped"]) == (4, 3, 0, 1), record
+assert (record["executed"], record["passed"], record["failed"], record["skipped"]) == (5, 4, 0, 1), record
 assert record["duration_ms"] >= 0, record
 PY
 
@@ -239,6 +250,7 @@ HOMEBOY_SKIP_LINT=1 \
 HOMEBOY_RUST_TEST_RUNNER=nextest \
 HOMEBOY_TEST_SHARD_MANIFEST="$WORK_DIR/nextest-manifest.json" \
 HOMEBOY_FAKE_CARGO_LOG="$WORK_DIR/cargo.log" \
+HOMEBOY_FAKE_NEXTEST_LOG="$WORK_DIR/nextest-selection.log" \
 HOMEBOY_RUNTIME_WRITE_TEST_RESULTS="$WORK_DIR/write-test-results.sh" \
 HOMEBOY_RUNTIME_SIDECAR_WRITER="$WORK_DIR/sidecar-writer.sh" \
 HOMEBOY_TEST_RESULTS_FILE="$WORK_DIR/nextest-test-results.json" \
@@ -252,17 +264,27 @@ python3 - "$WORK_DIR/cargo.log" <<'PY'
 import sys
 
 lines = open(sys.argv[1]).read().splitlines()
-nextest = lines[4:]
+nextest = lines[5:]
 assert len(nextest) == 1, lines
-assert "nextest run" in nextest[0] and " --test-threads 1 " in nextest[0], nextest
-assert "test(=unit::alpha)" in nextest[0] and "test(=unit::beta)" in nextest[0] and "test(=api::works)" in nextest[0], nextest
+assert "nextest run" in nextest[0] and " --workspace " in nextest[0] and " --test-threads 1 " in nextest[0], nextest
+assert "test(=unit::alpha)" in nextest[0] and "test(=unit::beta)" in nextest[0] and "test(=api::works)" in nextest[0] and "test(=member::member_works)" in nextest[0], nextest
 PY
 
 python3 - "$WORK_DIR/nextest-test-results.json" <<'PY'
 import json
 import sys
 
-assert json.load(open(sys.argv[1])) == {"total": 4, "passed": 3, "failed": 0, "skipped": 1, "partial": "rust-shard"}
+assert json.load(open(sys.argv[1])) == {"total": 5, "passed": 4, "failed": 0, "skipped": 1, "partial": "rust-shard"}
+PY
+
+python3 - "$WORK_DIR/nextest-selection.log" <<'PY'
+import sys
+
+lines = open(sys.argv[1]).read().splitlines()
+assert len(lines) == 3, lines
+assert lines[1].startswith("list nextest list") and lines[2].startswith("run nextest run"), lines
+assert all(" --workspace " in line for line in lines), lines
+assert all("test(=member::member_works)" in line for line in lines[1:]), lines
 PY
 
 # A small limit forces deterministic batches. Every filter stays below the
@@ -290,15 +312,49 @@ import sys
 
 limit = 150
 lines = open(sys.argv[1]).read().splitlines()
-assert len(lines) == 4, lines
+assert len(lines) == 5, lines
 selected = []
 for line in lines:
     filter_value = line.split(" -E ", 1)[1]
     assert len(filter_value.encode()) <= limit, filter_value
     selected.extend(re.findall(r"test\(=([^)]+)\)", filter_value))
-assert selected == ["unit::alpha", "unit::beta", "unit::ignored", "api::works"], selected
+assert selected == ["member::member_works", "unit::alpha", "unit::beta", "unit::ignored", "api::works"], selected
 assert len(selected) == len(set(selected)), selected
-assert json.load(open(sys.argv[2])) == {"total": 4, "passed": 3, "failed": 0, "skipped": 1, "partial": "rust-shard"}
+assert json.load(open(sys.argv[2])) == {"total": 5, "passed": 4, "failed": 0, "skipped": 1, "partial": "rust-shard"}
+PY
+
+# A nonzero batch exit remains aggregate evidence: every prevalidated batch
+# runs exactly once, and the final shard fails only after all outcomes exist.
+set +e
+HOMEBOY_EXTENSION_PATH="$EXTENSION_DIR" \
+HOMEBOY_COMPONENT_PATH="$PROJECT_DIR" \
+HOMEBOY_SKIP_LINT=1 \
+HOMEBOY_RUST_TEST_RUNNER=nextest \
+HOMEBOY_RUST_NEXTEST_FILTER_MAX_BYTES=150 \
+HOMEBOY_NEXTEST_MODE=failure \
+HOMEBOY_TEST_SHARD_MANIFEST="$WORK_DIR/nextest-manifest.json" \
+HOMEBOY_FAKE_NEXTEST_RUN_LOG="$WORK_DIR/batched-failure.log" \
+HOMEBOY_RUNTIME_WRITE_TEST_RESULTS="$WORK_DIR/write-test-results.sh" \
+HOMEBOY_RUNTIME_SIDECAR_WRITER="$WORK_DIR/sidecar-writer.sh" \
+HOMEBOY_TEST_RESULTS_FILE="$WORK_DIR/batched-failure-results.json" \
+HOMEBOY_ANNOTATIONS_DIR="$WORK_DIR/annotations" \
+HOMEBOY_RUNTIME_RUNNER_PRELUDE="$WORK_DIR/runner-prelude.sh" \
+HOMEBOY_RUNTIME_COMMAND_CAPTURE="$WORK_DIR/command-capture.sh" \
+PATH="$BIN_DIR:$PATH" \
+bash "$EXTENSION_DIR/scripts/test-runner.sh" > "$WORK_DIR/batched-failure.out" 2>&1
+BATCH_FAILURE_EXIT=$?
+set -e
+python3 - "$WORK_DIR/batched-failure.log" "$WORK_DIR/batched-failure-results.json" "$BATCH_FAILURE_EXIT" <<'PY'
+import json
+import re
+import sys
+
+lines = open(sys.argv[1]).read().splitlines()
+selected = [name for line in lines for name in re.findall(r"test\(=([^)]+)\)", line)]
+assert int(sys.argv[3]) != 0, sys.argv[3]
+assert selected == ["member::member_works", "unit::alpha", "unit::beta", "unit::ignored", "api::works"], selected
+assert len(selected) == len(set(selected)), selected
+assert json.load(open(sys.argv[2])) == {"total": 5, "passed": 3, "failed": 1, "skipped": 1, "partial": "rust-shard"}
 PY
 
 # A list validation failure is preflight-only: no batch run may have started.
@@ -345,10 +401,39 @@ fi
 # This manifest produces a monolithic filter well beyond typical ARG_MAX, but
 # bounded batches complete and retain the complete aggregate evidence.
 LARGE_INVENTORY="$WORK_DIR/large-nextest-inventory.json"
+LARGE_ENVIRONMENT="$(python3 -c 'print("x" * 100000)')"
+GETCONF_DIR="$WORK_DIR/getconf-bin"
+mkdir -p "$GETCONF_DIR"
+cat > "$GETCONF_DIR/getconf" <<'EOF'
+#!/usr/bin/env bash
+printf '131072\n'
+EOF
+chmod +x "$GETCONF_DIR/getconf"
+
+# A process with no remaining exec payload fails before either list or run.
+set +e
+HOMEBOY_EXTENSION_PATH="$EXTENSION_DIR" \
+HOMEBOY_COMPONENT_PATH="$PROJECT_DIR" \
+HOMEBOY_SKIP_LINT=1 \
+HOMEBOY_RUST_TEST_RUNNER=nextest \
+HOMEBOY_INHERITED_PADDING="$LARGE_ENVIRONMENT" \
+HOMEBOY_TEST_SHARD_MANIFEST="$WORK_DIR/nextest-manifest.json" \
+HOMEBOY_RUNTIME_RUNNER_PRELUDE="$WORK_DIR/runner-prelude.sh" \
+HOMEBOY_RUNTIME_COMMAND_CAPTURE="$WORK_DIR/command-capture.sh" \
+PATH="$GETCONF_DIR:$BIN_DIR:$PATH" \
+bash "$EXTENSION_DIR/scripts/test-runner.sh" > "$WORK_DIR/no-safe-payload.out" 2>&1
+NO_SAFE_PAYLOAD_EXIT=$?
+set -e
+if [ "$NO_SAFE_PAYLOAD_EXIT" -eq 0 ] || ! grep -q 'no safe nextest filter payload remains' "$WORK_DIR/no-safe-payload.out"; then
+  printf 'Expected no-safe-payload nextest filter rejection\n' >&2
+  exit 1
+fi
+
 HOMEBOY_EXTENSION_PATH="$EXTENSION_DIR" \
 HOMEBOY_COMPONENT_PATH="$PROJECT_DIR" \
 HOMEBOY_RUST_TEST_RUNNER=nextest \
 HOMEBOY_NEXTEST_TEST_COUNT=3000 \
+HOMEBOY_INHERITED_PADDING="$LARGE_ENVIRONMENT" \
 HOMEBOY_TEST_INVENTORY_ONLY=1 \
 HOMEBOY_TEST_INVENTORY_FILE="$LARGE_INVENTORY" \
 HOMEBOY_RUNTIME_RUNNER_PRELUDE="$WORK_DIR/runner-prelude.sh" \
@@ -370,6 +455,8 @@ HOMEBOY_COMPONENT_PATH="$PROJECT_DIR" \
 HOMEBOY_SKIP_LINT=1 \
 HOMEBOY_RUST_TEST_RUNNER=nextest \
 HOMEBOY_NEXTEST_TEST_COUNT=3000 \
+HOMEBOY_RUST_NEXTEST_FILTER_MAX_BYTES=999999 \
+HOMEBOY_INHERITED_PADDING="$LARGE_ENVIRONMENT" \
 HOMEBOY_TEST_SHARD_MANIFEST="$WORK_DIR/large-nextest-manifest.json" \
 HOMEBOY_FAKE_NEXTEST_RUN_LOG="$WORK_DIR/large-nextest.log" \
 HOMEBOY_RUNTIME_WRITE_TEST_RESULTS="$WORK_DIR/write-test-results.sh" \
@@ -379,7 +466,7 @@ HOMEBOY_ANNOTATIONS_DIR="$WORK_DIR/annotations" \
 HOMEBOY_RUNTIME_RUNNER_PRELUDE="$WORK_DIR/runner-prelude.sh" \
 HOMEBOY_RUNTIME_COMMAND_CAPTURE="$WORK_DIR/command-capture.sh" \
 PATH="$BIN_DIR:$PATH" \
-bash "$EXTENSION_DIR/scripts/test-runner.sh" > "$WORK_DIR/large-nextest.out"
+bash "$EXTENSION_DIR/scripts/test-runner.sh" > "$WORK_DIR/large-nextest.out" 2>&1
 python3 - "$WORK_DIR/large-nextest.log" "$WORK_DIR/large-nextest-results.json" <<'PY'
 import json
 import sys
@@ -389,6 +476,10 @@ assert len(filters) > 1, len(filters)
 assert all(len(value.encode()) <= 65536 for value in filters), max(map(lambda value: len(value.encode()), filters))
 assert json.load(open(sys.argv[2])) == {"total": 3000, "passed": 3000, "failed": 0, "skipped": 0, "partial": "rust-shard"}
 PY
+if ! grep -q 'filter limit clamped from 999999' "$WORK_DIR/large-nextest.out"; then
+  printf 'Expected oversized configured nextest filter limit to clamp\n' >&2
+  exit 1
+fi
 
 set +e
 HOMEBOY_EXTENSION_PATH="$EXTENSION_DIR" \
@@ -448,10 +539,10 @@ import json
 import sys
 
 results = json.load(open(sys.argv[1]))
-assert results == {"total": 4, "passed": 2, "failed": 1, "skipped": 1, "partial": "rust-shard"}, results
+assert results == {"total": 5, "passed": 3, "failed": 1, "skipped": 1, "partial": "rust-shard"}, results
 record = json.load(open(sys.argv[2]))[0]
 assert record["status"] == "failed", record
-assert (record["total"], record["executed"], record["passed"], record["failed"], record["skipped"]) == (4, 4, 2, 1, 1), record
+assert (record["total"], record["executed"], record["passed"], record["failed"], record["skipped"]) == (5, 5, 3, 1, 1), record
 assert record["duration_ms"] >= 0, record
 PY
 
