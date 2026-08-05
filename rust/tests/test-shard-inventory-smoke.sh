@@ -6,6 +6,23 @@ EXTENSION_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 WORK_DIR="$(mktemp -d -t homeboy-rust-shards.XXXXXX)"
 trap 'rm -rf "$WORK_DIR"' EXIT
 
+# The manifest must expose the same whole-byte contract enforced by the runner.
+python3 - "$EXTENSION_DIR/rust.json" <<'PY'
+import json
+import sys
+
+settings = json.load(open(sys.argv[1], encoding="utf-8"))["settings"]
+setting = next(item for item in settings if item["id"] == "rust_nextest_filter_max_bytes")
+assert setting["type"] == "integer", setting
+
+def accepts(value):
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+assert accepts(setting["default"]), setting
+assert accepts(65536)
+assert not accepts(65536.5)
+PY
+
 PROJECT_DIR="$WORK_DIR/project"
 BIN_DIR="$WORK_DIR/bin"
 mkdir -p "$PROJECT_DIR/src" "$PROJECT_DIR/member/src" "$BIN_DIR" "$WORK_DIR/annotations"

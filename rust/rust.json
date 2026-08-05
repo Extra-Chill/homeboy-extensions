@@ -1,6 +1,6 @@
 {
   "name": "Rust",
-  "version": "1.32.3",
+  "version": "1.32.4",
   "icon": "gearshape.2.fill",
   "description": "Cargo CLI integration for Rust components",
   "author": "Extra Chill",
@@ -133,7 +133,7 @@
     {
       "id": "rust_nextest_filter_max_bytes",
       "label": "Rust nextest filter maximum bytes",
-      "type": "number",
+      "type": "integer",
       "default": 65536,
       "description": "Maximum UTF-8 byte length for each serialized nextest -E filter during shard replay. Selected identities are deterministically batched under this bound."
     },
