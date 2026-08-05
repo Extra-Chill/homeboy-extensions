@@ -61,15 +61,13 @@ def cargo_inventory(workspace_root, packages):
             continue
         target = message.get("target", {})
         kinds = target.get("kind", [])
-        if not set(kinds).intersection({"lib", "bin", "test", "bench", "example"}):
-            continue
         listed = run([message["executable"], "--list"], workspace_root)
         if listed.returncode:
             fail(f"could not list tests for {target.get('name', 'unknown target')}: {listed.stderr.strip()}")
         package = packages.get(message.get("package_id"))
         if not package:
             fail("cargo emitted a test executable without a resolvable package")
-        target_kind = next(kind for kind in kinds if kind in {"lib", "bin", "test", "bench", "example"})
+        target_kind = kinds[0] if kinds else "unknown"
         for test_line in listed.stdout.splitlines():
             name, separator, _kind = test_line.partition(": ")
             if separator and name:
