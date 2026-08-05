@@ -56,6 +56,8 @@ if [ "${1:-}" = 'metadata' ]; then
 fi
 if [ "${1:-}" = 'nextest' ] && [ "${2:-}" = 'list' ]; then
   [ -z "${HOMEBOY_FAKE_NEXTEST_LOG:-}" ] || printf 'list %s\n' "$*" >> "$HOMEBOY_FAKE_NEXTEST_LOG"
+  # cargo-nextest writes build progress to stderr before its JSON list payload.
+  printf '   Compiling shard-smoke v0.1.0\n' >&2
   if [ "${HOMEBOY_NEXTEST_LIST_MODE:-pass}" = zero ]; then printf '%s\n' '{"rust-suites":{}}'; exit 0; fi
   python3 - "$@" <<'PY'
 import json
@@ -132,8 +134,21 @@ homeboy_runner_init() {
 should_run_step() { return 0; }
 EOF
 cat > "$WORK_DIR/command-capture.sh" <<'EOF'
-homeboy_run_step_capture() { local output_var="$1" exit_var="$2"; shift 3; [ "$1" = -- ] && shift; local output status=0; output="$(mktemp)"; "$@" >"$output" 2>&1 || status=$?; printf -v "$output_var" '%s' "$output"; printf -v "$exit_var" '%s' "$status"; return "$status"; }
-homeboy_cleanup_step_capture() { rm -f "$1"; }
+homeboy_run_step_capture() {
+  local output_var="$1" exit_var="$2" step_name="$3"
+  shift 3
+  [ "${1:-}" != -- ] || shift
+  local output_file
+  output_file="$(mktemp "${TMPDIR:-/tmp}/homeboy-command.XXXXXX")"
+  set +e
+  "$@" 2>&1 | tee "$output_file"
+  local command_exit=${PIPESTATUS[0]}
+  set -e
+  printf -v "$output_var" '%s' "$output_file"
+  printf -v "$exit_var" '%s' "$command_exit"
+  return "$command_exit"
+}
+homeboy_cleanup_step_capture() { local output_file="$1"; [ -z "$output_file" ] || rm -f "$output_file"; }
 EOF
 cat > "$WORK_DIR/write-test-results.sh" <<'EOF'
 homeboy_write_test_results() {

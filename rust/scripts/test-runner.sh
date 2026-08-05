@@ -322,7 +322,24 @@ rust_validate_nextest_membership() {
 import json
 import sys
 
-listed = json.load(open(sys.argv[1], encoding="utf-8"))
+raw = open(sys.argv[1], encoding="utf-8", errors="replace").read()
+decoder = json.JSONDecoder()
+listed = []
+offset = 0
+while (index := raw.find("{", offset)) != -1:
+    try:
+        candidate, end = decoder.raw_decode(raw[index:])
+    except json.JSONDecodeError:
+        offset = index + 1
+        continue
+    if isinstance(candidate, dict) and "rust-suites" in candidate:
+        listed.append(candidate)
+    offset = index + end
+if len(listed) != 1:
+    raise SystemExit(
+        f"Rust test shard error: expected exactly one nextest list JSON document, found {len(listed)}"
+    )
+listed = listed[0]
 expected = {item["id"] for item in json.load(open(sys.argv[2], encoding="utf-8"))["selected"]}
 actual = set()
 for suite in listed.get("rust-suites", {}).values():
