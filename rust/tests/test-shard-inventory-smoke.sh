@@ -243,7 +243,8 @@ HOMEBOY_RUNTIME_COMMAND_CAPTURE="$WORK_DIR/command-capture.sh" \
 PATH="$BIN_DIR:$PATH" \
 bash "$EXTENSION_DIR/scripts/test-runner.sh" > "$WORK_DIR/inventory-nextest.out"
 
-python3 - "$INVENTORY_A" "$INVENTORY_B" "$INVENTORY_NEXTEST" "$WORK_DIR/manifest.json" "$WORK_DIR/nextest-manifest.json" <<'PY'
+python3 - "$INVENTORY_A" "$INVENTORY_B" "$INVENTORY_NEXTEST" "$WORK_DIR/manifest.json" "$WORK_DIR/nextest-manifest.json" "$WORK_DIR/legacy-nextest-manifest.json" <<'PY'
+import hashlib
 import json
 import sys
 
@@ -280,7 +281,37 @@ assert all(isinstance(test_id, str) for test_id in manifest["tests"]), manifest
 json.dump(manifest, open(sys.argv[4], "w"))
 nextest_manifest = dict(manifest, runner=nextest["runner"], inventory_fingerprint=nextest["inventory_fingerprint"], runner_fingerprint=nextest["runner_fingerprint"], workspace_fingerprint=nextest["workspace_fingerprint"], tests=[test["id"] for test in nextest["tests"]])
 json.dump(nextest_manifest, open(sys.argv[5], "w"))
+
+# This is the exact v1 nextest projection emitted before ignored tests were
+# listed: only runnable tests and no expected_outcome metadata participate.
+legacy_tests = [{key: test[key] for key in ("id", "package", "target", "target_kind", "name")} for test in nextest["tests"] if test.get("expected_outcome") != "skipped"]
+legacy_inventory = {key: nextest[key] for key in ("schema", "runner", "runner_fingerprint", "workspace_fingerprint")}
+legacy_inventory["tests"] = legacy_tests
+legacy_fingerprint = hashlib.sha256(json.dumps(legacy_inventory, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+legacy_manifest = dict(nextest_manifest, inventory_fingerprint=legacy_fingerprint, tests=[legacy_tests[0]["id"]])
+json.dump(legacy_manifest, open(sys.argv[6], "w"))
 PY
+
+# A parent v1 manifest may carry only the legacy runnable projection. The
+# candidate accepts that exact fingerprint while resolving IDs against its
+# richer inventory; tampered legacy selections remain typed rejections.
+PATH="$BIN_DIR:$PATH" python3 "$EXTENSION_DIR/scripts/test-shard-inventory.py" --project "$PROJECT_DIR" --runner nextest --output "$WORK_DIR/legacy-nextest-selected.json" --manifest "$WORK_DIR/legacy-nextest-manifest.json"
+python3 - "$WORK_DIR/legacy-nextest-selected.json" "$WORK_DIR/legacy-nextest-manifest.json" "$WORK_DIR/legacy-tampered.json" "$WORK_DIR/legacy-stale.json" <<'PY'
+import json
+import sys
+
+selected = json.load(open(sys.argv[1]))["selected"]
+assert len(selected) == 1 and selected[0]["expected_outcome"] == "executed", selected
+manifest = json.load(open(sys.argv[2]))
+json.dump(dict(manifest, tests=manifest["tests"] + ["shard-smoke::lib::shard_smoke::unit::ignored"]), open(sys.argv[3], "w"))
+json.dump(dict(manifest, workspace_fingerprint="stale"), open(sys.argv[4], "w"))
+PY
+for invalid in "$WORK_DIR/legacy-tampered.json" "$WORK_DIR/legacy-stale.json"; do
+  if PATH="$BIN_DIR:$PATH" python3 "$EXTENSION_DIR/scripts/test-shard-inventory.py" --project "$PROJECT_DIR" --runner nextest --output "$WORK_DIR/legacy-invalid.json" --manifest "$invalid" >/dev/null 2>&1; then
+    printf 'Expected typed legacy manifest rejection: %s\n' "$invalid" >&2
+    exit 1
+  fi
+done
 
 if [ -e "$BENCH_LIST_LOG" ] || grep -q 'CARGO_MANIFEST_DIR not set' "$WORK_DIR/inventory-a.out"; then
   printf 'Expected non-test bench artifact to remain uninvoked and unreported\n' >&2
