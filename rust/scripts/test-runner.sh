@@ -190,7 +190,35 @@ PY
 }
 
 rust_nextest_filter() {
-    jq -r '[.selected[] | "package(=\(.package)) and kind(=\(.target_kind)) and binary(=\(.target)) and test(=\(.name))"] | join(" + ")' "$1"
+    python3 - "$1" <<'PY'
+import json
+import sys
+
+def escape(value):
+    if not isinstance(value, str) or not value:
+        raise SystemExit("Rust test shard error: nextest filter identity contains an empty or non-string value")
+    escaped = []
+    for character in value:
+        if character == "\\": escaped.append("\\\\")
+        elif character == ")": escaped.append("\\)")
+        elif character == ",": escaped.append("\\,")
+        elif character == "\n": escaped.append("\\n")
+        elif character == "\r": escaped.append("\\r")
+        elif character == "\t": escaped.append("\\t")
+        elif ord(character) < 32 or ord(character) == 127:
+            raise SystemExit("Rust test shard error: nextest filter identity contains a control character")
+        else: escaped.append(character)
+    return "".join(escaped)
+
+selected = json.load(open(sys.argv[1], encoding="utf-8"))["selected"]
+terms = []
+for item in selected:
+    package, kind, target, name = (escape(item.get(key)) for key in ("package", "target_kind", "target", "name"))
+    terms.append(f"package(={package}) and kind(={kind}) and binary(={target}) and test(={name})")
+if not terms:
+    raise SystemExit("Rust test shard error: nextest filter cannot represent an empty selection")
+print(" + ".join(terms))
+PY
 }
 
 rust_nextest_filter_max_bytes() {
@@ -260,7 +288,20 @@ current = []
 current_size = 0
 
 def term(item):
-    return f'package(={item["package"]}) and kind(={item["target_kind"]}) and binary(={item["target"]}) and test(={item["name"]})'
+    def escape(value):
+        if not isinstance(value, str) or not value:
+            raise SystemExit("Rust test shard error: nextest filter identity contains an empty or non-string value")
+        escaped = []
+        for character in value:
+            if character == "\\": escaped.append("\\\\")
+            elif character == ")": escaped.append("\\)")
+            elif character == ",": escaped.append("\\,")
+            elif character in "\n\r\t" or ord(character) < 32 or ord(character) == 127:
+                raise SystemExit("Rust test shard error: nextest filter identity contains a control character")
+            else: escaped.append(character)
+        return "".join(escaped)
+    package, kind, target, name = (escape(item.get(key)) for key in ("package", "target_kind", "target", "name"))
+    return f"package(={package}) and kind(={kind}) and binary(={target}) and test(={name})"
 
 for item in shard["selected"]:
     item_term = term(item)
