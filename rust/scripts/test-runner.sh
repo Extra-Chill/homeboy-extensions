@@ -348,12 +348,37 @@ import json
 import sys
 
 expected = json.load(open(sys.argv[2], encoding="utf-8"))["selected"]
-names = {}
+
+def planned_identity(item):
+    values = (item.get("package"), item.get("target_kind"), item.get("target"), item.get("name"))
+    if not all(isinstance(value, str) and value for value in values):
+        raise SystemExit("Rust test shard error: shard manifest contains a malformed planned nextest identity")
+    return values
+
+def emitted_identity(value):
+    # libtest-json-plus omits Cargo's target kind and encodes its remaining
+    # identity as package::target$test. Reconcile that structured projection,
+    # rather than mutating either serialized identifier.
+    if not isinstance(value, str):
+        raise SystemExit("Rust test shard error: nextest emitted a malformed test identity")
+    package_target, separator, test = value.rpartition("$")
+    package, target_separator, target = package_target.partition("::")
+    if not separator or not target_separator or not all((package, target, test)):
+        raise SystemExit(f"Rust test shard error: nextest emitted a malformed test identity: {value!r}")
+    return package, target, test
+
+planned_by_emitted = {}
+expected_identities = set()
 for item in expected:
-    key = f'{item["package"]}::{item["target"]}${item["name"]}'
-    if key in names:
-        raise SystemExit(f"Rust test shard error: nextest output identity is ambiguous: {key}")
-    names[key] = item["id"]
+    planned = planned_identity(item)
+    package, target_kind, target, test = planned
+    if planned in expected_identities:
+        raise SystemExit(f"Rust test shard error: shard manifest contains a duplicate planned nextest identity: {package}::{target_kind}::{target}::{test}")
+    expected_identities.add(planned)
+    emitted = package, target, test
+    if emitted in planned_by_emitted:
+        raise SystemExit(f"Rust test shard error: nextest output identity is ambiguous: {package}::{target}${test}")
+    planned_by_emitted[emitted] = planned
 passed = failed = skipped = 0
 actual = set()
 for line in open(sys.argv[1], encoding="utf-8", errors="replace"):
@@ -366,15 +391,15 @@ for line in open(sys.argv[1], encoding="utf-8", errors="replace"):
     status = event.get("event")
     if status not in {"ok", "passed", "failed", "fail", "ignored", "skipped"}:
         continue
-    name = event.get("name")
-    if name not in names or names[name] in actual:
-        raise SystemExit(f"Rust test shard error: nextest emitted an unexpected or duplicate test identity: {name}")
-    actual.add(names[name])
+    emitted = emitted_identity(event.get("name"))
+    if emitted not in planned_by_emitted or planned_by_emitted[emitted] in actual:
+        raise SystemExit(f"Rust test shard error: nextest emitted an unexpected or duplicate test identity: {event.get('name')}")
+    actual.add(planned_by_emitted[emitted])
     if status in {"ok", "passed"}: passed += 1
     elif status in {"failed", "fail"}: failed += 1
     else: skipped += 1
-if actual != set(names.values()):
-    raise SystemExit(f"Rust test shard error: nextest executed membership does not match the shard manifest (missing={sorted(set(names.values()) - actual)[:1]})")
+if actual != expected_identities:
+    raise SystemExit(f"Rust test shard error: nextest executed membership does not match the shard manifest (missing={sorted(expected_identities - actual)[:1]})")
 print(f"{passed}\t{failed}\t{skipped}")
 PY
 }
