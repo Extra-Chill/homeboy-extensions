@@ -724,12 +724,14 @@ if [ -n "${HOMEBOY_TEST_SHARD_MANIFEST:-}${HOMEBOY_TEST_INVENTORY_FILE:-}${HOMEB
             rm -f "$SHARD_DATA"
             exit 1
         fi
-        # Validate every planned filter before any test batch can execute.
+        # Capture filter argv values once. Preflight and execution consume the
+        # same shell-owned bytes, never a mutable filter file.
+        declare -A NEXTEST_FILTERS NEXTEST_FILTER_DIGESTS
         for NEXTEST_BATCH in "$NEXTEST_BATCH_DIR"/*.json; do
             [ -f "$NEXTEST_BATCH" ] || continue
             NEXTEST_FILTER="$(rust_nextest_filter "$NEXTEST_BATCH")"
-            printf '%s' "$NEXTEST_FILTER" > "${NEXTEST_BATCH}.filter"
-            shasum -a 256 "${NEXTEST_BATCH}.filter" | cut -d ' ' -f 1 > "${NEXTEST_BATCH}.filter.sha256"
+            NEXTEST_FILTERS["$NEXTEST_BATCH"]="$NEXTEST_FILTER"
+            NEXTEST_FILTER_DIGESTS["$NEXTEST_BATCH"]="$(printf '%s' "$NEXTEST_FILTER" | shasum -a 256 | cut -d ' ' -f 1)"
             NEXTEST_LIST_JSON="$(mktemp)"
             homeboy_run_step_capture NEXTEST_LIST_OUTPUT NEXTEST_LIST_EXIT "cargo nextest list" -- rust_capture_stdout "$NEXTEST_LIST_JSON" cargo nextest list --workspace --message-format json -E "$NEXTEST_FILTER" || true
             if [ "$NEXTEST_LIST_EXIT" -ne 0 ] || ! rust_validate_nextest_membership "$NEXTEST_LIST_JSON" "$NEXTEST_BATCH"; then
@@ -749,8 +751,8 @@ if [ -n "${HOMEBOY_TEST_SHARD_MANIFEST:-}${HOMEBOY_TEST_INVENTORY_FILE:-}${HOMEB
         SHARD_EXIT=0
         for NEXTEST_BATCH in "$NEXTEST_BATCH_DIR"/*.json; do
             [ -f "$NEXTEST_BATCH" ] || continue
-            NEXTEST_FILTER="$(<"${NEXTEST_BATCH}.filter")"
-            if [ "$(shasum -a 256 "${NEXTEST_BATCH}.filter" | cut -d ' ' -f 1)" != "$(<"${NEXTEST_BATCH}.filter.sha256")" ]; then
+            NEXTEST_FILTER="${NEXTEST_FILTERS[$NEXTEST_BATCH]}"
+            if [ "$(printf '%s' "$NEXTEST_FILTER" | shasum -a 256 | cut -d ' ' -f 1)" != "${NEXTEST_FILTER_DIGESTS[$NEXTEST_BATCH]}" ]; then
                 echo "Rust test shard error: nextest filter changed after preflight." >&2
                 exit 1
             fi
