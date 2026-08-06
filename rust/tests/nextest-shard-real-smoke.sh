@@ -75,8 +75,9 @@ import json
 import sys
 
 inventory = json.load(open(sys.argv[1], encoding="utf-8"))
-selected = [test["id"] for test in inventory["tests"] if test["name"] == "tests::selected_parent"]
-assert len(selected) == 1, inventory["tests"]
+selected = [test["id"] for test in inventory["tests"] if test["name"] in {"tests::selected_parent", "tests::planned_ignored"}]
+assert len(selected) == 2, inventory["tests"]
+assert sum(test["expected_outcome"] == "skipped" for test in inventory["tests"] if test["id"] in selected) == 1, inventory["tests"]
 manifest = {key: inventory[key] for key in ("runner", "inventory_fingerprint", "runner_fingerprint", "workspace_fingerprint")}
 manifest["schema"] = "homeboy/test-shard-manifest/v1"
 manifest["tests"] = selected
@@ -120,7 +121,7 @@ assert any(event.get("event") in {"started", "queued", "running"} and event.get(
 assert any(event.get("event") == "ignored" and event.get("name", "").endswith("$tests::ignored_child_helper") for event in events), events
 assert any(event.get("event") in {"ok", "passed"} and event.get("name", "").endswith("$tests::selected_parent") for event in events), events
 results = json.load(open(sys.argv[2], encoding="utf-8"))
-assert results == {"total": 1, "passed": 1, "failed": 0, "skipped": 0, "partial": "rust-shard"}, results
+assert results == {"total": 2, "passed": 1, "failed": 0, "skipped": 1, "partial": "rust-shard"}, results
 PY
 
 printf 'real nextest shard smoke ok\n'

@@ -141,6 +141,8 @@ mode = os.environ.get("HOMEBOY_NEXTEST_MODE", "pass")
 if mode == "zero":
     raise SystemExit(0)
 for name in names:
+    if mode == "planned-ignored-absent" and name == "unit::ignored":
+        continue
     if mode == "missing-terminal" and name == "unit::beta":
         continue
     package, binary = ("shard-smoke", "api") if name == "api::works" else ("member-smoke", "member_smoke") if name == "member::member_works" else ("shard-smoke", "shard_smoke")
@@ -605,6 +607,8 @@ HOMEBOY_SKIP_LINT=1 \
 HOMEBOY_RUST_TEST_RUNNER=nextest \
 HOMEBOY_NEXTEST_MODE=zero \
 HOMEBOY_TEST_SHARD_MANIFEST="$WORK_DIR/nextest-manifest.json" \
+HOMEBOY_RUNTIME_WRITE_TEST_RESULTS="$WORK_DIR/write-test-results.sh" \
+HOMEBOY_TEST_RESULTS_FILE="$WORK_DIR/nextest-zero-results.json" \
 HOMEBOY_RUNTIME_RUNNER_PRELUDE="$WORK_DIR/runner-prelude.sh" \
 HOMEBOY_RUNTIME_COMMAND_CAPTURE="$WORK_DIR/command-capture.sh" \
 PATH="$BIN_DIR:$PATH" \
@@ -624,6 +628,12 @@ if [ "$ZERO_EXIT" -eq 0 ] || ! grep -q 'nextest executed membership does not mat
   printf 'Expected nextest zero-selection shard replay to fail closed\n' >&2
   exit 1
 fi
+python3 - "$WORK_DIR/nextest-zero-results.json" <<'PY'
+import json
+import sys
+
+assert json.load(open(sys.argv[1])) == {"total": 0, "passed": 0, "failed": 0, "skipped": 0, "partial": "rust-shard"}
+PY
 
 set +e
 HOMEBOY_EXTENSION_PATH="$EXTENSION_DIR" \
@@ -632,6 +642,8 @@ HOMEBOY_SKIP_LINT=1 \
 HOMEBOY_RUST_TEST_RUNNER=nextest \
 HOMEBOY_NEXTEST_MODE=malformed \
 HOMEBOY_TEST_SHARD_MANIFEST="$WORK_DIR/nextest-manifest.json" \
+HOMEBOY_RUNTIME_WRITE_TEST_RESULTS="$WORK_DIR/write-test-results.sh" \
+HOMEBOY_TEST_RESULTS_FILE="$WORK_DIR/nextest-malformed-results.json" \
 HOMEBOY_RUNTIME_RUNNER_PRELUDE="$WORK_DIR/runner-prelude.sh" \
 HOMEBOY_RUNTIME_COMMAND_CAPTURE="$WORK_DIR/command-capture.sh" \
 PATH="$BIN_DIR:$PATH" \
@@ -642,6 +654,12 @@ if [ "$MALFORMED_EXIT" -eq 0 ] || ! grep -q 'nextest emitted a malformed test id
   printf 'Expected malformed nextest event identity to fail closed\n' >&2
   exit 1
 fi
+python3 - "$WORK_DIR/nextest-malformed-results.json" <<'PY'
+import json
+import sys
+
+assert json.load(open(sys.argv[1])) == {"total": 0, "passed": 0, "failed": 0, "skipped": 0, "partial": "rust-shard"}
+PY
 
 assert_nextest_event_rejected() {
   local mode="$1" expected="$2" output
@@ -685,6 +703,27 @@ HOMEBOY_RUNTIME_COMMAND_CAPTURE="$WORK_DIR/command-capture.sh" \
 PATH="$BIN_DIR:$PATH" \
 bash "$EXTENSION_DIR/scripts/test-runner.sh" > "$WORK_DIR/ignored-outside.out"
 python3 - "$WORK_DIR/ignored-outside-results.json" <<'PY'
+import json
+import sys
+
+assert json.load(open(sys.argv[1])) == {"total": 5, "passed": 4, "failed": 0, "skipped": 1, "partial": "rust-shard"}
+PY
+
+# nextest list marked unit::ignored as skipped. Default nextest execution does
+# not terminalize it, but the immutable manifest still reports one skipped test.
+HOMEBOY_EXTENSION_PATH="$EXTENSION_DIR" \
+HOMEBOY_COMPONENT_PATH="$PROJECT_DIR" \
+HOMEBOY_SKIP_LINT=1 \
+HOMEBOY_RUST_TEST_RUNNER=nextest \
+HOMEBOY_NEXTEST_MODE=planned-ignored-absent \
+HOMEBOY_TEST_SHARD_MANIFEST="$WORK_DIR/nextest-manifest.json" \
+HOMEBOY_RUNTIME_WRITE_TEST_RESULTS="$WORK_DIR/write-test-results.sh" \
+HOMEBOY_TEST_RESULTS_FILE="$WORK_DIR/planned-ignored-results.json" \
+HOMEBOY_RUNTIME_RUNNER_PRELUDE="$WORK_DIR/runner-prelude.sh" \
+HOMEBOY_RUNTIME_COMMAND_CAPTURE="$WORK_DIR/command-capture.sh" \
+PATH="$BIN_DIR:$PATH" \
+bash "$EXTENSION_DIR/scripts/test-runner.sh" > "$WORK_DIR/planned-ignored.out"
+python3 - "$WORK_DIR/planned-ignored-results.json" <<'PY'
 import json
 import sys
 

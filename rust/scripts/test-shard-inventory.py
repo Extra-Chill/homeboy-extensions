@@ -76,7 +76,7 @@ def cargo_inventory(workspace_root, packages):
 
 
 def nextest_inventory(workspace_root):
-    result = run(["cargo", "nextest", "list", "--workspace", "--message-format", "json"], workspace_root)
+    result = run(["cargo", "nextest", "list", "--workspace", "--run-ignored", "all", "--message-format", "json"], workspace_root)
     if result.returncode:
         fail(f"could not enumerate nextest tests: {result.stderr.strip()}")
     try:
@@ -95,7 +95,16 @@ def nextest_inventory(workspace_root):
                 fail("nextest emitted an invalid testcase identity")
             if testcase.get("filter-match", {}).get("status") != "matches":
                 continue
-            tests.append({"id": f"{package}::{target_kind}::{target}::{name}", "package": package, "target": target, "target_kind": target_kind, "name": name})
+            tests.append({
+                "id": f"{package}::{target_kind}::{target}::{name}",
+                "package": package,
+                "target": target,
+                "target_kind": target_kind,
+                "name": name,
+                # nextest list is the canonical source for tests that its
+                # default run policy intentionally skips without a terminal.
+                "expected_outcome": "skipped" if testcase.get("ignored") else "executed",
+            })
     return tests
 
 
