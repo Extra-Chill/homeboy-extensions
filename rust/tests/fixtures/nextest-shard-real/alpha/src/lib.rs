@@ -1,8 +1,20 @@
 #[cfg(test)]
 mod tests {
     #[test]
-    fn selected_terminal_event() {
-        assert_eq!(2 + 2, 4);
+    fn selected_parent() {
+        let status =
+            std::process::Command::new(std::env::current_exe().expect("current test binary"))
+                .args(["--exact", "tests::ignored_child_helper"])
+                .stdout(std::process::Stdio::inherit())
+                .status()
+                .expect("run ignored nested helper");
+        assert!(status.success());
+    }
+
+    #[test]
+    #[ignore]
+    fn ignored_child_helper() {
+        assert!(true);
     }
 
     #[test]

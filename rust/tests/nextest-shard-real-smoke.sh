@@ -30,12 +30,14 @@ homeboy_run_step_capture() {
     output_file="$(mktemp "${TMPDIR:-/tmp}/homeboy-nextest-real.XXXXXX")"
     "$@" >"$output_file" 2>&1 || status=$?
     if [ "$step_name" = 'cargo nextest run' ]; then
-        # Keep the real nextest records intact while exercising lifecycle noise
-        # from tests excluded by the shard manifest.
+        # Keep the nested child stream intact. Stable libtest reports its
+        # ignored child only in the suite record, while the consumer run emits
+        # this canonical ignored test terminal record.
         printf '%s\n' \
             '{"type":"test","event":"queued","name":"outside::suite$queued"}' \
             '{"type":"test","event":"started","name":"outside::suite$started"}' \
             '{"type":"test","event":"running","name":"outside::suite$running"}' \
+            '{"type":"test","event":"ignored","name":"nextest-shard-alpha::nextest_shard_alpha$tests::ignored_child_helper"}' \
             >>"$output_file"
         cp "$output_file" "$HOMEBOY_REAL_NEXTEST_EVENT_STREAM"
     fi
@@ -73,7 +75,7 @@ import json
 import sys
 
 inventory = json.load(open(sys.argv[1], encoding="utf-8"))
-selected = [test["id"] for test in inventory["tests"] if test["name"] == "tests::selected_terminal_event"]
+selected = [test["id"] for test in inventory["tests"] if test["name"] == "tests::selected_parent"]
 assert len(selected) == 1, inventory["tests"]
 manifest = {key: inventory[key] for key in ("runner", "inventory_fingerprint", "runner_fingerprint", "workspace_fingerprint")}
 manifest["schema"] = "homeboy/test-shard-manifest/v1"
@@ -115,7 +117,8 @@ for line in open(sys.argv[1], encoding="utf-8"):
         events.append(event)
 
 assert any(event.get("event") in {"started", "queued", "running"} and event.get("name", "").startswith("outside::") for event in events), events
-assert any(event.get("event") in {"ok", "passed"} and event.get("name", "").endswith("$tests::selected_terminal_event") for event in events), events
+assert any(event.get("event") == "ignored" and event.get("name", "").endswith("$tests::ignored_child_helper") for event in events), events
+assert any(event.get("event") in {"ok", "passed"} and event.get("name", "").endswith("$tests::selected_parent") for event in events), events
 results = json.load(open(sys.argv[2], encoding="utf-8"))
 assert results == {"total": 1, "passed": 1, "failed": 0, "skipped": 0, "partial": "rust-shard"}, results
 PY

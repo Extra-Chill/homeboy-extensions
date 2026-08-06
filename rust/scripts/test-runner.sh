@@ -433,7 +433,14 @@ for line in open(sys.argv[1], encoding="utf-8", errors="replace"):
     if status not in {"ok", "passed", "failed", "fail", "ignored", "skipped"}:
         continue
     emitted = emitted_identity(event.get("name"))
-    if emitted not in planned_by_emitted or planned_by_emitted[emitted] in actual:
+    if emitted not in planned_by_emitted:
+        # Nested libtest helpers can report an ignored/skipped terminal event
+        # even though the shard selected only their parent test. They did not
+        # execute, so they are neither membership evidence nor result counts.
+        if status in {"ignored", "skipped"}:
+            continue
+        raise SystemExit(f"Rust test shard error: nextest emitted an unexpected test identity: {event.get('name')}")
+    if planned_by_emitted[emitted] in actual:
         raise SystemExit(f"Rust test shard error: nextest emitted an unexpected or duplicate test identity: {event.get('name')}")
     actual.add(planned_by_emitted[emitted])
     if status in {"ok", "passed"}: passed += 1

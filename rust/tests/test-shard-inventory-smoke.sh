@@ -150,8 +150,9 @@ for name in names:
     print(json.dumps({"type": "test", "name": runtime_name, "event": event, "exec_time": 0.001}))
     if mode == "duplicate-terminal" and name == "unit::alpha":
         print(json.dumps({"type": "test", "name": runtime_name, "event": event, "exec_time": 0.001}))
-if mode == "terminal-outside":
-    print(json.dumps({"type": "test", "name": "outside::suite$terminal", "event": "ok", "exec_time": 0.001}))
+if mode in {"terminal-outside-ok", "terminal-outside-failed", "terminal-outside-ignored"}:
+    event = {"terminal-outside-ok": "ok", "terminal-outside-failed": "failed", "terminal-outside-ignored": "ignored"}[mode]
+    print(json.dumps({"type": "test", "name": "outside::suite$terminal", "event": event, "exec_time": 0.001}))
 raise SystemExit(1 if mode == "failure" and "unit::beta" in names else 0)
 PY
   exit $?
@@ -664,9 +665,31 @@ assert_nextest_event_rejected() {
   fi
 }
 
-assert_nextest_event_rejected terminal-outside 'nextest emitted an unexpected or duplicate test identity'
+assert_nextest_event_rejected terminal-outside-ok 'nextest emitted an unexpected test identity'
+assert_nextest_event_rejected terminal-outside-failed 'nextest emitted an unexpected test identity'
 assert_nextest_event_rejected duplicate-terminal 'nextest emitted an unexpected or duplicate test identity'
 assert_nextest_event_rejected missing-terminal 'nextest executed membership does not match the shard manifest'
+
+# An ignored helper outside the immutable manifest did not execute. It must not
+# be reconciled or counted, while the planned ignored test still counts once.
+HOMEBOY_EXTENSION_PATH="$EXTENSION_DIR" \
+HOMEBOY_COMPONENT_PATH="$PROJECT_DIR" \
+HOMEBOY_SKIP_LINT=1 \
+HOMEBOY_RUST_TEST_RUNNER=nextest \
+HOMEBOY_NEXTEST_MODE=terminal-outside-ignored \
+HOMEBOY_TEST_SHARD_MANIFEST="$WORK_DIR/nextest-manifest.json" \
+HOMEBOY_RUNTIME_WRITE_TEST_RESULTS="$WORK_DIR/write-test-results.sh" \
+HOMEBOY_TEST_RESULTS_FILE="$WORK_DIR/ignored-outside-results.json" \
+HOMEBOY_RUNTIME_RUNNER_PRELUDE="$WORK_DIR/runner-prelude.sh" \
+HOMEBOY_RUNTIME_COMMAND_CAPTURE="$WORK_DIR/command-capture.sh" \
+PATH="$BIN_DIR:$PATH" \
+bash "$EXTENSION_DIR/scripts/test-runner.sh" > "$WORK_DIR/ignored-outside.out"
+python3 - "$WORK_DIR/ignored-outside-results.json" <<'PY'
+import json
+import sys
+
+assert json.load(open(sys.argv[1])) == {"total": 5, "passed": 4, "failed": 0, "skipped": 1, "partial": "rust-shard"}
+PY
 
 make_nextest_manifest() {
   local list_mode="$1" inventory="$2" manifest="$3"
