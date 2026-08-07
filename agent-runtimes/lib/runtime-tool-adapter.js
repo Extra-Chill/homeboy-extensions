@@ -38,6 +38,7 @@ function validateRuntimeTool(tool) {
 		executable: tool.executable,
 		env: values,
 		secret_env_names: [...new Set(envNames)],
+		timeout_ms: positiveInteger(tool.timeout_ms),
 		capabilities: arrayValue(tool.capabilities),
 		readiness: tool.readiness,
 	};
@@ -92,6 +93,7 @@ function applyOpenCodeRuntimeTools(content = {}, request = {}, env = process.env
 			command: [...tool.argv],
 			environment: runtimeToolEnvironment(tool, env),
 			enabled: true,
+			...(tool.timeout_ms ? { timeout: tool.timeout_ms } : {}),
 		};
 	}
 	return { ...content, mcp };
@@ -143,6 +145,10 @@ function validId(value) {
 
 function validEnvName(value) {
 	return typeof value === 'string' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(value);
+}
+
+function positiveInteger(value) {
+	return Number.isSafeInteger(value) && value > 0 ? value : undefined;
 }
 
 function arrayValue(value) {

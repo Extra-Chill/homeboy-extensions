@@ -20,6 +20,7 @@ const request = {
 		executable: '/fixture/mcp',
 		env: { FIXTURE_MODE: 'isolated' },
 		secret_env_names: ['FIXTURE_TOKEN'],
+		timeout_ms: 600000,
 		capabilities: ['fixture'],
 		readiness: { status: 'ready', evidence: { kind: 'version_command', success: true } },
 		lifecycle: 'runtime_owned',
@@ -42,7 +43,7 @@ assert.deepEqual(resolvedRuntimeTools(request, env)[0].argv, ['/fixture/mcp', '-
 assert.deepEqual(resolvedRuntimeTools({}, { [RESOLVED_RUNTIME_TOOLS_ENV]: JSON.stringify(request.resolved_runtime_tools) })[0].argv, ['/fixture/mcp', '--isolated']);
 const openCode = applyOpenCodeRuntimeTools({}, request, env);
 assert.deepEqual(openCode.mcp['fixture.mcp'], {
-	type: 'local', command: ['/fixture/mcp', '--isolated'], environment: { FIXTURE_MODE: 'isolated', FIXTURE_TOKEN: 'private-token' }, enabled: true,
+	type: 'local', command: ['/fixture/mcp', '--isolated'], environment: { FIXTURE_MODE: 'isolated', FIXTURE_TOKEN: 'private-token' }, enabled: true, timeout: 600000,
 });
 assert.deepEqual(openCode.mcp['fixture.second'], {
 	type: 'local', command: ['/fixture/second'], environment: {}, enabled: true,
@@ -62,5 +63,6 @@ assert.throws(() => resolvedRuntimeTools({ runtime_tools: [{ id: 'raw.echo', com
 assert.throws(() => resolvedRuntimeTools({ resolved_runtime_tools: [], runtime_tools: [{ id: 'raw.echo', command: ['/bin/echo', 'unsafe'] }] }), /resolved by Homeboy/);
 assert.throws(() => resolvedRuntimeTools({ resolved_runtime_tools: [] }, { [RAW_RUNTIME_TOOLS_ENV]: JSON.stringify([{ id: 'raw.echo', command: ['/bin/echo', 'unsafe'] }]) }), /resolved by Homeboy/);
 assert.throws(() => resolvedRuntimeTools({ resolved_runtime_tools: [{ ...request.resolved_runtime_tools[0], readiness: { status: 'ready' } }] }), /unready/);
+assert.equal(resolvedRuntimeTools({ resolved_runtime_tools: [{ ...request.resolved_runtime_tools[0], timeout_ms: 0 }] })[0].timeout_ms, undefined);
 
 process.stdout.write('Runtime tool adapter boundary passed\n');
