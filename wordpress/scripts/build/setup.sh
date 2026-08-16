@@ -437,9 +437,16 @@ fi
 # MODULE_NOT_FOUND, with zero tests executed (#12585). Fail here instead, before
 # anything is planned or fanned out.
 verify_shared_agent_runtime_assets() {
-    local resolver="${EXTENSION_PATH}/scripts/lib/agent-runtime-paths.cjs"
+    # Resolve from this script's own location, not the working directory: the
+    # resolver ships beside setup.sh in the extension payload, and that is the
+    # payload whose completeness is in question.
+    local script_dir
+    local resolver
     local missing=0
     local dependency
+
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    resolver="${script_dir}/../lib/agent-runtime-paths.cjs"
 
     if [ ! -f "${resolver}" ]; then
         echo "Error: agent runtime resolver missing at ${resolver}; the WordPress extension payload is incomplete." >&2
