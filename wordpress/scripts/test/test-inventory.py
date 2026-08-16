@@ -154,7 +154,10 @@ def classify(relative):
     for suffix in (".test.js", ".test.cjs", ".test.mjs", ".test.jsx", ".test.ts", ".test.tsx"):
         if name.endswith(suffix):
             return "test", "node-test"
-    if name.endswith("Test.php") or name.startswith("test-") and name.endswith(".php"):
+    root_test_prefix = relative.startswith("tests/test-") or relative.startswith(
+        "wordpress/tests/test-"
+    )
+    if name.endswith("Test.php") or (root_test_prefix and name.endswith(".php")):
         return "test", "phpunit"
     return None
 

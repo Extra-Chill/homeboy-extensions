@@ -56,6 +56,7 @@ printf '<?php\n'  > "${plugin}/tests/test-eta.php"
 # Not routable, and must not be enumerated: a fixture, a support file, and
 # anything inside a skipped directory.
 printf '<?php\n' > "${plugin}/tests/fixture-data.php"
+printf '<?php\n' > "${plugin}/tests/nested/test-helper.php"
 printf '<?php\n' > "${plugin}/vendor/pkg/tests/vendor-smoke.php"
 printf '// dep\n' > "${plugin}/node_modules/x/dep-smoke.js"
 
