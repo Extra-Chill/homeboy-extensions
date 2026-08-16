@@ -430,7 +430,43 @@ if [ -f "package.json" ]; then
     fi
 fi
 
+# Verify the shared agent-runtime files this extension's installed entrypoints
+# require. They live in a separate shared-asset tree that the extension payload
+# does not carry, so an install can succeed while leaving them absent — the
+# failure then surfaces only when a test shard boots and dies on
+# MODULE_NOT_FOUND, with zero tests executed (#12585). Fail here instead, before
+# anything is planned or fanned out.
+verify_shared_agent_runtime_assets() {
+    local resolver="${EXTENSION_PATH}/scripts/lib/agent-runtime-paths.cjs"
+    local missing=0
+    local dependency
+
+    if [ ! -f "${resolver}" ]; then
+        echo "Error: agent runtime resolver missing at ${resolver}; the WordPress extension payload is incomplete." >&2
+        return 1
+    fi
+
+    for dependency in \
+        "wp-codebox/lib/wp-codebox-runtime-selection.js" \
+        "wp-codebox/scripts/lib/test-result-adapters.sh" \
+        "wp-codebox/scripts/agent/homeboy-wp-codebox-task-runner.cjs" \
+        "opencode/scripts/agent/homeboy-opencode-agent-task-executor.cjs"; do
+        if ! node "${resolver}" "${dependency}" >/dev/null; then
+            missing=1
+        fi
+    done
+
+    if [ "${missing}" -ne 0 ]; then
+        echo "Error: shared agent runtime assets are missing from this installation; WordPress test shards cannot bootstrap." >&2
+        return 1
+    fi
+
+    echo "Shared agent runtime assets verified."
+}
+
 install_wp_codebox
+
+verify_shared_agent_runtime_assets
 
 echo "WordPress extension setup complete."
 echo "Default test backend: WP Codebox (WordPress Playground runtime)"
