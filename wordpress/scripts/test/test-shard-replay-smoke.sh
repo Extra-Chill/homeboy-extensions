@@ -35,21 +35,7 @@ jq -e '
 printf '<?php\nclass AlphaTest extends PHPUnit\\Framework\\TestCase {}\n' > "${component}/tests/Unit/AlphaTest.php"
 printf '<?php\nclass BetaTest extends PHPUnit\\Framework\\TestCase {}\n' > "${component}/tests/Unit/BetaTest.php"
 printf '<?php\nclass BehaviorSpec extends PHPUnit\\Framework\\TestCase {}\n' > "${component}/tests/Unit/behavior-spec.php"
-printf '<?php\necho "standalone smoke ran\\n";\n' > "${component}/tests/standalone-smoke.php"
-printf '<?php\necho "wordpress smoke ran\\n";\n' > "${component}/tests/wordpress-smoke.php"
-printf 'console.log("js smoke ran");\n' > "${component}/tests/browser-smoke.js"
 printf 'import test from "node:test";\ntest("node shard", () => console.log("node test ran"));\n' > "${component}/tests/worker.test.mjs"
-printf '#!/usr/bin/env bash\necho "shell smoke ran"\n' > "${component}/tests/contract-smoke.sh"
-chmod +x "${component}/tests/contract-smoke.sh"
-cat > "${component}/homeboy-test-manifest.json" <<'JSON'
-{
-  "schema": "homeboy/test-manifest/v1",
-  "tests": {
-    "tests/standalone-smoke.php": { "environment": "standalone-php" },
-    "tests/wordpress-smoke.php": { "environment": "wordpress" }
-  }
-}
-JSON
 
 runner_prelude="${WORKDIR}/runner-prelude.sh"
 cat > "$runner_prelude" <<'SH'
@@ -222,11 +208,11 @@ if HOMEBOY_EXTENSION_PATH="$EXTENSION_PATH" \
     HOMEBOY_TEST_SHARD_MANIFEST="$first" \
     HOMEBOY_TEST_SCOPE_KIND="exclusive_env" \
     HOMEBOY_TEST_SCOPE_ENV_NAME="HOMEBOY_WORDPRESS_HOST_SMOKE_FILES" \
-    HOMEBOY_TEST_SCOPE_ENV_VALUE="tests/standalone-smoke.php" \
+    HOMEBOY_TEST_SCOPE_ENV_VALUE="tests/diagnostic-smoke.php" \
         bash "${EXTENSION_PATH}/scripts/test/test-runner.sh" > "${WORKDIR}/exclusive.out" 2>&1; then
     fail 'exclusive scope bypassed the shard manifest'
 fi
 assert_contains "${WORKDIR}/exclusive.out" 'is mutually exclusive with HOMEBOY_TEST_SCOPE_KIND=exclusive_env'
-assert_not_contains "${WORKDIR}/exclusive.out" 'standalone smoke ran'
+assert_not_contains "${WORKDIR}/exclusive.out" 'PHP_SMOKE_BEGIN:'
 
 printf 'All WordPress test shard replay checks passed.\n'

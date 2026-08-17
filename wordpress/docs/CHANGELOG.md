@@ -2,6 +2,16 @@
 
 All notable changes to the **wordpress** extension will be documented in this file.
 
+## [3.35.8] - 2026-08-16
+
+### Fixed
+- preserve explicit smoke test scope
+
+## [3.35.7] - 2026-08-16
+
+### Fixed
+- terminate WP Codebox runs on an unclaimed fatal runtime crash
+
 ## [3.35.6] - 2026-08-16
 
 ### Fixed
