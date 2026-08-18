@@ -1536,14 +1536,14 @@ function buildRecipeRunStepsLedger(recipeRun) {
       phpunit: recipeRun.phpunitIndexes.includes(index),
     });
   });
-  return clean({
+  return {
     schema: 'homeboy/wordpress-recipe-run-steps/v1',
     parse_status: recipeRun.parse_status,
     phpunit_executed: recipeRun.phpunitIndexes.length > 0,
     phpunit_step_indexes: recipeRun.phpunitIndexes,
     executions,
-    parse_diagnostics: recipeRun.parse_diagnostics,
-  });
+    ...(recipeRun.parse_diagnostics ? { parse_diagnostics: recipeRun.parse_diagnostics } : {}),
+  };
 }
 function recipeStepName(step) {
   return step?.command || `step ${step?.index ?? '?'}`;
