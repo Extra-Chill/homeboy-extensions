@@ -8,150 +8,204 @@ const { spawnSync } = require('node:child_process');
 const SCHEMA = 'homeboy/external-storage-retention/v1';
 const PROVIDER_ID = 'opencode.external-storage-retention';
 const CONFIG_ENV = 'HOMEBOY_OPENCODE_RETENTION_CONFIG';
+const KEY_ENV = 'HOMEBOY_OPENCODE_RETENTION_MARKER_KEY';
 const MARKER = '.homeboy-opencode-retention.json';
+const MAX_REQUEST_BYTES = 256 * 1024;
+const MAX_CONFIG_BYTES = 256 * 1024;
+const MAX_TARGETS = 1000;
+const MAX_ITEMS = 5000;
+const MAX_ROOTS = 32;
+const MAX_COMMAND_BYTES = 1024 * 1024;
 const CREDENTIAL_NAMES = new Set(['auth.json', 'account.json', 'mcp-auth.json', 'anthropic-oauth-accounts.json', 'openai-oauth-accounts.json']);
 
 function externalStorageRetentionProviderContract() {
-	return {
-		id: PROVIDER_ID,
-		command: ['homeboy-opencode-external-storage-retention'],
-		timeout_seconds: 30,
-	};
+	return { id: PROVIDER_ID, command: ['homeboy-opencode-external-storage-retention'], timeout_seconds: 30 };
 }
 
 function handleRequest(request, options = {}) {
-	if (!request || request.schema !== SCHEMA || !['inventory', 'reclaim'].includes(request.operation)) {
-		throw new Error('Expected a homeboy/external-storage-retention/v1 inventory or reclaim request.');
-	}
+	validateRequest(request);
 	const config = retentionConfig(options.env || process.env, options);
 	const inventory = inventoryFor(config, options);
 	if (request.operation === 'inventory') return inventory;
 	if (request.generation !== inventory.generation) throw new Error('OpenCode storage inventory generation is stale.');
-	const requested = Array.isArray(request.reclaim_targets) ? request.reclaim_targets : [];
 	const byId = new Map(inventory.items.map((item) => [item.id, item]));
+	const reclaimed = [];
 	let reclaimedBytes = 0;
-	const reclaimedItemIds = [];
-	for (const target of requested) {
-		const item = byId.get(target?.id);
+	for (const target of request.reclaim_targets) {
+		const item = byId.get(target.id);
 		if (!item || item.reclaim_token !== target.reclaim_token || !reclaimable(item)) continue;
-		const resource = config.resources.find((candidate) => candidate.id === item.id);
-		const reclaimed = resource && nativeReclaim(resource, config, options);
-		if (!reclaimed) continue;
-		reclaimedBytes += reclaimed.bytes;
-		reclaimedItemIds.push(item.id);
+		const receipt = nativeReclaim(item, config, options);
+		if (!receipt) continue;
+		reclaimed.push(item.id);
+		reclaimedBytes += receipt.bytes;
 	}
-	return { schema: SCHEMA, provider_id: PROVIDER_ID, generation: inventory.generation, reclaimed_item_ids: reclaimedItemIds, reclaimed_bytes: reclaimedBytes };
+	return { schema: SCHEMA, provider_id: PROVIDER_ID, generation: inventory.generation, reclaimed_item_ids: reclaimed, reclaimed_bytes: reclaimedBytes };
+}
+
+function writeOwnershipMarker(root, metadata = {}, env = process.env) {
+	const key = markerKey(env);
+	if (!key || !safeAbsoluteDirectory(root)) return false;
+	const body = {
+		schema: 'homeboy/opencode-retention-marker/v1', id: `scratch:${metadata.task_id}`, task_id: metadata.task_id,
+		workspace: safeAbsolutePath(metadata.workspace), owner_pid: process.pid, active: true, created_at: new Date().toISOString(),
+	};
+	if (!validId(metadata.task_id)) return false;
+	const marker = { ...body, signature: sign(body, key) };
+	fs.writeFileSync(path.join(root, MARKER), JSON.stringify(marker), { mode: 0o600, flag: 'wx' });
+	return true;
+}
+
+function finalizeOwnershipMarker(root, sessionId, env = process.env) {
+	const marker = readMarker(root, env);
+	if (!marker) return false;
+	const body = { ...marker, owner_pid: 0, active: false, terminal_at: new Date().toISOString(), ...(validId(sessionId) ? { session_id: sessionId } : {}) };
+	delete body.signature;
+	fs.writeFileSync(path.join(root, MARKER), JSON.stringify({ ...body, signature: sign(body, markerKey(env)) }), { mode: 0o600 });
+	return true;
 }
 
 function retentionConfig(env, options) {
-	const configured = env[CONFIG_ENV];
-	let value = {};
-	if (configured) value = JSON.parse(fs.readFileSync(configured, 'utf8'));
-	const paths = value.paths || openCodePaths(options.command || 'opencode', env);
-	const tempRoots = absolutePaths(value.temp_roots || (paths.tmp ? [paths.tmp] : []));
-	const dataRoot = absolutePath(value.data_root || paths.data);
-	return {
-		temp_roots: tempRoots,
-		data_root: dataRoot,
-		resources: configuredResources(value, tempRoots, dataRoot),
-		command: value.command || options.command || 'opencode',
-	};
-}
-
-function configuredResources(value, tempRoots, dataRoot) {
-	const resources = Array.isArray(value.resources) ? value.resources.map((resource) => ({ ...resource, path: absolutePath(resource.path) })) : [];
-	for (const root of tempRoots) {
-		for (const entry of safeEntries(root)) {
-			const candidate = path.join(root, entry.name);
-			const marker = path.join(candidate, MARKER);
-			if (!entry.isDirectory() || !fs.existsSync(marker)) continue;
-			try {
-				const metadata = JSON.parse(fs.readFileSync(marker, 'utf8'));
-				if (metadata.id && !resources.some((resource) => resource.id === metadata.id)) resources.push({ ...metadata, path: candidate, class: metadata.class || 'scratch' });
-			} catch { /* An invalid ownership marker is unknown rather than reclaimable. */ }
-		}
-	}
-	if (dataRoot) {
-		for (const name of CREDENTIAL_NAMES) {
-			const credential = path.join(dataRoot, name);
-			if (fs.existsSync(credential) && !resources.some((resource) => resource.path === credential)) resources.push({ id: `credential:${name}`, path: credential, class: 'credential', reconstructable: false, pinned: true });
-		}
-		for (const name of ['opencode.db', 'opencode.db-wal', 'opencode.db-shm']) {
-			const store = path.join(dataRoot, name);
-			if (fs.existsSync(store) && !resources.some((resource) => resource.path === store)) resources.push({ id: `session-store:${name}`, path: store, class: 'session_store', reconstructable: false, referenced: true });
-		}
-	}
-	return uniqueById(resources);
+	const value = readConfig(env[CONFIG_ENV]);
+	const command = typeof value.command === 'string' && value.command.trim() ? value.command : options.command || 'opencode';
+	const paths = openCodePaths(command, env);
+	const dbPath = openCodeDbPath(command, env);
+	const tempRoots = absolutePaths([...(value.temp_roots || []), paths.tmp].filter(Boolean));
+	const dataRoots = absolutePaths([...(value.data_roots || []), paths.data, dbPath && path.dirname(dbPath)].filter(Boolean));
+	if (tempRoots.length + dataRoots.length > MAX_ROOTS) throw new Error('Retention configuration exceeds the root ceiling.');
+	if (tempRoots.some((root) => dataRoots.some((data) => overlaps(root, data)))) throw new Error('Retention roots must not overlap.');
+	return { command, temp_roots: tempRoots, data_roots: dataRoots, db_path: dbPath, marker_key: markerKey(env) };
 }
 
 function inventoryFor(config, options) {
-	const roots = [...config.temp_roots.map((root, index) => ({ id: `temp-${index}`, path: root })), ...(config.data_root ? [{ id: 'data', path: config.data_root }] : [])];
-	const rootId = (candidate) => roots.find((root) => inside(candidate, root.path))?.id || 'unmanaged';
-	const items = config.resources.filter((resource) => fs.existsSync(resource.path)).map((resource) => itemFor(resource, rootId(resource.path), options));
-	const managed = new Set(config.resources.filter((resource) => fs.existsSync(resource.path)).map((resource) => resource.path));
-	const unknownBytes = roots.reduce((total, root) => total + unknownBytesBelow(root.path, managed), 0);
-	const generation = digest(JSON.stringify({ roots: roots.map((root) => [root.id, fingerprint(root.path)]), items: items.map((item) => [item.id, fingerprint(item._path), item.active, item.referenced]) }));
+	const roots = [...config.temp_roots.map((value, index) => ({ id: `temp-${index}`, path: value })), ...config.data_roots.map((value, index) => ({ id: `data-${index}`, path: value }))];
+	const markerItems = config.marker_key ? discoverMarkers(config, roots, options) : [];
+	const sessions = discoverSessions(config, markerItems, roots, options);
+	const protectedItems = discoverProtected(config, roots);
+	const items = [...markerItems, ...sessions, ...protectedItems].slice(0, MAX_ITEMS);
+	const known = new Set(items.map((item) => item._path).filter(Boolean));
+	const unknownBytes = roots.reduce((total, root) => total + unknownBytesBelow(root.path, known), 0);
+	const generation = digest(JSON.stringify({ roots: roots.map((root) => [root.id, fingerprint(root.path)]), items: items.map((item) => [item.id, item.state]) }));
 	return {
 		schema: SCHEMA, provider_id: PROVIDER_ID, generation, roots,
-		items: items.map(({ _path, ...item }) => ({ ...item, reclaim_token: digest(`${generation}:${item.id}:${fingerprint(_path)}`) })),
-		unknown_bytes: unknownBytes,
+		items: items.map(({ _path, _workspace, state, ...item }) => ({ ...item, reclaim_token: digest(`${generation}:${item.id}:${state}`) })), unknown_bytes: unknownBytes,
 	};
 }
 
-function itemFor(resource, rootId, options) {
-	const ownerAlive = resource.owner?.pid && processAlive(resource.owner.pid);
-	const active = resource.active === true || ownerAlive;
-	const referenced = resource.referenced === true || resource.pinned === true || resource.class === 'credential';
-	const known = Boolean(resource.id && resource.path && rootId !== 'unmanaged' && (resource.managed === true || fs.existsSync(path.join(resource.path, MARKER)) || ['credential', 'session_store', 'pinned_export'].includes(resource.class)));
-	return {
-		id: String(resource.id), root_id: rootId, class: validClass(resource.class), bytes: sizeOf(resource.path), locator: relativeLocator(resource.path), reconstructable: resource.reconstructable === true,
-		active, referenced, ownership_known: known, age_days: ageDays(resource.terminal_at || resource.terminalAt || resource.path, options.now), _path: resource.path,
-	};
+function discoverMarkers(config, roots, options) {
+	const items = [];
+	for (const root of config.temp_roots) {
+		for (const candidate of [root, ...safeEntries(root).filter((entry) => entry.isDirectory()).slice(0, MAX_ITEMS).map((entry) => path.join(root, entry.name))]) {
+			const marker = readMarker(candidate, options.env || process.env);
+			if (!marker || !sameRealDirectory(candidate, root)) continue;
+			const active = marker.active === true || processAlive(marker.owner_pid);
+			const discovered = item(marker.id, rootId(candidate, roots), 'scratch', candidate, true, active, false, ageDays(marker.terminal_at, options.now), `marker:${marker.signature}`);
+			discovered._workspace = marker.workspace;
+			items.push(discovered);
+		}
+	}
+	return items;
 }
 
-function nativeReclaim(resource, config, options) {
-	if (resource.class === 'scratch' || resource.class === 'durable_artifact') {
-		if (!config.temp_roots.some((root) => inside(resource.path, root)) || !fs.existsSync(path.join(resource.path, MARKER))) return null;
-		const bytes = sizeOf(resource.path);
-		fs.rmSync(resource.path, { recursive: true, force: false });
+function discoverSessions(config, markerItems, roots, options) {
+	if (!config.db_path || !safeRegularFile(config.db_path)) return [];
+	const sessions = openCodeJson(config.command, ['session', 'list', '--format', 'json'], options.env || process.env);
+	if (!Array.isArray(sessions)) return [item(`session-store:${digest(config.db_path).slice(0, 16)}`, rootId(config.db_path, roots), 'session_store', config.db_path, false, true, true, 0, `db:${fingerprint(config.db_path)}`)];
+	return sessions.filter((session) => validId(session.id)).slice(0, MAX_ITEMS).map((session) => {
+		const marker = markerItems.find((candidate) => candidate._path && safeAbsolutePath(session.directory) && candidate._workspace === safeAbsolutePath(session.directory));
+		const active = Boolean(marker?.active) || processAlive(session.owner_pid);
+		return item(`session:${session.id}`, rootId(config.db_path, roots), 'session_store', config.db_path, true, active, session.pinned === true, ageDays(session.updated || session.created, options.now), `session:${session.id}:${fingerprint(config.db_path)}`);
+	});
+}
+
+function discoverProtected(config, roots) {
+	const items = [];
+	for (const root of config.data_roots) {
+		for (const entry of safeEntries(root).slice(0, MAX_ITEMS)) {
+			const candidate = path.join(root, entry.name);
+			if (CREDENTIAL_NAMES.has(entry.name)) items.push(item(`credential:${entry.name}`, rootId(candidate, roots), 'credential', candidate, false, false, true, 0, fingerprint(candidate)));
+			if (/^(?:snapshot|export)/i.test(entry.name)) items.push(item(`pinned:${entry.name}`, rootId(candidate, roots), 'pinned_export', candidate, false, false, true, 0, fingerprint(candidate)));
+		}
+	}
+	return items;
+}
+
+function nativeReclaim(itemToReclaim, config, options) {
+	if (itemToReclaim.class === 'scratch') return reclaimScratch(itemToReclaim.id, config, options);
+	if (itemToReclaim.class !== 'session_store' || !itemToReclaim.id.startsWith('session:')) return null;
+	const sessionId = itemToReclaim.id.slice('session:'.length);
+	const before = sizeOf(config.db_path);
+	const deleted = run(config.command, ['session', 'delete', sessionId], options.env || process.env);
+	if (deleted.status !== 0) return null;
+	const compacted = run(config.command, ['db', 'VACUUM'], options.env || process.env);
+	// A successful deletion is a confirmed, idempotent mutation even if compaction fails.
+	return { bytes: compacted.status === 0 ? Math.max(0, before - sizeOf(config.db_path)) : 0 };
+}
+
+function reclaimScratch(id, config, options) {
+	const target = findMarkedScratch(id, config, options.env || process.env);
+	if (!target) return null;
+	if (!config.temp_roots.some((root) => sameRealDirectory(target, root)) || !readMarker(target, options.env || process.env)) return null;
+	const bytes = sizeOf(target);
+	const parent = path.dirname(target);
+	const quarantine = path.join(parent, `.${path.basename(target)}.homeboy-reclaim-${crypto.randomUUID()}`);
+	try {
+		fs.renameSync(target, quarantine);
+		if (!readMarker(quarantine, options.env || process.env)) { fs.renameSync(quarantine, target); return null; }
+		fs.rmSync(quarantine, { recursive: true, force: false });
 		return { bytes };
-	}
-	if (resource.class !== 'session_store' || !Array.isArray(resource.expired_session_ids) || resource.expired_session_ids.length === 0) return null;
-	const before = sizeOf(resource.path);
-	for (const sessionId of resource.expired_session_ids) {
-		const deleted = spawnSync(config.command, ['session', 'delete', sessionId], { encoding: 'utf8', env: options.env || process.env });
-		if (deleted.status !== 0) return null;
-	}
-	const compacted = spawnSync(config.command, ['db', 'VACUUM'], { encoding: 'utf8', env: options.env || process.env });
-	return compacted.status === 0 ? { bytes: Math.max(0, before - sizeOf(resource.path)) } : null;
+	} catch { return null; }
 }
 
-function reclaimable(item) {
-	return item.ownership_known && item.reconstructable && !item.active && !item.referenced && !['credential', 'pinned_export'].includes(item.class);
+function findMarkedScratch(id, config, env) {
+	for (const root of config.temp_roots) {
+		for (const candidate of [root, ...safeEntries(root).filter((entry) => entry.isDirectory()).slice(0, MAX_ITEMS).map((entry) => path.join(root, entry.name))]) {
+			if (sameRealDirectory(candidate, root) && readMarker(candidate, env)?.id === id) return candidate;
+		}
+	}
+	return '';
 }
 
-function openCodePaths(command, env) {
-	const result = spawnSync(command, ['debug', 'paths'], { encoding: 'utf8', env });
-	if (result.status !== 0) return {};
-	return Object.fromEntries(String(result.stdout).split(/\r?\n/).map((line) => line.trim().split(/\s{2,}/)).filter(([key, value]) => key && value));
+function item(id, root, resourceClass, resourcePath, reconstructable, active, referenced, age, state) {
+	return { id, root_id: root || 'unmanaged', class: resourceClass, bytes: sizeOf(resourcePath), locator: `opencode:${resourceClass}:${digest(resourcePath).slice(0, 16)}`, reconstructable, active, referenced, ownership_known: true, age_days: age, _path: resourcePath, state };
 }
+function readMarker(root, env) {
+	const key = markerKey(env); const markerPath = path.join(root, MARKER);
+	try {
+		if (!key || fs.lstatSync(root).isSymbolicLink() || fs.lstatSync(markerPath).isSymbolicLink()) return null;
+		const marker = JSON.parse(fs.readFileSync(markerPath, 'utf8')); const { signature, ...body } = marker;
+		return marker.schema === 'homeboy/opencode-retention-marker/v1' && validId(marker.id) && validId(marker.task_id) && typeof signature === 'string' && secureEqual(signature, sign(body, key)) ? marker : null;
+	} catch { return null; }
+}
+function validateRequest(request) {
+	if (!request || typeof request !== 'object' || Array.isArray(request) || Buffer.byteLength(JSON.stringify(request)) > MAX_REQUEST_BYTES) throw new Error('Retention request is invalid or exceeds the protocol byte ceiling.');
+	if (Object.keys(request).some((key) => !['schema', 'operation', 'generation', 'reclaim_targets'].includes(key)) || request.schema !== SCHEMA || !['inventory', 'reclaim'].includes(request.operation)) throw new Error('Expected a valid homeboy/external-storage-retention/v1 request.');
+	if (request.operation === 'inventory' && (request.generation !== undefined || (request.reclaim_targets && request.reclaim_targets.length))) throw new Error('Inventory requests must not contain reclaim fields.');
+	if (request.operation === 'reclaim' && (!validId(request.generation) || !Array.isArray(request.reclaim_targets) || request.reclaim_targets.length > MAX_TARGETS || request.reclaim_targets.some((target) => !target || Object.keys(target).some((key) => !['id', 'reclaim_token'].includes(key)) || !validId(target.id) || !validId(target.reclaim_token)))) throw new Error('Reclaim request is invalid or exceeds the protocol target ceiling.');
+}
+function readConfig(file) { if (!file) return {}; if (!safeRegularFile(file) || fs.statSync(file).size > MAX_CONFIG_BYTES) throw new Error('Retention configuration is invalid or exceeds its byte ceiling.'); const value = JSON.parse(fs.readFileSync(file, 'utf8')); if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some((key) => !['command', 'temp_roots', 'data_roots'].includes(key)) || (value.temp_roots && !Array.isArray(value.temp_roots)) || (value.data_roots && !Array.isArray(value.data_roots))) throw new Error('Retention configuration has an invalid shape.'); return value; }
+function openCodePaths(command, env) { const result = run(command, ['debug', 'paths'], env); return result.status === 0 ? Object.fromEntries(String(result.stdout).split(/\r?\n/).map((line) => line.trim().split(/\s{2,}/)).filter(([key, value]) => key && value)) : {}; }
+function openCodeDbPath(command, env) { const result = run(command, ['db', 'path'], env); const candidate = String(result.stdout || '').trim(); return result.status === 0 && safeAbsolutePath(candidate) ? candidate : ''; }
+function openCodeJson(command, args, env) { const result = run(command, args, env); if (result.status !== 0 || Buffer.byteLength(result.stdout || '') > MAX_COMMAND_BYTES) return null; try { return JSON.parse(result.stdout); } catch { return null; } }
+function run(command, args, env) { return spawnSync(command, args, { encoding: 'utf8', env, maxBuffer: MAX_COMMAND_BYTES }); }
+function markerKey(env) { const key = env?.[KEY_ENV]; return typeof key === 'string' && key.length >= 32 && key.length <= 4096 ? key : ''; }
+function sign(value, key) { return crypto.createHmac('sha256', key).update(JSON.stringify(value)).digest('hex'); }
+function secureEqual(left, right) { return left.length === right.length && crypto.timingSafeEqual(Buffer.from(left), Buffer.from(right)); }
+function reclaimable(value) { return value.ownership_known && value.reconstructable && !value.active && !value.referenced && !['credential', 'pinned_export'].includes(value.class); }
+function processAlive(pid) { if (!Number.isInteger(pid) || pid <= 0) return false; try { process.kill(pid, 0); return true; } catch (error) { return error?.code === 'EPERM'; } }
 function safeEntries(directory) { try { return fs.readdirSync(directory, { withFileTypes: true }); } catch { return []; } }
-function sizeOf(candidate) { try { const stat = fs.lstatSync(candidate); return stat.isDirectory() ? safeEntries(candidate).reduce((sum, entry) => sum + sizeOf(path.join(candidate, entry.name)), 0) : stat.size; } catch { return 0; } }
-function unknownBytesBelow(root, managed) {
-	if (managed.has(root)) return 0;
-	const descendants = [...managed].some((known) => inside(known, root));
-	if (!descendants) return sizeOf(root);
-	return safeEntries(root).reduce((sum, entry) => sum + unknownBytesBelow(path.join(root, entry.name), managed), 0);
-}
-function fingerprint(candidate) { try { const stat = fs.statSync(candidate); return `${stat.size}:${stat.mtimeMs}:${stat.ino || 0}`; } catch { return 'missing'; } }
-function digest(value) { return crypto.createHash('sha256').update(value).digest('hex'); }
-function absolutePath(value) { return typeof value === 'string' && path.isAbsolute(value) ? path.resolve(value) : ''; }
-function absolutePaths(values) { return [...new Set((Array.isArray(values) ? values : []).map(absolutePath).filter(Boolean))]; }
+function sizeOf(candidate) { try { const stat = fs.lstatSync(candidate); if (stat.isSymbolicLink()) return 0; return stat.isDirectory() ? safeEntries(candidate).reduce((sum, entry) => sum + sizeOf(path.join(candidate, entry.name)), 0) : stat.size; } catch { return 0; } }
+function unknownBytesBelow(root, known) { if (known.has(root)) return 0; if (![...known].some((candidate) => inside(candidate, root))) return sizeOf(root); return safeEntries(root).reduce((sum, entry) => sum + unknownBytesBelow(path.join(root, entry.name), known), 0); }
+function rootId(candidate, roots) { return roots.find((root) => inside(candidate, root.path))?.id || 'unmanaged'; }
+function sameRealDirectory(candidate, root) { try { return inside(fs.realpathSync(candidate), fs.realpathSync(root)) && !fs.lstatSync(candidate).isSymbolicLink(); } catch { return false; } }
+function safeRegularFile(candidate) { try { return safeAbsolutePath(candidate) && fs.lstatSync(candidate).isFile() && !fs.lstatSync(candidate).isSymbolicLink(); } catch { return false; } }
+function safeAbsoluteDirectory(candidate) { try { return safeAbsolutePath(candidate) && fs.lstatSync(candidate).isDirectory() && !fs.lstatSync(candidate).isSymbolicLink(); } catch { return false; } }
+function safeAbsolutePath(value) { return typeof value === 'string' && path.isAbsolute(value) ? path.resolve(value) : ''; }
+function absolutePaths(values) { return [...new Set(values.map(safeAbsolutePath).filter(Boolean))]; }
 function inside(candidate, root) { if (!candidate || !root) return false; const relative = path.relative(root, candidate); return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative)); }
-function relativeLocator(candidate) { return `opencode:${path.basename(candidate)}`; }
-function validClass(value) { return ['scratch', 'durable_artifact', 'session_store', 'credential', 'pinned_export'].includes(value) ? value : 'scratch'; }
-function processAlive(pid) { try { process.kill(pid, 0); return true; } catch { return false; } }
-function ageDays(value, now = Date.now()) { const time = typeof value === 'string' ? Date.parse(value) : typeof value === 'number' ? value : (() => { try { return fs.statSync(value).mtimeMs; } catch { return now; } })(); return Number.isFinite(time) && time <= now ? Math.floor((now - time) / 86_400_000) : 0; }
-function uniqueById(resources) { const seen = new Set(); return resources.filter((resource) => resource.id && !seen.has(resource.id) && seen.add(resource.id)); }
+function overlaps(one, two) { return inside(one, two) || inside(two, one); }
+function fingerprint(candidate) { try { const stat = fs.lstatSync(candidate); return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}`; } catch { return 'missing'; } }
+function digest(value) { return crypto.createHash('sha256').update(value).digest('hex'); }
+function validId(value) { return typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value); }
+function ageDays(value, now = Date.now()) { const time = typeof value === 'number' ? value : Date.parse(value); return Number.isFinite(time) && time <= now ? Math.floor((now - time) / 86_400_000) : 0; }
 
-module.exports = { CONFIG_ENV, PROVIDER_ID, SCHEMA, handleRequest, externalStorageRetentionProviderContract, retentionConfig };
+module.exports = { CONFIG_ENV, KEY_ENV, MARKER, PROVIDER_ID, SCHEMA, externalStorageRetentionProviderContract, finalizeOwnershipMarker, handleRequest, retentionConfig, writeOwnershipMarker };

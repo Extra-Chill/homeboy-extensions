@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
-const { CONFIG_ENV, PROVIDER_ID, SCHEMA, handleRequest, externalStorageRetentionProviderContract } = require('../lib/opencode-external-storage-retention');
+const { CONFIG_ENV, KEY_ENV, MARKER, PROVIDER_ID, SCHEMA, finalizeOwnershipMarker, handleRequest, writeOwnershipMarker } = require('../lib/opencode-external-storage-retention');
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-retention-'));
 try {
@@ -13,69 +13,83 @@ try {
 	const data = path.join(root, 'durable-data');
 	const scratch = path.join(temp, 'terminal-scratch');
 	const active = path.join(temp, 'active-scratch');
-	const dead = path.join(temp, 'dead-owner-scratch');
-	const unknown = path.join(temp, 'mixed-version-unmanaged');
-	const output = path.join(data, 'tool-output', 'terminal-output');
-	const snapshot = path.join(data, 'snapshot', 'pinned-export');
-	const database = path.join(data, 'opencode.db');
-	for (const directory of [scratch, active, dead, unknown, output, snapshot]) fs.mkdirSync(directory, { recursive: true });
+	const forged = path.join(temp, 'forged');
+	const unknown = path.join(temp, 'mixed-version');
+	const external = path.join(root, 'outside');
+	const database = path.join(data, 'named-runtime.db');
+	for (const directory of [scratch, active, forged, unknown, external]) fs.mkdirSync(directory, { recursive: true });
+	fs.mkdirSync(data, { recursive: true });
 	fs.writeFileSync(path.join(scratch, 'payload'), '1234567');
 	fs.writeFileSync(path.join(active, 'payload'), 'active');
-	fs.writeFileSync(path.join(dead, 'payload'), 'dead');
+	fs.writeFileSync(path.join(forged, 'payload'), 'forged');
 	fs.writeFileSync(path.join(unknown, 'payload'), 'unknown');
-	fs.writeFileSync(path.join(output, 'payload'), 'tool-output');
-	fs.writeFileSync(path.join(snapshot, 'payload'), 'pinned');
-	fs.writeFileSync(database, 'durable database');
+	fs.writeFileSync(path.join(external, 'payload'), 'outside');
+	fs.symlinkSync(external, path.join(temp, 'symlink'));
+	fs.writeFileSync(database, '12345678901234567890');
 	fs.writeFileSync(path.join(data, 'auth.json'), 'credential');
-	for (const [directory, id] of [[scratch, 'scratch-terminal'], [active, 'scratch-active'], [dead, 'scratch-dead']]) {
-		fs.writeFileSync(path.join(directory, '.homeboy-opencode-retention.json'), JSON.stringify({ id, class: 'scratch', managed: true, reconstructable: true, terminal_at: '2020-01-01T00:00:00Z', owner: directory === active ? { pid: process.pid } : { pid: 999999 } }));
-	}
+	fs.mkdirSync(path.join(data, 'snapshot'), { recursive: true });
 	const command = path.join(root, 'opencode-fixture.cjs');
-	const commandLog = path.join(root, 'native-operations.log');
-	fs.writeFileSync(command, `#!/usr/bin/env node\nrequire('node:fs').appendFileSync(${JSON.stringify(commandLog)}, process.argv.slice(2).join(' ') + '\\n');\n`);
+	const commandLog = path.join(root, 'native.log');
+	fs.writeFileSync(command, `#!/usr/bin/env node
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+if (args.join(' ') === 'debug paths') process.stdout.write('data  ${data}\\ntmp  ${temp}\\n');
+else if (args.join(' ') === 'db path') process.stdout.write('${database}\\n');
+else if (args.join(' ') === 'session list --format json') process.stdout.write(JSON.stringify([{id:'ses_old', updated:Date.parse('2020-01-01T00:00:00Z'), directory:'${path.join(root, 'workspace')}'},{id:'ses_pinned', updated:Date.parse('2020-01-01T00:00:00Z'), pinned:true, directory:'${path.join(root, 'workspace')}'}]));
+else { fs.appendFileSync('${commandLog}', args.join(' ') + '\\n'); if (process.env.FAIL_DELETE === '1' && args[0] === 'session') process.exit(1); if (args[0] === 'db') fs.truncateSync('${database}', 5); }
+`);
 	fs.chmodSync(command, 0o755);
 	const configPath = path.join(root, 'retention.json');
-	fs.writeFileSync(configPath, JSON.stringify({
-		temp_roots: [temp], data_root: data, command,
-		resources: [
-			{ id: 'scratch-terminal', path: scratch, class: 'scratch', managed: true, reconstructable: true, terminal_at: '2020-01-01T00:00:00Z', owner: { pid: 999999 } },
-			{ id: 'scratch-active', path: active, class: 'scratch', managed: true, reconstructable: true, terminal_at: '2020-01-01T00:00:00Z', owner: { pid: process.pid } },
-			{ id: 'scratch-dead', path: dead, class: 'scratch', managed: true, reconstructable: true, terminal_at: '2020-01-01T00:00:00Z', owner: { pid: 999999 } },
-			{ id: 'tool-output', path: output, class: 'durable_artifact', managed: true, reconstructable: true, referenced: true, terminal_at: '2020-01-01T00:00:00Z' },
-			{ id: 'pinned-export', path: snapshot, class: 'pinned_export', managed: true, reconstructable: true, pinned: true, terminal_at: '2020-01-01T00:00:00Z' },
-			{ id: 'expired-session-store', path: database, class: 'session_store', managed: true, reconstructable: true, expired_session_ids: ['ses_expired'], terminal_at: '2020-01-01T00:00:00Z' },
-		],
-	}));
-	const options = { env: { ...process.env, [CONFIG_ENV]: configPath }, now: Date.parse('2026-08-23T00:00:00Z') };
+	fs.writeFileSync(configPath, JSON.stringify({ command, temp_roots: [temp], data_roots: [data] }));
+	const env = { ...process.env, [CONFIG_ENV]: configPath, [KEY_ENV]: 'fixture-marker-key-must-be-at-least-thirty-two-bytes' };
+	assert.equal(writeOwnershipMarker(scratch, { task_id: 'task-terminal', workspace: path.join(root, 'workspace') }, env), true);
+	assert.equal(finalizeOwnershipMarker(scratch, 'ses_old', env), true);
+	assert.equal(writeOwnershipMarker(active, { task_id: 'task-active', workspace: path.join(root, 'active-workspace') }, env), true);
+	fs.writeFileSync(path.join(forged, MARKER), JSON.stringify({ schema: 'homeboy/opencode-retention-marker/v1', id: 'scratch:forged', task_id: 'forged', active: false, signature: 'forged' }));
+	const options = { env, now: Date.parse('2026-08-23T00:00:00Z') };
 	const inventory = handleRequest({ schema: SCHEMA, operation: 'inventory' }, options);
 	assert.equal(inventory.provider_id, PROVIDER_ID);
-	assert.deepEqual(externalStorageRetentionProviderContract(), { id: PROVIDER_ID, command: ['homeboy-opencode-external-storage-retention'], timeout_seconds: 30 });
-	assert.equal(inventory.items.find((item) => item.id === 'scratch-active').active, true);
-	assert.equal(inventory.items.find((item) => item.id === 'tool-output').referenced, true);
-	assert.equal(inventory.items.find((item) => item.id === 'pinned-export').referenced, true);
-	assert.equal(inventory.items.find((item) => item.id === 'credential:auth.json').class, 'credential');
+	assert.equal(inventory.roots.some((entry) => entry.path === path.dirname(database)), true);
+	assert.equal(inventory.items.find((entry) => entry.id === 'scratch:task-active').active, true);
+	assert.equal(inventory.items.find((entry) => entry.id === 'session:ses_old').referenced, false);
+	assert.equal(inventory.items.find((entry) => entry.id === 'session:ses_pinned').referenced, true);
+	assert.deepEqual(Object.fromEntries(['ownership_known', 'reconstructable', 'active', 'referenced'].map((key) => [key, inventory.items.find((entry) => entry.id === 'scratch:task-terminal')[key]])), { ownership_known: true, reconstructable: true, active: false, referenced: false });
+	assert.equal(inventory.items.some((entry) => entry.id === 'scratch:forged'), false);
+	assert.equal(inventory.items.some((entry) => entry.class === 'credential'), true);
+	assert.equal(inventory.items.some((entry) => entry.class === 'pinned_export'), true);
 	assert.ok(inventory.unknown_bytes >= Buffer.byteLength('unknown'));
-	for (const item of inventory.items) {
-		assert.match(item.id, /^(?:scratch|tool|pinned|expired|credential|session-store)/);
-		assert.equal(Number.isInteger(item.bytes), true);
-		assert.match(item.reclaim_token, /^[a-f0-9]{64}$/);
-		assert.match(item.locator, /^opencode:/);
-	}
-	const target = (id) => { const item = inventory.items.find((candidate) => candidate.id === id); return { id, reclaim_token: item.reclaim_token }; };
-	const receipt = handleRequest({ schema: SCHEMA, operation: 'reclaim', generation: inventory.generation, reclaim_targets: [target('scratch-terminal'), target('scratch-dead'), target('expired-session-store'), target('scratch-active'), target('tool-output'), target('pinned-export')] }, options);
-	assert.deepEqual(receipt.reclaimed_item_ids, ['scratch-terminal', 'scratch-dead', 'expired-session-store']);
-	assert.equal(receipt.reclaimed_bytes, inventory.items.find((item) => item.id === 'scratch-terminal').bytes + inventory.items.find((item) => item.id === 'scratch-dead').bytes);
+	const target = (id) => { const value = inventory.items.find((entry) => entry.id === id); return { id, reclaim_token: value.reclaim_token }; };
+	assert.equal(handleRequest({ schema: SCHEMA, operation: 'inventory' }, options).generation, inventory.generation);
+	const receipt = handleRequest({ schema: SCHEMA, operation: 'reclaim', generation: inventory.generation, reclaim_targets: [target('scratch:task-terminal'), target('session:ses_old'), target('scratch:task-active'), target('session:ses_pinned')] }, options);
+	assert.deepEqual(receipt.reclaimed_item_ids, ['scratch:task-terminal', 'session:ses_old']);
+	assert.equal(receipt.reclaimed_bytes, inventory.items.find((entry) => entry.id === 'scratch:task-terminal').bytes + 15);
 	assert.equal(fs.existsSync(scratch), false);
-	assert.equal(fs.existsSync(dead), false);
 	assert.equal(fs.existsSync(active), true);
-	assert.equal(fs.existsSync(output), true);
-	assert.equal(fs.existsSync(snapshot), true);
-	assert.equal(fs.existsSync(path.join(data, 'auth.json')), true);
 	assert.equal(fs.existsSync(database), true);
-	assert.deepEqual(fs.readFileSync(commandLog, 'utf8').trim().split('\n'), ['session delete ses_expired', 'db VACUUM']);
-	assert.throws(() => handleRequest({ schema: SCHEMA, operation: 'reclaim', generation: inventory.generation, reclaim_targets: [target('scratch-dead')] }, options), /stale/);
+	assert.equal(fs.existsSync(path.join(data, 'auth.json')), true);
+	assert.equal(fs.existsSync(path.join(data, 'snapshot')), true);
+	assert.deepEqual(fs.readFileSync(commandLog, 'utf8').trim().split('\n'), ['session delete ses_old', 'db VACUUM']);
+	assert.throws(() => handleRequest({ schema: SCHEMA, operation: 'reclaim', generation: inventory.generation, reclaim_targets: [target('scratch:task-active')] }, options), /stale/);
+	const afterCompaction = handleRequest({ schema: SCHEMA, operation: 'inventory' }, options);
+	const failedSession = afterCompaction.items.find((entry) => entry.id === 'session:ses_old');
+	const failedReceipt = handleRequest({ schema: SCHEMA, operation: 'reclaim', generation: afterCompaction.generation, reclaim_targets: [{ id: failedSession.id, reclaim_token: failedSession.reclaim_token }] }, { ...options, env: { ...env, FAIL_DELETE: '1' } });
+	assert.deepEqual(failedReceipt.reclaimed_item_ids, []);
+	assert.equal(fs.existsSync(database), true);
+	assert.throws(() => handleRequest({ schema: SCHEMA, operation: 'reclaim', generation: 'bad', reclaim_targets: Array.from({ length: 1001 }, () => ({ id: 'x', reclaim_token: 'x' })) }, options), /ceiling/);
+	assert.throws(() => handleRequest({ schema: SCHEMA, operation: 'inventory', extra: true }, options), /valid/);
+	fs.writeFileSync(configPath, JSON.stringify({ command, temp_roots: [temp], data_roots: [temp] }));
+	assert.throws(() => handleRequest({ schema: SCHEMA, operation: 'inventory' }, options), /overlap/);
+	fs.writeFileSync(configPath, JSON.stringify({ command, temp_roots: [temp], data_roots: [data], unexpected: true }));
+	assert.throws(() => handleRequest({ schema: SCHEMA, operation: 'inventory' }, options), /shape/);
+	fs.writeFileSync(configPath, 'x'.repeat(256 * 1024 + 1));
+	assert.throws(() => handleRequest({ schema: SCHEMA, operation: 'inventory' }, options), /ceiling/);
+	const originalKill = process.kill;
+	process.kill = () => { const error = new Error('denied'); error.code = 'EPERM'; throw error; };
+	fs.writeFileSync(configPath, JSON.stringify({ command, temp_roots: [temp], data_roots: [data] }));
+	assert.equal(handleRequest({ schema: SCHEMA, operation: 'inventory' }, options).items.find((entry) => entry.id === 'scratch:task-active').active, true);
+	process.kill = originalKill;
 	const script = path.join(__dirname, '..', 'scripts', 'agent', 'homeboy-opencode-external-storage-retention.cjs');
-	const protocol = spawnSync(process.execPath, [script], { input: JSON.stringify({ schema: SCHEMA, operation: 'inventory' }), encoding: 'utf8', env: options.env });
+	const protocol = spawnSync(process.execPath, [script], { input: JSON.stringify({ schema: SCHEMA, operation: 'inventory' }), encoding: 'utf8', env });
 	assert.equal(protocol.status, 0, protocol.stderr);
 	assert.equal(JSON.parse(protocol.stdout).schema, SCHEMA);
 } finally {
