@@ -138,7 +138,7 @@ assert.equal(provider.capabilities.includes('browser_runtime'), false);
 const manifest = JSON.parse(fs.readFileSync(path.join(runtimeRoot, 'opencode.json'), 'utf8'));
 assert.equal(manifest.id, 'opencode');
 assert.equal(manifest.name, 'OpenCode');
-assert.deepEqual(manifest.requires, { homeboy: '>=0.355.5' });
+assert.deepEqual(manifest.requires, { homeboy: '>=0.356.0' });
 assert.deepEqual(manifest.compatibility, {
 	immediate_failure_patterns: {
 		owner: 'Extra-Chill/homeboy#12293',
@@ -278,7 +278,7 @@ process.exit(0);
 		AI_PROVIDER_OPENAI_CODEX_REFRESH_TOKEN: 'refresh-token-must-not-leak',
 		AI_PROVIDER_OPENAI_CODEX_ACCESS_TOKEN: 'access-token-must-not-leak',
 		FIXTURE_MCP_TOKEN: 'fixture-token-must-not-leak',
-		HOMEBOY_OPENCODE_RETENTION_MARKER_KEY: 'executor-marker-key-must-be-at-least-thirty-two-bytes',
+		XDG_STATE_HOME: path.join(root, 'private-runtime-state'),
 		UNDECLARED_SECRET: 'must-not-reach-opencode',
 	};
 	assert.equal(JSON.parse(runResult.stdout).status, 'succeeded');

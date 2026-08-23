@@ -8,7 +8,6 @@ const { spawnSync } = require('node:child_process');
 const SCHEMA = 'homeboy/external-storage-retention/v1';
 const PROVIDER_ID = 'opencode.external-storage-retention';
 const CONFIG_ENV = 'HOMEBOY_OPENCODE_RETENTION_CONFIG';
-const KEY_ENV = 'HOMEBOY_OPENCODE_RETENTION_MARKER_KEY';
 const MARKER = '.homeboy-opencode-retention.json';
 const MAX_REQUEST_BYTES = 256 * 1024;
 const MAX_CONFIG_BYTES = 256 * 1024;
@@ -16,6 +15,9 @@ const MAX_TARGETS = 1000;
 const MAX_ITEMS = 5000;
 const MAX_ROOTS = 32;
 const MAX_COMMAND_BYTES = 1024 * 1024;
+const MAX_WALK_ENTRIES = 10_000;
+const MAX_WALK_DEPTH = 32;
+const MAX_WALK_BYTES = 1024 * 1024 * 1024 * 1024;
 const CREDENTIAL_NAMES = new Set(['auth.json', 'account.json', 'mcp-auth.json', 'anthropic-oauth-accounts.json', 'openai-oauth-accounts.json']);
 
 function externalStorageRetentionProviderContract() {
@@ -78,10 +80,11 @@ function retentionConfig(env, options) {
 
 function inventoryFor(config, options) {
 	const roots = [...config.temp_roots.map((value, index) => ({ id: `temp-${index}`, path: value })), ...config.data_roots.map((value, index) => ({ id: `data-${index}`, path: value }))];
-	const markerItems = config.marker_key ? discoverMarkers(config, roots, options) : [];
-	const sessions = discoverSessions(config, markerItems, roots, options);
+	const sessions = discoverSessions(config, [], roots, options);
+	const markerItems = config.marker_key ? discoverMarkers(config, roots, options, new Set(sessions.map((entry) => entry.id.slice('session:'.length)))) : [];
 	const protectedItems = discoverProtected(config, roots);
-	const items = [...markerItems, ...sessions, ...protectedItems].slice(0, MAX_ITEMS);
+	const compaction = pendingCompaction(config, options.env || process.env, roots);
+	const items = [...markerItems, ...sessions, ...protectedItems, ...(compaction ? [compaction] : [])].slice(0, MAX_ITEMS);
 	const known = new Set(items.map((item) => item._path).filter(Boolean));
 	const unknownBytes = roots.reduce((total, root) => total + unknownBytesBelow(root.path, known), 0);
 	const generation = digest(JSON.stringify({ roots: roots.map((root) => [root.id, fingerprint(root.path)]), items: items.map((item) => [item.id, item.state]) }));
@@ -91,14 +94,14 @@ function inventoryFor(config, options) {
 	};
 }
 
-function discoverMarkers(config, roots, options) {
+function discoverMarkers(config, roots, options, sessions) {
 	const items = [];
 	for (const root of config.temp_roots) {
 		for (const candidate of [root, ...safeEntries(root).filter((entry) => entry.isDirectory()).slice(0, MAX_ITEMS).map((entry) => path.join(root, entry.name))]) {
 			const marker = readMarker(candidate, options.env || process.env);
 			if (!marker || !sameRealDirectory(candidate, root)) continue;
 			const active = marker.active === true || processAlive(marker.owner_pid);
-			const discovered = item(marker.id, rootId(candidate, roots), 'scratch', candidate, true, active, false, ageDays(marker.terminal_at, options.now), `marker:${marker.signature}`);
+			const discovered = item(marker.id, rootId(candidate, roots), 'scratch', candidate, true, active, Boolean(marker.session_id && sessions.has(marker.session_id)), ageDays(marker.terminal_at, options.now), `marker:${marker.signature}`);
 			discovered._workspace = marker.workspace;
 			items.push(discovered);
 		}
@@ -110,12 +113,12 @@ function discoverSessions(config, markerItems, roots, options) {
 	if (!config.db_path || !safeRegularFile(config.db_path)) return [];
 	const sessions = openCodeJson(config.command, ['session', 'list', '--format', 'json'], options.env || process.env);
 	if (!Array.isArray(sessions)) return [item(`session-store:${digest(config.db_path).slice(0, 16)}`, rootId(config.db_path, roots), 'session_store', config.db_path, false, true, true, 0, `db:${fingerprint(config.db_path)}`)];
-	return sessions.filter((session) => validId(session.id)).slice(0, MAX_ITEMS).map((session) => {
-		const marker = markerItems.find((candidate) => candidate._path && safeAbsolutePath(session.directory) && candidate._workspace === safeAbsolutePath(session.directory));
-		const active = Boolean(marker?.active) || processAlive(session.owner_pid);
-		return item(`session:${session.id}`, rootId(config.db_path, roots), 'session_store', config.db_path, true, active, session.pinned === true, ageDays(session.updated || session.created, options.now), `session:${session.id}:${fingerprint(config.db_path)}`);
-	});
+	const storeId = `session-store:${digest(config.db_path).slice(0, 16)}`;
+	const markerSessions = markerSessionIds(config, options.env || process.env);
+	const sessionItems = sessions.filter((session) => validId(session.id)).slice(0, MAX_ITEMS - 1).map((session) => item(`session:${session.id}`, rootId(config.db_path, roots), 'durable_artifact', config.db_path, true, processAlive(session.owner_pid), session.pinned === true || markerSessions.has(session.id), ageDays(session.updated || session.created, options.now), `session:${session.id}:${fingerprint(config.db_path)}`, 0));
+	return [item(storeId, rootId(config.db_path, roots), 'session_store', config.db_path, false, false, true, 0, `db:${fingerprint(config.db_path)}`), ...sessionItems];
 }
+function markerSessionIds(config, env) { const ids = new Set(); for (const root of config.temp_roots) for (const candidate of [root, ...safeEntries(root).filter((entry) => entry.isDirectory()).slice(0, MAX_ITEMS).map((entry) => path.join(root, entry.name))]) { const marker = readMarker(candidate, env); if (marker?.session_id) ids.add(marker.session_id); } return ids; }
 
 function discoverProtected(config, roots) {
 	const items = [];
@@ -131,14 +134,17 @@ function discoverProtected(config, roots) {
 
 function nativeReclaim(itemToReclaim, config, options) {
 	if (itemToReclaim.class === 'scratch') return reclaimScratch(itemToReclaim.id, config, options);
-	if (itemToReclaim.class !== 'session_store' || !itemToReclaim.id.startsWith('session:')) return null;
+	if (itemToReclaim.id.startsWith('compaction:')) return retryCompaction(config, options.env || process.env);
+	if (!itemToReclaim.id.startsWith('session:')) return null;
 	const sessionId = itemToReclaim.id.slice('session:'.length);
 	const before = sizeOf(config.db_path);
 	const deleted = run(config.command, ['session', 'delete', sessionId], options.env || process.env);
 	if (deleted.status !== 0) return null;
 	const compacted = run(config.command, ['db', 'VACUUM'], options.env || process.env);
 	// A successful deletion is a confirmed, idempotent mutation even if compaction fails.
-	return { bytes: compacted.status === 0 ? Math.max(0, before - sizeOf(config.db_path)) : 0 };
+	if (compacted.status !== 0) { writeCompaction(config, options.env || process.env); return { bytes: 0 }; }
+	clearCompaction(options.env || process.env);
+	return { bytes: Math.max(0, before - sizeOf(config.db_path)) };
 }
 
 function reclaimScratch(id, config, options) {
@@ -165,8 +171,8 @@ function findMarkedScratch(id, config, env) {
 	return '';
 }
 
-function item(id, root, resourceClass, resourcePath, reconstructable, active, referenced, age, state) {
-	return { id, root_id: root || 'unmanaged', class: resourceClass, bytes: sizeOf(resourcePath), locator: `opencode:${resourceClass}:${digest(resourcePath).slice(0, 16)}`, reconstructable, active, referenced, ownership_known: true, age_days: age, _path: resourcePath, state };
+function item(id, root, resourceClass, resourcePath, reconstructable, active, referenced, age, state, bytes) {
+	return { id, root_id: root || 'unmanaged', class: resourceClass, bytes: bytes === undefined ? sizeOf(resourcePath) : bytes, locator: `opencode:${resourceClass}:${digest(resourcePath).slice(0, 16)}`, reconstructable, active, referenced, ownership_known: true, age_days: age, _path: resourcePath, state };
 }
 function readMarker(root, env) {
 	const key = markerKey(env); const markerPath = path.join(root, MARKER);
@@ -187,13 +193,35 @@ function openCodePaths(command, env) { const result = run(command, ['debug', 'pa
 function openCodeDbPath(command, env) { const result = run(command, ['db', 'path'], env); const candidate = String(result.stdout || '').trim(); return result.status === 0 && safeAbsolutePath(candidate) ? candidate : ''; }
 function openCodeJson(command, args, env) { const result = run(command, args, env); if (result.status !== 0 || Buffer.byteLength(result.stdout || '') > MAX_COMMAND_BYTES) return null; try { return JSON.parse(result.stdout); } catch { return null; } }
 function run(command, args, env) { return spawnSync(command, args, { encoding: 'utf8', env, maxBuffer: MAX_COMMAND_BYTES }); }
-function markerKey(env) { const key = env?.[KEY_ENV]; return typeof key === 'string' && key.length >= 32 && key.length <= 4096 ? key : ''; }
+function markerKey(env) {
+	try {
+		const state = env?.XDG_STATE_HOME || (env?.HOME && path.join(env.HOME, '.local', 'state'));
+		if (!safeAbsolutePath(state)) return '';
+		const directory = path.join(state, 'homeboy'); const file = path.join(directory, 'opencode-retention.key');
+		fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+		if (!fs.existsSync(file)) fs.writeFileSync(file, crypto.randomBytes(32).toString('hex'), { mode: 0o600, flag: 'wx' });
+		const stat = fs.lstatSync(file); if (!stat.isFile() || stat.isSymbolicLink() || (stat.mode & 0o077) !== 0) return '';
+		const key = fs.readFileSync(file, 'utf8').trim(); return /^[a-f0-9]{64}$/.test(key) ? key : '';
+	} catch { return ''; }
+}
+function stateFile(env, name) { const state = env?.XDG_STATE_HOME || (env?.HOME && path.join(env.HOME, '.local', 'state')); return safeAbsolutePath(state) ? path.join(state, 'homeboy', name) : ''; }
+function writeCompaction(config, env) { try { const file = stateFile(env, 'opencode-retention-compaction.json'); if (!file) return; fs.writeFileSync(file, JSON.stringify({ db_path: config.db_path, created_at: new Date().toISOString() }), { mode: 0o600 }); } catch { /* The successful session receipt remains truthful even if retry state is unavailable. */ } }
+function clearCompaction(env) { try { const file = stateFile(env, 'opencode-retention-compaction.json'); if (file) fs.unlinkSync(file); } catch { /* No pending state is equivalent to cleared state. */ } }
+function pendingCompaction(config, env, roots) { try { const file = stateFile(env, 'opencode-retention-compaction.json'); const state = file && JSON.parse(fs.readFileSync(file, 'utf8')); return state?.db_path === config.db_path ? item(`compaction:${digest(config.db_path).slice(0, 16)}`, rootId(config.db_path, roots), 'session_store', config.db_path, true, false, false, ageDays(state.created_at), `compaction:${fingerprint(file)}`, 0) : null; } catch { return null; } }
+function retryCompaction(config, env) { const before = sizeOf(config.db_path); const compacted = run(config.command, ['db', 'VACUUM'], env); if (compacted.status !== 0) return null; clearCompaction(env); return { bytes: Math.max(0, before - sizeOf(config.db_path)) }; }
 function sign(value, key) { return crypto.createHmac('sha256', key).update(JSON.stringify(value)).digest('hex'); }
 function secureEqual(left, right) { return left.length === right.length && crypto.timingSafeEqual(Buffer.from(left), Buffer.from(right)); }
 function reclaimable(value) { return value.ownership_known && value.reconstructable && !value.active && !value.referenced && !['credential', 'pinned_export'].includes(value.class); }
 function processAlive(pid) { if (!Number.isInteger(pid) || pid <= 0) return false; try { process.kill(pid, 0); return true; } catch (error) { return error?.code === 'EPERM'; } }
 function safeEntries(directory) { try { return fs.readdirSync(directory, { withFileTypes: true }); } catch { return []; } }
-function sizeOf(candidate) { try { const stat = fs.lstatSync(candidate); if (stat.isSymbolicLink()) return 0; return stat.isDirectory() ? safeEntries(candidate).reduce((sum, entry) => sum + sizeOf(path.join(candidate, entry.name)), 0) : stat.size; } catch { return 0; } }
+function sizeOf(candidate) {
+	const stack = [[candidate, 0]]; let bytes = 0; let entries = 0;
+	while (stack.length && entries < MAX_WALK_ENTRIES && bytes < MAX_WALK_BYTES) {
+		const [current, depth] = stack.pop(); entries += 1;
+		try { const stat = fs.lstatSync(current); if (stat.isSymbolicLink()) continue; if (stat.isDirectory()) { if (depth < MAX_WALK_DEPTH) for (const entry of safeEntries(current).slice(0, MAX_WALK_ENTRIES - entries)) stack.push([path.join(current, entry.name), depth + 1]); } else bytes += stat.size; } catch { /* Unknown paths remain non-reclaimable. */ }
+	}
+	return bytes;
+}
 function unknownBytesBelow(root, known) { if (known.has(root)) return 0; if (![...known].some((candidate) => inside(candidate, root))) return sizeOf(root); return safeEntries(root).reduce((sum, entry) => sum + unknownBytesBelow(path.join(root, entry.name), known), 0); }
 function rootId(candidate, roots) { return roots.find((root) => inside(candidate, root.path))?.id || 'unmanaged'; }
 function sameRealDirectory(candidate, root) { try { return inside(fs.realpathSync(candidate), fs.realpathSync(root)) && !fs.lstatSync(candidate).isSymbolicLink(); } catch { return false; } }
@@ -208,4 +236,4 @@ function digest(value) { return crypto.createHash('sha256').update(value).digest
 function validId(value) { return typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value); }
 function ageDays(value, now = Date.now()) { const time = typeof value === 'number' ? value : Date.parse(value); return Number.isFinite(time) && time <= now ? Math.floor((now - time) / 86_400_000) : 0; }
 
-module.exports = { CONFIG_ENV, KEY_ENV, MARKER, PROVIDER_ID, SCHEMA, externalStorageRetentionProviderContract, finalizeOwnershipMarker, handleRequest, retentionConfig, writeOwnershipMarker };
+module.exports = { CONFIG_ENV, MARKER, PROVIDER_ID, SCHEMA, externalStorageRetentionProviderContract, finalizeOwnershipMarker, handleRequest, retentionConfig, writeOwnershipMarker };
