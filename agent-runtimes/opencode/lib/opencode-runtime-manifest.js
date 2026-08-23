@@ -3,13 +3,16 @@
 const {
 	providerContract,
 } = require('./opencode-agent-task-executor');
+const {
+	externalStorageRetentionProviderContract,
+} = require('./opencode-external-storage-retention');
 
 function runtimeManifest() {
 	return {
 		schema: 'homeboy/agent-runtime-manifest/v1',
 		id: 'opencode',
 		name: 'OpenCode',
-		version: '1.3.2',
+		version: '1.4.0',
 		description: 'OpenCode agent runtime for nested orchestration and repository-scoped agent tasks.',
 		requires: {
 			homeboy: '>=0.345.0',
@@ -38,6 +41,9 @@ function runtimeManifest() {
 				],
 			},
 		],
+		external_storage_retention: {
+			providers: [externalStorageRetentionProviderContract()],
+		},
 		agent_task_executors: [providerContract()],
 	};
 }
