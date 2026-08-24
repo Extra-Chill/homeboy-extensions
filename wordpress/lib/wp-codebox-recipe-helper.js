@@ -41,12 +41,12 @@ function canonicalWpCodeboxRuntime(options = {}) {
   const settings = { ...homeboySettings(env), ...(options.settings || {}) };
   const runtime = preflightWpCodeboxRuntime({ ...options, env, settings });
   if (!runtime.ready) {
-    throw new Error(`WP Codebox runtime preflight failed: ${runtime.reason}; required >=${runtime.required_version}, observed ${runtime.selected.version || 'unavailable'} at ${runtime.selected.path || 'no executable'}. Run ${runtime.remediation}.`);
+    throw new Error(`WP Codebox runtime preflight failed: ${runtime.reason}; required >=${runtime.required_version}, observed ${runtime.selected.version || 'unavailable'} at ${runtime.selected.path || 'no executable'}.${runtime.detail ? ` ${runtime.detail}.` : ''} Run ${runtime.remediation}.`);
   }
   const invocation = runtimeCommand(runtime.selected.path);
   const command = preflightWpCodeboxCommand([invocation.command, ...invocation.args], { ...options, env, settings });
   if (!command.ready) {
-    throw new Error(`WP Codebox command preflight failed: ${command.reason}; required >=${command.required_version}, observed ${command.selected.version || 'unavailable'} at ${command.selected.path || 'no executable'}. Run ${command.remediation}.`);
+    throw new Error(`WP Codebox command preflight failed: ${command.reason}; required >=${command.required_version}, observed ${command.selected.version || 'unavailable'} at ${command.selected.path || 'no executable'}.${command.detail ? ` ${command.detail}.` : ''} Run ${command.remediation}.`);
   }
   return { ...runtime, invocation };
 }

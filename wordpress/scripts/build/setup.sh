@@ -77,7 +77,8 @@ install_wp_codebox() {
 const { preflightWpCodeboxCommand } = require(process.argv[2]);
 const result = preflightWpCodeboxCommand([process.argv[3]]);
 if (!result.ready) {
-  process.stdout.write(`WP Codebox ${result.reason}: required >=${result.required_version}, observed ${result.selected.version || 'unavailable'} at ${result.selected.path || 'no executable'}. Run ${result.remediation}.\n`);
+  const detail = result.detail ? ` ${result.detail}.` : '';
+  process.stdout.write(`WP Codebox ${result.reason}: required >=${result.required_version}, observed ${result.selected.version || 'unavailable'} at ${result.selected.path || 'no executable'}.${detail} Run ${result.remediation}.\n`);
   process.exit(1);
 }
 NODE

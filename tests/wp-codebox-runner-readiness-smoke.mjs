@@ -18,12 +18,13 @@ const run = (env) => {
   assert.equal(result.status, 0, result.stderr);
   return JSON.parse(result.stdout);
 };
-const executable = (file, version, browserPreview = true, invocationMarker = '', browserRuntimeReady = browserPreview) => {
+const executable = (file, version, browserPreview = true, invocationMarker = '', browserRuntimeReady = browserPreview, descriptorMode = 'current') => {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, `#!/usr/bin/env node
 ${invocationMarker ? `require('node:fs').writeFileSync(${JSON.stringify(invocationMarker)}, 'invoked');` : ''}
 if (process.argv.includes('--version')) process.stdout.write(${JSON.stringify(version)});
-else if (process.argv.slice(-3).join(' ') === 'runtime descriptor --json') process.stdout.write(JSON.stringify(${JSON.stringify({ schema: 'wp-codebox/runtime-descriptor/v1', readiness: { status: browserRuntimeReady ? 'available' : 'unavailable', browserRuntime: { status: browserRuntimeReady ? 'ready' : 'unavailable' } }, contractManifest: { schemas: { runtimeBoundary: { browserContainedSiteOpen: browserPreview ? 'wp-codebox/browser-contained-site-open/v1' : '' } } } })}));
+else if (process.argv.slice(-3).join(' ') === 'runtime descriptor --json' && ${JSON.stringify(descriptorMode)} === 'current') process.stdout.write(JSON.stringify(${JSON.stringify({ schema: 'wp-codebox/runtime-descriptor/v1', readiness: { status: browserRuntimeReady ? 'available' : 'unavailable', browserRuntime: { status: browserRuntimeReady ? 'ready' : 'unavailable' } }, contractManifest: { schemas: { runtimeBoundary: { browserContainedSiteOpen: browserPreview ? 'wp-codebox/browser-contained-site-open/v1' : '' } } } })}));
+else if (process.argv.slice(-3).join(' ') === 'runtime descriptor --json' && ${JSON.stringify(descriptorMode)} === 'malformed') process.stdout.write('{not-json');
 else process.exit(1);
 `);
   fs.chmodSync(file, 0o755);
@@ -92,7 +93,7 @@ try {
    const packagedComponent = path.join(packagedRoot, 'plugin');
    const packagedCli = path.join(packagedRoot, 'cli/dist/index.js');
    fs.mkdirSync(packagedComponent, { recursive: true });
-   executable(packagedCli, '0.21.0');
+   executable(packagedCli, '0.23.4');
    const packaged = run({
      HOMEBOY_WP_CODEBOX_INSTALL_DIR: incomplete,
      HOMEBOY_WP_CODEBOX_RUNTIME_COMPONENT: packagedComponent,
@@ -101,6 +102,7 @@ try {
    assert.equal(packaged.ready, true);
    assert.equal(packaged.identity.executable, packagedCli);
    assert.equal(packaged.identity.source, 'packaged');
+   assert.equal(packaged.identity.version, '0.23.4');
    assert.equal(packaged.candidates.path.path, stale);
    assert.equal(packaged.candidates.path.available, true);
    assert.equal(fs.existsSync(pathInvocation), false, 'packaged selection must not preflight an unrelated PATH runtime');
@@ -139,11 +141,31 @@ try {
 
   const missingCapability = path.join(temp, 'missing-capability');
   managedRuntime(missingCapability, '0.21.0', false);
-  assert.equal(run({ HOMEBOY_WP_CODEBOX_INSTALL_DIR: missingCapability, PATH: `${stalePath}:${process.env.PATH}` }).classification, 'wp_codebox_browser_preview_capability_missing');
+  const missingCapabilityResult = run({ HOMEBOY_WP_CODEBOX_INSTALL_DIR: missingCapability, PATH: `${stalePath}:${process.env.PATH}` });
+  assert.equal(missingCapabilityResult.classification, 'wp_codebox_browser_preview_capability_missing');
+  assert.match(missingCapabilityResult.detail, /contractManifest\.schemas\.runtimeBoundary\.browserContainedSiteOpen/);
 
   const browserUnavailable = path.join(temp, 'browser-unavailable');
   managedRuntime(browserUnavailable, '0.21.0', true, false);
   assert.equal(run({ HOMEBOY_WP_CODEBOX_INSTALL_DIR: browserUnavailable, PATH: `${stalePath}:${process.env.PATH}` }).ready, true);
+
+  const currentSource = path.join(temp, 'current-source-0.23.4');
+  managedRuntime(currentSource, '0.23.4', true, false);
+  const currentSourceResult = run({ HOMEBOY_WP_CODEBOX_INSTALL_DIR: currentSource, PATH: `${stalePath}:${process.env.PATH}` });
+  assert.equal(currentSourceResult.ready, true);
+  assert.equal(currentSourceResult.identity.version, '0.23.4');
+
+  const changedCommandSurface = path.join(temp, 'changed-command-surface');
+  executable(changedCommandSurface, '0.24.0', true, '', false, 'missing');
+  const changedCommandResult = run({ HOMEBOY_WP_CODEBOX_INSTALL_DIR: incomplete, HOMEBOY_WP_CODEBOX_BIN: changedCommandSurface, PATH: `${stalePath}:${process.env.PATH}` });
+  assert.equal(changedCommandResult.classification, 'wp_codebox_runtime_descriptor_command_failed');
+  assert.match(changedCommandResult.detail, /runtime descriptor --json failed \(exit 1\)/);
+
+  const malformedDescriptor = path.join(temp, 'malformed-descriptor');
+  executable(malformedDescriptor, '0.24.0', true, '', false, 'malformed');
+  const malformedDescriptorResult = run({ HOMEBOY_WP_CODEBOX_INSTALL_DIR: incomplete, HOMEBOY_WP_CODEBOX_BIN: malformedDescriptor, PATH: `${stalePath}:${process.env.PATH}` });
+  assert.equal(malformedDescriptorResult.classification, 'wp_codebox_runtime_descriptor_json_invalid');
+  assert.match(malformedDescriptorResult.detail, /returned invalid JSON/);
 
   const override = path.join(temp, 'override');
   executable(override, '0.21.0');

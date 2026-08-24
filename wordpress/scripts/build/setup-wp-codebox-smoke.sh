@@ -242,6 +242,7 @@ fi
     HOMEBOY_WP_CODEBOX_INSTALL_DIR="${TMPDIR}/source-install" \
     HOMEBOY_WP_CODEBOX_SOURCE="https://example.test/wp-codebox.git" \
     HOMEBOY_WP_CODEBOX_REF="main" \
+    FAKE_WP_CODEBOX_SOURCE_VERSION="0.23.4" \
     bash "${ROOT_DIR}/scripts/build/setup.sh" > "${TMPDIR}/source-setup.out"
 )
 
@@ -255,6 +256,11 @@ fi
 
 if [ "${source_wp_codebox_bin}" != "${TMPDIR}/source-install/source/packages/cli/dist/index.js" ]; then
     echo "Expected source fallback to export the built WP Codebox CLI, got: ${source_wp_codebox_bin}" >&2
+    exit 1
+fi
+
+if [ "$(FAKE_WP_CODEBOX_SOURCE_VERSION="0.23.4" PATH="${FAKE_BIN}:${NODE_BIN_DIR}:/usr/bin:/bin:/usr/sbin:/sbin" "${source_wp_codebox_bin}" --version)" != "0.23.4" ]; then
+    echo "Expected current WP Codebox 0.23.4 source CLI to pass setup" >&2
     exit 1
 fi
 
