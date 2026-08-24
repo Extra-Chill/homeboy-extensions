@@ -3,21 +3,18 @@
 const {
 	providerContract,
 } = require('./opencode-agent-task-executor');
-const {
-	externalStorageRetentionProviderContract,
-} = require('./opencode-external-storage-retention');
 
 function runtimeManifest() {
 	return {
 		schema: 'homeboy/agent-runtime-manifest/v1',
 		id: 'opencode',
 		name: 'OpenCode',
-		version: '1.4.3',
+		version: '1.4.4',
 		description: 'OpenCode agent runtime for nested orchestration and repository-scoped agent tasks.',
 		requires: {
-			// The contract commits are not in any released Homeboy tag. Update this
-			// placeholder only when the owning core PR assigns its release version.
-			homeboy: '>=0.358.0-external-storage-retention-unreleased',
+			// Older cores safely ignore the optional top-level retention capability.
+			// Cleanup requires a core that implements external_storage_retention.
+			homeboy: '>=0.345.0',
 		},
 		compatibility: {
 			immediate_failure_patterns: {
@@ -43,9 +40,6 @@ function runtimeManifest() {
 				],
 			},
 		],
-		external_storage_retention: {
-			providers: [externalStorageRetentionProviderContract()],
-		},
 		agent_task_executors: [providerContract()],
 	};
 }

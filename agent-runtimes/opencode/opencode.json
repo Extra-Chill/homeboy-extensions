@@ -2,10 +2,10 @@
   "schema": "homeboy/agent-runtime-manifest/v1",
   "id": "opencode",
   "name": "OpenCode",
-  "version": "1.4.3",
+  "version": "1.4.4",
   "description": "OpenCode agent runtime for nested orchestration and repository-scoped agent tasks.",
   "requires": {
-    "homeboy": ">=0.358.0-external-storage-retention-unreleased"
+    "homeboy": ">=0.345.0"
   },
   "compatibility": {
     "immediate_failure_patterns": {
@@ -31,17 +31,6 @@
       ]
     }
   ],
-  "external_storage_retention": {
-    "providers": [
-      {
-        "id": "opencode.external-storage-retention",
-        "command": [
-          "homeboy-opencode-external-storage-retention"
-        ],
-        "timeout_seconds": 30
-      }
-    ]
-  },
   "agent_task_executors": [
     {
       "schema": "homeboy/agent-task-executor-provider/v1",
