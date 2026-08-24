@@ -138,7 +138,7 @@ assert.equal(provider.capabilities.includes('browser_runtime'), false);
 const manifest = JSON.parse(fs.readFileSync(path.join(runtimeRoot, 'opencode.json'), 'utf8'));
 assert.equal(manifest.id, 'opencode');
 assert.equal(manifest.name, 'OpenCode');
-assert.deepEqual(manifest.requires, { homeboy: '>=0.356.0' });
+assert.deepEqual(manifest.requires, { homeboy: '>=0.358.0-external-storage-retention-unreleased' });
 assert.deepEqual(manifest.compatibility, {
 	immediate_failure_patterns: {
 		owner: 'Extra-Chill/homeboy#12293',

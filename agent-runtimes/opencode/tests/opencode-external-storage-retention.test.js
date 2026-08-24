@@ -43,6 +43,9 @@ else { fs.appendFileSync('${commandLog}', args.join(' ') + '\\n'); if (process.e
 	fs.writeFileSync(configPath, JSON.stringify({ command, temp_roots: [temp], data_roots: [data] }));
 	const state = path.join(root, 'private-state');
 	const env = { ...process.env, [CONFIG_ENV]: configPath, XDG_STATE_HOME: state };
+	const linkedState = path.join(root, 'linked-state');
+	fs.symlinkSync(external, linkedState);
+	assert.equal(writeOwnershipMarker(path.join(temp, 'forged'), { task_id: 'symlink-state', workspace: path.join(root, 'workspace') }, { ...env, XDG_STATE_HOME: linkedState }), false);
 	assert.equal(writeOwnershipMarker(scratch, { task_id: 'task-terminal', workspace: path.join(root, 'workspace') }, env), true);
 	assert.equal(finalizeOwnershipMarker(scratch, 'ses_old', env), true);
 	assert.equal(writeOwnershipMarker(active, { task_id: 'task-active', workspace: path.join(root, 'active-workspace') }, env), true);
@@ -65,6 +68,7 @@ else { fs.appendFileSync('${commandLog}', args.join(' ') + '\\n'); if (process.e
 	const target = (id) => { const value = inventory.items.find((entry) => entry.id === id); return { id, reclaim_token: value.reclaim_token }; };
 	assert.equal(handleRequest({ schema: SCHEMA, operation: 'inventory' }, options).generation, inventory.generation);
 	assert.equal(fs.statSync(path.join(state, 'homeboy', 'opencode-retention.key')).mode & 0o077, 0);
+	assert.equal(fs.lstatSync(path.join(state, 'homeboy')).isSymbolicLink(), false);
 	const receipt = handleRequest({ schema: SCHEMA, operation: 'reclaim', generation: inventory.generation, reclaim_targets: [target('scratch:task-terminal'), target('session:ses_expired'), target('scratch:task-active'), target('session:ses_pinned')] }, options);
 	assert.deepEqual(receipt.reclaimed_item_ids, ['session:ses_expired']);
 	assert.equal(receipt.reclaimed_bytes, 15);

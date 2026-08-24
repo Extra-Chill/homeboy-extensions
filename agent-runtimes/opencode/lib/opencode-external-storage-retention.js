@@ -196,13 +196,22 @@ function run(command, args, env) { return spawnSync(command, args, { encoding: '
 function markerKey(env) {
 	try {
 		const state = env?.XDG_STATE_HOME || (env?.HOME && path.join(env.HOME, '.local', 'state'));
-		if (!safeAbsolutePath(state)) return '';
-		const directory = path.join(state, 'homeboy'); const file = path.join(directory, 'opencode-retention.key');
-		fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+		const directory = safeStateDirectory(state); if (!directory) return '';
+		const file = path.join(directory, 'opencode-retention.key');
 		if (!fs.existsSync(file)) fs.writeFileSync(file, crypto.randomBytes(32).toString('hex'), { mode: 0o600, flag: 'wx' });
 		const stat = fs.lstatSync(file); if (!stat.isFile() || stat.isSymbolicLink() || (stat.mode & 0o077) !== 0) return '';
 		const key = fs.readFileSync(file, 'utf8').trim(); return /^[a-f0-9]{64}$/.test(key) ? key : '';
 	} catch { return ''; }
+}
+function safeStateDirectory(state) {
+	const absolute = safeAbsolutePath(state); if (!absolute) return '';
+	let ancestor = absolute; const tail = [];
+	while (!fs.existsSync(ancestor)) { tail.unshift(path.basename(ancestor)); ancestor = path.dirname(ancestor); }
+	if (fs.lstatSync(ancestor).isSymbolicLink()) return '';
+	let current = fs.realpathSync(ancestor);
+	for (const part of tail) { current = path.join(current, part); if (fs.existsSync(current) && fs.lstatSync(current).isSymbolicLink()) return ''; fs.mkdirSync(current, { mode: 0o700 }); }
+	const directory = path.join(current, 'homeboy'); if (fs.existsSync(directory) && fs.lstatSync(directory).isSymbolicLink()) return '';
+	fs.mkdirSync(directory, { recursive: true, mode: 0o700 }); return fs.realpathSync(directory);
 }
 function stateFile(env, name) { const state = env?.XDG_STATE_HOME || (env?.HOME && path.join(env.HOME, '.local', 'state')); return safeAbsolutePath(state) ? path.join(state, 'homeboy', name) : ''; }
 function writeCompaction(config, env) { try { const file = stateFile(env, 'opencode-retention-compaction.json'); if (!file) return; fs.writeFileSync(file, JSON.stringify({ db_path: config.db_path, created_at: new Date().toISOString() }), { mode: 0o600 }); } catch { /* The successful session receipt remains truthful even if retry state is unavailable. */ } }
@@ -213,7 +222,7 @@ function sign(value, key) { return crypto.createHmac('sha256', key).update(JSON.
 function secureEqual(left, right) { return left.length === right.length && crypto.timingSafeEqual(Buffer.from(left), Buffer.from(right)); }
 function reclaimable(value) { return value.ownership_known && value.reconstructable && !value.active && !value.referenced && !['credential', 'pinned_export'].includes(value.class); }
 function processAlive(pid) { if (!Number.isInteger(pid) || pid <= 0) return false; try { process.kill(pid, 0); return true; } catch (error) { return error?.code === 'EPERM'; } }
-function safeEntries(directory) { try { return fs.readdirSync(directory, { withFileTypes: true }); } catch { return []; } }
+function safeEntries(directory, limit = MAX_WALK_ENTRIES) { try { const handle = fs.opendirSync(directory, { bufferSize: Math.min(limit, 128) }); const entries = []; for (let entry = handle.readSync(); entry && entries.length < limit; entry = handle.readSync()) entries.push(entry); handle.closeSync(); return entries; } catch { return []; } }
 function sizeOf(candidate) {
 	const stack = [[candidate, 0]]; let bytes = 0; let entries = 0;
 	while (stack.length && entries < MAX_WALK_ENTRIES && bytes < MAX_WALK_BYTES) {
@@ -222,7 +231,7 @@ function sizeOf(candidate) {
 	}
 	return bytes;
 }
-function unknownBytesBelow(root, known) { if (known.has(root)) return 0; if (![...known].some((candidate) => inside(candidate, root))) return sizeOf(root); return safeEntries(root).reduce((sum, entry) => sum + unknownBytesBelow(path.join(root, entry.name), known), 0); }
+function unknownBytesBelow(root, known) { const stack = [[root, 0]]; let bytes = 0; let entries = 0; while (stack.length && entries < MAX_WALK_ENTRIES && bytes < MAX_WALK_BYTES) { const [current, depth] = stack.pop(); entries += 1; if (known.has(current)) continue; const hasKnownDescendant = [...known].some((candidate) => inside(candidate, current)); if (!hasKnownDescendant) { bytes += sizeOf(current); continue; } if (depth < MAX_WALK_DEPTH) for (const entry of safeEntries(current, MAX_WALK_ENTRIES - entries)) stack.push([path.join(current, entry.name), depth + 1]); } return bytes; }
 function rootId(candidate, roots) { return roots.find((root) => inside(candidate, root.path))?.id || 'unmanaged'; }
 function sameRealDirectory(candidate, root) { try { return inside(fs.realpathSync(candidate), fs.realpathSync(root)) && !fs.lstatSync(candidate).isSymbolicLink(); } catch { return false; } }
 function safeRegularFile(candidate) { try { return safeAbsolutePath(candidate) && fs.lstatSync(candidate).isFile() && !fs.lstatSync(candidate).isSymbolicLink(); } catch { return false; } }

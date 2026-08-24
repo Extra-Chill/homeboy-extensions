@@ -12,10 +12,12 @@ function runtimeManifest() {
 		schema: 'homeboy/agent-runtime-manifest/v1',
 		id: 'opencode',
 		name: 'OpenCode',
-		version: '1.4.2',
+		version: '1.4.3',
 		description: 'OpenCode agent runtime for nested orchestration and repository-scoped agent tasks.',
 		requires: {
-			homeboy: '>=0.356.0',
+			// The contract commits are not in any released Homeboy tag. Update this
+			// placeholder only when the owning core PR assigns its release version.
+			homeboy: '>=0.358.0-external-storage-retention-unreleased',
 		},
 		compatibility: {
 			immediate_failure_patterns: {
