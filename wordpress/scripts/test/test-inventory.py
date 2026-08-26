@@ -28,6 +28,7 @@ declaration Homeboy validates against cannot drift apart.
 """
 
 import argparse
+import fnmatch
 import hashlib
 import json
 import os
@@ -175,6 +176,38 @@ def host_test_path(project, plugin_slug, sandbox_path):
     fail(f"discovered PHPUnit file has no declared host mount: {sandbox_path}")
 
 
+def standalone_php_tests(project, package):
+    declared_paths = settings().get("standalone_php_test_paths") or []
+    if not isinstance(declared_paths, list) or any(
+        not isinstance(path, str) for path in declared_paths
+    ):
+        fail("standalone_php_test_paths must be an array of strings")
+    for declared_path in declared_paths:
+        parts = declared_path.split("/")
+        if declared_path.startswith("/") or ".." in parts:
+            fail(
+                "standalone_php_test_paths contains an invalid component-relative "
+                f"selector: {declared_path}"
+            )
+
+    tests = {}
+    for path in project.rglob("*.php"):
+        if not path.is_file():
+            continue
+        relative = str(path.relative_to(project))
+        if not any(fnmatch.fnmatchcase(relative, pattern) for pattern in declared_paths):
+            continue
+        tests[relative] = {
+            "id": relative,
+            "package": package,
+            "target": "standalone-php",
+            "target_kind": "test",
+            "name": path.name,
+            "expected_outcome": "executed",
+        }
+    return tests
+
+
 def enumerate_tests(project, package, discovery_file):
     try:
         discovery = json.loads(Path(discovery_file).read_text())
@@ -186,14 +219,14 @@ def enumerate_tests(project, package, discovery_file):
         fail("WP Codebox discovery result has an unsupported schema")
     plugin_slug = discovery.get("plugin_slug")
     files = discovery.get("files")
-    if not isinstance(plugin_slug, str) or not plugin_slug or not isinstance(files, list) or not files:
-        fail("WP Codebox discovery result has no plugin identity or files")
+    if not isinstance(plugin_slug, str) or not plugin_slug or not isinstance(files, list):
+        fail("WP Codebox discovery result has no plugin identity or files array")
     if any(not isinstance(path, str) or not path.startswith("/") for path in files):
         fail("WP Codebox discovery files must be unique sandbox-absolute paths")
     if len(files) != len(set(files)):
         fail("WP Codebox discovery files must be unique sandbox-absolute paths")
 
-    tests = {}
+    tests = standalone_php_tests(project, package)
     project = project.resolve()
     for sandbox_path in files:
         path = host_test_path(project, plugin_slug, sandbox_path).resolve()
@@ -203,6 +236,8 @@ def enumerate_tests(project, package, discovery_file):
             fail(f"configured PHPUnit test file escapes the component: {path}")
         if not path.is_file():
             fail(f"discovered PHPUnit test file is missing on the host: {path}")
+        if relative in tests:
+            continue
         tests[relative] = {
             "id": relative,
             "package": package,

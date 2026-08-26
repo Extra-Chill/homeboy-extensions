@@ -57,7 +57,7 @@ homeboy_wordpress_discover_phpunit_files() {
         echo "ERROR: WP Codebox canonical PHPUnit discovery failed." >&2
         return 1
     fi
-    if ! jq -e '.schema == "wp-codebox/phpunit-discovery/v1" and (.files | type == "array" and length > 0)' "$discovery_tmp" >/dev/null 2>&1; then
+    if ! jq -e '.schema == "wp-codebox/phpunit-discovery/v1" and (.files | type == "array")' "$discovery_tmp" >/dev/null 2>&1; then
         rm -f "$discovery_tmp"
         echo "ERROR: WP Codebox returned an invalid canonical PHPUnit discovery result." >&2
         return 1
@@ -118,9 +118,10 @@ if [ "${HOMEBOY_TEST_INVENTORY_ONLY:-}" = "1" ]; then
 fi
 
 # WordPress tests run through the selected runtime backend against real
-# WordPress. The default suite is PHPUnit. Standalone smoke scripts are
-# diagnostic/operator targets and run only when selected explicitly with --file,
-# --host-smoke-file, or the HOMEBOY_WORDPRESS_HOST_SMOKE_FILES scope environment.
+# WordPress. The default suite is PHPUnit plus declared standalone PHP tests.
+# Convention-only smoke scripts are diagnostic/operator targets and run only
+# when selected explicitly with --file, --host-smoke-file, or the
+# HOMEBOY_WORDPRESS_HOST_SMOKE_FILES scope environment.
 
 homeboy_wordpress_test_environment() {
     local test_file="$1"
@@ -1147,25 +1148,39 @@ homeboy_wordpress_collect_full_suite_standalone_php_files() {
 }
 
 homeboy_wordpress_replay_test_shard() {
-    local test_file test_rel
+    local test_file test_rel declared_status
     local phpunit_files=""
+    local standalone_php_files=""
     local selected=0
     local routed=0
+    local shard_status=0
 
     while IFS= read -r test_file; do
         [ -n "$test_file" ] || continue
         selected=$((selected + 1))
         test_rel="$(homeboy_wordpress_rel_test_file "$test_file")" || return 2
-        phpunit_files+="${phpunit_files:+$'\n'}${test_rel}"
-        echo "TEST_SHARD_ROUTE:${test_rel}:runner=phpunit"
+        if homeboy_wordpress_is_declared_standalone_php_test_file "$test_rel"; then
+            standalone_php_files+="${standalone_php_files:+$'\n'}${test_rel}"
+            echo "TEST_SHARD_ROUTE:${test_rel}:runner=host-php-smoke"
+        else
+            declared_status=$?
+            [ "$declared_status" -eq 1 ] || return "$declared_status"
+            phpunit_files+="${phpunit_files:+$'\n'}${test_rel}"
+            echo "TEST_SHARD_ROUTE:${test_rel}:runner=phpunit"
+        fi
         routed=$((routed + 1))
     done <<< "$HOMEBOY_WORDPRESS_SHARD_TEST_FILES"
 
+    if [ -n "$standalone_php_files" ]; then
+        homeboy_wordpress_run_standalone_php_smoke_files "$standalone_php_files" || shard_status=$?
+    fi
     if [ -n "$phpunit_files" ]; then
         export HOMEBOY_WORDPRESS_PHPUNIT_CHANGED_TEST_FILES="$phpunit_files"
         WORDPRESS_RUNTIME_RUNNER="$(homeboy_wordpress_runtime_runner)" || return $?
         bash "$WORDPRESS_RUNTIME_RUNNER" "${PASSTHROUGH_ARGS[@]}" || return $?
     fi
+
+    [ "$shard_status" -eq 0 ] || return "$shard_status"
 
     [ "$selected" -eq "$routed" ] || {
         echo "ERROR: WordPress shard ${HOMEBOY_WORDPRESS_SHARD_ID} routed ${routed} of ${selected} assigned tests." >&2

@@ -3,6 +3,8 @@ set -euo pipefail
 
 # Regression: homeboy-extensions#2644. WordPress inventories were split into
 # immutable manifests, but replay ignored the manifest and ran the full suite.
+# Regression: homeboy-extensions#2719. Default suites may contain declared
+# standalone PHP tests alone or alongside canonical PHPUnit tests.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EXTENSION_PATH="$(cd "${SCRIPT_DIR}/../.." && pwd)"
@@ -35,7 +37,10 @@ jq -e '
 printf '<?php\nclass AlphaTest extends PHPUnit\\Framework\\TestCase {}\n' > "${component}/tests/Unit/AlphaTest.php"
 printf '<?php\nclass BetaTest extends PHPUnit\\Framework\\TestCase {}\n' > "${component}/tests/Unit/BetaTest.php"
 printf '<?php\nclass BehaviorSpec extends PHPUnit\\Framework\\TestCase {}\n' > "${component}/tests/Unit/behavior-spec.php"
+printf '<?php echo "contract smoke ran\\n";\n' > "${component}/tests/contract-smoke.php"
+printf '<?php echo "declared script ran\\n";\n' > "${component}/tests/declared-script.php"
 printf 'import test from "node:test";\ntest("node shard", () => console.log("node test ran"));\n' > "${component}/tests/worker.test.mjs"
+settings_json='{"standalone_php_test_paths":["tests/contract-smoke.php","tests/declared-*.php"]}'
 
 runner_prelude="${WORKDIR}/runner-prelude.sh"
 cat > "$runner_prelude" <<'SH'
@@ -50,7 +55,11 @@ cat > "${WORKDIR}/stubs/wp-codebox.sh" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
 if [ "${HOMEBOY_WORDPRESS_PHPUNIT_DISCOVERY_ONLY:-}" = "1" ]; then
-    jq -cn '{schema:"wp-codebox/phpunit-discovery/v1",plugin_slug:"component",phpunit_xml:"/wordpress/wp-content/plugins/component/phpunit.xml.dist",test_root:"/wordpress/wp-content/plugins/component/tests",selected_testsuites:[],files:["/wordpress/wp-content/plugins/component/tests/Unit/AlphaTest.php","/wordpress/wp-content/plugins/component/tests/Unit/BetaTest.php","/wordpress/wp-content/plugins/component/tests/Unit/behavior-spec.php"]}'
+    if [ "${HOMEBOY_SHARD_STANDALONE_ONLY:-}" = "1" ]; then
+        jq -cn '{schema:"wp-codebox/phpunit-discovery/v1",plugin_slug:"component",phpunit_xml:null,test_root:"/wordpress/wp-content/plugins/component/tests",selected_testsuites:[],files:[]}'
+        exit 0
+    fi
+    jq -cn '{schema:"wp-codebox/phpunit-discovery/v1",plugin_slug:"component",phpunit_xml:"/wordpress/wp-content/plugins/component/phpunit.xml.dist",test_root:"/wordpress/wp-content/plugins/component/tests",selected_testsuites:[],files:["/wordpress/wp-content/plugins/component/tests/Unit/AlphaTest.php","/wordpress/wp-content/plugins/component/tests/Unit/BetaTest.php","/wordpress/wp-content/plugins/component/tests/Unit/behavior-spec.php","/wordpress/wp-content/plugins/component/tests/contract-smoke.php"]}'
     exit 0
 fi
 printf 'PHPUNIT_CHANGED=%s\n' "${HOMEBOY_WORDPRESS_PHPUNIT_CHANGED_TEST_FILES:-}"
@@ -79,13 +88,17 @@ SH
 inventory="${WORKDIR}/inventory.json"
 discovery="${WORKDIR}/discovery.json"
 HOMEBOY_WORDPRESS_PHPUNIT_DISCOVERY_ONLY=1 "${WORKDIR}/stubs/wp-codebox.sh" > "$discovery"
-python3 "${EXTENSION_PATH}/scripts/test/test-inventory.py" \
+HOMEBOY_SETTINGS_JSON="$settings_json" python3 "${EXTENSION_PATH}/scripts/test/test-inventory.py" \
     --project "$component" \
     --extension-path "$EXTENSION_PATH" \
     --runner wordpress \
     --package component \
     --discovery-file "$discovery" \
     --output "$inventory" >/dev/null
+jq -e '
+    ([.tests[] | select(.id == "tests/contract-smoke.php" and .target == "standalone-php")] | length) == 1
+    and ([.tests[] | select(.id == "tests/Unit/BetaTest.php" and .target == "phpunit")] | length) == 1
+' "$inventory" >/dev/null || fail 'mixed default-suite inventory lost its runtime discriminators'
 
 write_manifest() {
     local target="$1" id="$2" tests_json canonical fingerprint
@@ -103,6 +116,7 @@ write_manifest() {
 run_manifest() {
     local manifest="$1"
     local output="$2"
+    local standalone_only="${3:-0}"
     HOMEBOY_EXTENSION_PATH="$EXTENSION_PATH" \
     HOMEBOY_RUNTIME_RUNNER_PRELUDE="$runner_prelude" \
     HOMEBOY_COMPONENT_ID="component" \
@@ -112,6 +126,8 @@ run_manifest() {
     HOMEBOY_RUNTIME_TEST_RUNNER_WP_CODEBOX="${WORKDIR}/stubs/wp-codebox.sh" \
     HOMEBOY_RUNTIME_WRITE_TEST_RESULTS="${WORKDIR}/write-test-results.sh" \
     HOMEBOY_TEST_RESULTS_FILE="${output}.results.json" \
+    HOMEBOY_SETTINGS_JSON="$settings_json" \
+    HOMEBOY_SHARD_STANDALONE_ONLY="$standalone_only" \
     HOMEBOY_TEST_SHARD_MANIFEST="$manifest" \
         bash "${EXTENSION_PATH}/scripts/test/test-runner.sh" > "$output" 2>&1
 }
@@ -141,6 +157,46 @@ if [ "$(jq -r '.total' "${WORKDIR}/second.out.results.json")" -ne 1 ]; then
 fi
 assert_not_contains "${WORKDIR}/second.out" 'AlphaTest.php'
 assert_not_contains "${WORKDIR}/second.out" 'standalone smoke ran'
+
+mixed="${WORKDIR}/shard-mixed.json"
+write_manifest "$mixed" shard-4 tests/contract-smoke.php tests/Unit/BetaTest.php
+run_manifest "$mixed" "${WORKDIR}/mixed.out"
+assert_contains "${WORKDIR}/mixed.out" 'TEST_SHARD_ROUTE:tests/contract-smoke.php:runner=host-php-smoke'
+assert_contains "${WORKDIR}/mixed.out" 'PHP_SMOKE_OK:tests/contract-smoke.php'
+assert_contains "${WORKDIR}/mixed.out" 'TEST_SHARD_ROUTE:tests/Unit/BetaTest.php:runner=phpunit'
+assert_contains "${WORKDIR}/mixed.out" 'PHPUNIT_CHANGED=tests/Unit/BetaTest.php'
+assert_contains "${WORKDIR}/mixed.out" 'TEST_SHARD_SUMMARY:id=shard-4 selected=2 routed=2 status=passed'
+if [ "$(jq -r '.total' "${WORKDIR}/mixed.out.results.json")" -ne 2 ]; then
+    fail 'mixed shard result sidecar does not match manifest membership'
+fi
+
+standalone_inventory="${WORKDIR}/standalone-inventory.json"
+standalone_discovery="${WORKDIR}/standalone-discovery.json"
+HOMEBOY_SHARD_STANDALONE_ONLY=1 HOMEBOY_WORDPRESS_PHPUNIT_DISCOVERY_ONLY=1 "${WORKDIR}/stubs/wp-codebox.sh" > "$standalone_discovery"
+HOMEBOY_SETTINGS_JSON="$settings_json" python3 "${EXTENSION_PATH}/scripts/test/test-inventory.py" \
+    --project "$component" \
+    --extension-path "$EXTENSION_PATH" \
+    --runner wordpress \
+    --package component \
+    --discovery-file "$standalone_discovery" \
+    --output "$standalone_inventory" >/dev/null
+jq -e '
+    (.tests | length) == 2
+    and all(.tests[]; .target == "standalone-php")
+' "$standalone_inventory" >/dev/null || fail 'standalone-only inventory contains incorrect membership'
+mixed_inventory="$inventory"
+inventory="$standalone_inventory"
+standalone="${WORKDIR}/shard-standalone.json"
+write_manifest "$standalone" shard-5 tests/declared-script.php
+inventory="$mixed_inventory"
+run_manifest "$standalone" "${WORKDIR}/standalone.out" 1
+assert_contains "${WORKDIR}/standalone.out" 'TEST_SHARD_ROUTE:tests/declared-script.php:runner=host-php-smoke'
+assert_contains "${WORKDIR}/standalone.out" 'PHP_SMOKE_OK:tests/declared-script.php'
+assert_contains "${WORKDIR}/standalone.out" 'TEST_SHARD_SUMMARY:id=shard-5 selected=1 routed=1 status=passed'
+assert_not_contains "${WORKDIR}/standalone.out" 'PHPUNIT_CHANGED='
+if [ "$(jq -r '.total' "${WORKDIR}/standalone.out.results.json")" -ne 1 ]; then
+    fail 'standalone shard result sidecar does not match manifest membership'
+fi
 
 HOMEBOY_TEST_SHARD_MANIFEST="$first" \
 HOMEBOY_RUNTIME_WRITE_TEST_RESULTS="${WORKDIR}/write-test-results.sh" \
