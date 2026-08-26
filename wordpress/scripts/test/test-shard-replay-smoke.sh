@@ -41,6 +41,7 @@ printf '<?php echo "contract smoke ran\\n";\n' > "${component}/tests/contract-sm
 printf '<?php echo "declared script ran\\n";\n' > "${component}/tests/declared-script.php"
 printf 'import test from "node:test";\ntest("node shard", () => console.log("node test ran"));\n' > "${component}/tests/worker.test.mjs"
 settings_json='{"standalone_php_test_paths":["tests/contract-smoke.php","tests/declared-*.php"]}'
+php_bin="$(command -v php)" || fail 'php is required for standalone shard replay coverage'
 
 runner_prelude="${WORKDIR}/runner-prelude.sh"
 cat > "$runner_prelude" <<'SH'
@@ -126,6 +127,7 @@ run_manifest() {
     HOMEBOY_RUNTIME_TEST_RUNNER_WP_CODEBOX="${WORKDIR}/stubs/wp-codebox.sh" \
     HOMEBOY_RUNTIME_WRITE_TEST_RESULTS="${WORKDIR}/write-test-results.sh" \
     HOMEBOY_TEST_RESULTS_FILE="${output}.results.json" \
+    HOMEBOY_PHP_BIN="$php_bin" \
     HOMEBOY_SETTINGS_JSON="$settings_json" \
     HOMEBOY_SHARD_STANDALONE_ONLY="$standalone_only" \
     HOMEBOY_TEST_SHARD_MANIFEST="$manifest" \
@@ -162,6 +164,7 @@ mixed="${WORKDIR}/shard-mixed.json"
 write_manifest "$mixed" shard-4 tests/contract-smoke.php tests/Unit/BetaTest.php
 run_manifest "$mixed" "${WORKDIR}/mixed.out"
 assert_contains "${WORKDIR}/mixed.out" 'TEST_SHARD_ROUTE:tests/contract-smoke.php:runner=host-php-smoke'
+assert_contains "${WORKDIR}/mixed.out" 'contract smoke ran'
 assert_contains "${WORKDIR}/mixed.out" 'PHP_SMOKE_OK:tests/contract-smoke.php'
 assert_contains "${WORKDIR}/mixed.out" 'TEST_SHARD_ROUTE:tests/Unit/BetaTest.php:runner=phpunit'
 assert_contains "${WORKDIR}/mixed.out" 'PHPUNIT_CHANGED=tests/Unit/BetaTest.php'
@@ -191,6 +194,7 @@ write_manifest "$standalone" shard-5 tests/declared-script.php
 inventory="$mixed_inventory"
 run_manifest "$standalone" "${WORKDIR}/standalone.out" 1
 assert_contains "${WORKDIR}/standalone.out" 'TEST_SHARD_ROUTE:tests/declared-script.php:runner=host-php-smoke'
+assert_contains "${WORKDIR}/standalone.out" 'declared script ran'
 assert_contains "${WORKDIR}/standalone.out" 'PHP_SMOKE_OK:tests/declared-script.php'
 assert_contains "${WORKDIR}/standalone.out" 'TEST_SHARD_SUMMARY:id=shard-5 selected=1 routed=1 status=passed'
 assert_not_contains "${WORKDIR}/standalone.out" 'PHPUNIT_CHANGED='
