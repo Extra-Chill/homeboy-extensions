@@ -4,15 +4,17 @@ export function selectedScenarioIds(raw = '') {
   return [...new Set(String(raw).split(',').map((id) => id.trim()).filter(Boolean))];
 }
 
-export function rigWorkloadInputs(raw = '', selectedIds = [], pluginSlug = '') {
+export function rigWorkloadInputs(raw = '', selectedIds = [], pluginSlug = '', pluginSource = '') {
   const selected = new Set(selectedIds);
   const workloads = [];
   const mounts = [];
+  const inTreeBenchDirectory = pluginSource ? path.resolve(pluginSource, 'tests', 'bench') : '';
 
   for (const source of String(raw).split(path.delimiter).map((entry) => entry.trim()).filter(Boolean)) {
     const filename = path.basename(source);
     const id = scenarioId(filename);
     if (selected.size > 0 && !selected.has(id)) continue;
+    if (inTreeBenchDirectory && path.dirname(path.resolve(source)) === inTreeBenchDirectory) continue;
 
     const relativeFile = `.homeboy/bench-rig/${filename}`;
     workloads.push({

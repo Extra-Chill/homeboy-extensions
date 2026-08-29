@@ -24,4 +24,12 @@ assert.deepEqual(inputs.mounts, [{
   mode: 'readonly',
 }]);
 
+const pluginSource = path.join(path.sep, 'tmp', 'markdown-database-integration');
+assert.deepEqual(rigWorkloadInputs(
+  path.join(pluginSource, 'tests', 'bench', 'boot-timing.php'),
+  ['boot-timing'],
+  'markdown-database-integration',
+  pluginSource,
+), { workloads: [], mounts: [] });
+
 console.log('wp-codebox bench selection smoke ok');
