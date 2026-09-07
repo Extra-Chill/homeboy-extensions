@@ -81,6 +81,9 @@ cat > "$COMPONENT_DIR/vendor_prefixed/example/generated.php" <<'PHP'
 class Example_Generated {}
 PHP
 
+git -C "$COMPONENT_DIR" init -q
+git -C "$COMPONENT_DIR" add -f example-plugin.php scoper.inc.php tools tests vendor_prefixed
+
 HOMEBOY_EXTENSION_PATH="$FAKE_EXTENSION" \
 HOMEBOY_COMPONENT_PATH="$COMPONENT_DIR" \
 HOMEBOY_COMPONENT_ID="example-plugin" \
@@ -88,6 +91,7 @@ HOMEBOY_RUNTIME_RUNNER_PRELUDE="$RUNNER_PRELUDE_HELPER" \
 HOMEBOY_STEP="none" \
     bash "$RUNNER" > "$TMP_DIR/lint.out" 2>&1
 
+assert_contains "$TMP_DIR/lint.out" "Non-runtime WordPress lint profile: syntax-checking"
 assert_contains "$TMP_DIR/lint.out" "Linting passed"
 
 assert_contains "$RUNNER" 'homeboy_runner_harness_init --bash 4 --steps --sidecar-writer --component-alias PLUGIN_PATH'

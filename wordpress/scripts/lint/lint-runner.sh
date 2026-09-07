@@ -300,30 +300,33 @@ homeboy_php_syntax_check() {
 # The WordPress lint profile targets production plugin/theme runtime files. Keep
 # php-scoper config, build tooling, smoke harnesses, PHPUnit tests, and generated
 # vendored code out of that profile; syntax checking is enough for those roles.
-if [ -n "${HOMEBOY_LINT_FILE:-}" ] || [ -n "${HOMEBOY_LINT_GLOB:-}" ]; then
-    RUNTIME_LINT_FILES=()
-    NON_RUNTIME_LINT_FILES=()
+# Full-repository lint uses the same partition as scoped file/glob lint.
+RUNTIME_LINT_FILES=()
+NON_RUNTIME_LINT_FILES=()
 
-    for lint_target in "${LINT_FILES[@]}"; do
-        rel_target=$(homeboy_lint_relpath "$lint_target")
-        if [ -f "$lint_target" ] && ! homeboy_wordpress_runtime_lint_file "$rel_target"; then
-            NON_RUNTIME_LINT_FILES+=("$lint_target")
-        else
-            RUNTIME_LINT_FILES+=("$lint_target")
-        fi
-    done
-
-    if [ "${#NON_RUNTIME_LINT_FILES[@]}" -gt 0 ]; then
-        echo "Non-runtime WordPress lint profile: syntax-checking ${#NON_RUNTIME_LINT_FILES[@]} file(s)"
-        homeboy_php_syntax_check "${NON_RUNTIME_LINT_FILES[@]}"
+for lint_target in "${LINT_FILES[@]}"; do
+    rel_target=$(homeboy_lint_relpath "$lint_target")
+    if [ -f "$lint_target" ] && ! homeboy_wordpress_runtime_lint_file "$rel_target"; then
+        NON_RUNTIME_LINT_FILES+=("$lint_target")
+    else
+        RUNTIME_LINT_FILES+=("$lint_target")
     fi
+done
 
-    if [ "${#RUNTIME_LINT_FILES[@]}" -eq 0 ]; then
+if [ "${#NON_RUNTIME_LINT_FILES[@]}" -gt 0 ]; then
+    echo "Non-runtime WordPress lint profile: syntax-checking ${#NON_RUNTIME_LINT_FILES[@]} file(s)"
+    homeboy_php_syntax_check "${NON_RUNTIME_LINT_FILES[@]}"
+fi
+
+if [ "${#RUNTIME_LINT_FILES[@]}" -eq 0 ]; then
+    if [ -n "${HOMEBOY_LINT_FILE:-}" ] || [ -n "${HOMEBOY_LINT_GLOB:-}" ]; then
         echo "Skipping production WordPress lint profile for non-runtime file scope"
         echo "Linting passed"
         exit 0
     fi
-
+    echo "Skipping production WordPress lint profile: no production PHP files"
+    LINT_FILES=()
+else
     LINT_FILES=("${RUNTIME_LINT_FILES[@]}")
 fi
 
@@ -780,6 +783,10 @@ if ! should_run_step "phpcs"; then
     json_output=""
     json_exit=0
     echo "Skipping PHPCS (step filter)"
+elif [ "${#LINT_FILES[@]}" -eq 0 ]; then
+    json_output=""
+    json_exit=0
+    echo "Skipping PHPCS (no production PHP files)"
 else
     set +e
     json_output=$("$PHPCS_BIN" "${phpcs_base_args[@]}" --report=json "${LINT_FILES[@]}" 2>/dev/null)
@@ -1122,6 +1129,9 @@ fi
 PHPCS_PASSED=0
 if ! should_run_step "phpcs"; then
     echo "Skipping PHPCS (step filter)"
+    PHPCS_PASSED=1
+elif [ "${#LINT_FILES[@]}" -eq 0 ]; then
+    echo "Skipping PHPCS (no production PHP files)"
     PHPCS_PASSED=1
 elif "$PHPCS_BIN" "${phpcs_base_args[@]}" "${LINT_FILES[@]}"; then
     echo "PHPCS linting passed"
