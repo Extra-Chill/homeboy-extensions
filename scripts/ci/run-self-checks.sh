@@ -59,7 +59,10 @@ if ! jq empty "$MANIFEST" >/dev/null 2>&1; then
     exit 1
 fi
 
-mapfile -t COMMANDS < <(jq -r --arg capability "$CAPABILITY" \
+COMMANDS=()
+while IFS= read -r command; do
+    COMMANDS+=("$command")
+done < <(jq -r --arg capability "$CAPABILITY" \
     '.self_checks[$capability] // [] | .[]' "$MANIFEST")
 
 if [ "${#COMMANDS[@]}" -eq 0 ]; then
