@@ -32,7 +32,7 @@ async function main() {
 		assert.equal(normalized.cwd, fixtureDir);
 
 		const result = await executeTerminalAction(
-			{ type: 'wp_cli', command: 'option get blogname', timeout_ms: 5000 },
+			{ type: 'wp_cli', command: 'option get blogname', timeout_ms: 5000, shell_args: [ '-c' ] },
 			{ runtimeRoot: fixtureDir, env: { PATH: `${binDir}:${process.env.PATH || ''}` } }
 		);
 
