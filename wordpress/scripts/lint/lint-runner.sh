@@ -297,10 +297,11 @@ homeboy_php_syntax_check() {
     return 0
 }
 
-# The WordPress lint profile targets production plugin/theme runtime files. Keep
-# php-scoper config, build tooling, smoke harnesses, PHPUnit tests, and generated
-# vendored code out of that profile; syntax checking is enough for those roles.
-# Full-repository lint uses the same partition as scoped file/glob lint.
+# Partition every lint target by WordPress lint role, for full-repository
+# lints and scoped file/glob targets alike (#2799). The WordPress lint profile
+# targets production plugin/theme runtime files. Keep php-scoper config, build
+# tooling, smoke harnesses, PHPUnit tests, and generated vendored code out of
+# that profile; syntax checking is enough for those roles.
 RUNTIME_LINT_FILES=()
 NON_RUNTIME_LINT_FILES=()
 
@@ -319,16 +320,12 @@ if [ "${#NON_RUNTIME_LINT_FILES[@]}" -gt 0 ]; then
 fi
 
 if [ "${#RUNTIME_LINT_FILES[@]}" -eq 0 ]; then
-    if [ -n "${HOMEBOY_LINT_FILE:-}" ] || [ -n "${HOMEBOY_LINT_GLOB:-}" ]; then
-        echo "Skipping production WordPress lint profile for non-runtime file scope"
-        echo "Linting passed"
-        exit 0
-    fi
-    echo "Skipping production WordPress lint profile: no production PHP files"
-    LINT_FILES=()
-else
-    LINT_FILES=("${RUNTIME_LINT_FILES[@]}")
+    echo "Skipping production WordPress lint profile for non-runtime file scope"
+    echo "Linting passed"
+    exit 0
 fi
+
+LINT_FILES=("${RUNTIME_LINT_FILES[@]}")
 
 PHPCS_BIN="${EXTENSION_PATH}/vendor/bin/phpcs"
 PHPCBF_BIN="${EXTENSION_PATH}/vendor/bin/phpcbf"
