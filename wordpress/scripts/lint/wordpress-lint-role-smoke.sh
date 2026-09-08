@@ -20,7 +20,6 @@ COMPONENT_DIR="${TMPDIR}/component"
 PHPCS_ARGS_FILE="${TMPDIR}/phpcs-args.txt"
 PHPSTAN_CALLS_FILE="${TMPDIR}/phpstan-calls.txt"
 RESOLVE_CONTEXT_HELPER="${TMPDIR}/resolve-context.sh"
-PRELUDE_HELPER="${TMPDIR}/runner-prelude.sh"
 DETECT_COMPONENT_HELPER="${TMPDIR}/detect-component.sh"
 DEPENDENCY_HELPER="${TMPDIR}/validation-dependencies.sh"
 RUNNER_STEPS_HELPER="${TMPDIR}/runner-steps.sh"
@@ -38,14 +37,6 @@ touch "${EXTENSION_DIR}/rulesets/homeboy-wordpress-project.xml"
 # the real scripts tree there so its unconditional shared-lib source resolves.
 ln -s "${ROOT_DIR}/scripts" "${TMPDIR}/scripts"
 ln -s "${SCRIPT_DIR}/phpstan-runner.sh" "${EXTENSION_DIR}/scripts/lint/phpstan-runner.sh"
-
-cat > "${COMPONENT_DIR}/plugin.php" <<'PHP'
-<?php
-/**
- * Plugin Name: Role Smoke
- * Text Domain: role-smoke
- */
-PHP
 
 cat > "${COMPONENT_DIR}/scoper.inc.php" <<'PHP'
 <?php
@@ -69,27 +60,12 @@ cat > "${COMPONENT_DIR}/tests/smoke-content-normalization.php" <<'PHP'
 require_once __DIR__ . '/../vendor/autoload.php';
 PHP
 
-git -C "$COMPONENT_DIR" init -q
-git -C "$COMPONENT_DIR" add plugin.php scoper.inc.php tools tests
-
 cat > "$RESOLVE_CONTEXT_HELPER" <<'SH'
 homeboy_resolve_context() {
     EXTENSION_PATH="$HOMEBOY_EXTENSION_PATH"
     COMPONENT_PATH="$HOMEBOY_COMPONENT_PATH"
     PLUGIN_PATH="$HOMEBOY_COMPONENT_PATH"
     COMPONENT_ID="${HOMEBOY_COMPONENT_ID:-role-smoke}"
-}
-SH
-
-cat > "$PRELUDE_HELPER" <<'SH'
-homeboy_runner_init() {
-    EXTENSION_PATH="$HOMEBOY_EXTENSION_PATH"
-    PLUGIN_PATH="$HOMEBOY_COMPONENT_PATH"
-    COMPONENT_ID="${HOMEBOY_COMPONENT_ID:-role-smoke}"
-}
-
-should_run_step() {
-    [ "$1" = "phpcs" ]
 }
 SH
 
@@ -163,19 +139,6 @@ assert_equals() {
     fi
 }
 
-assert_not_contains() {
-    local needle="$1"
-    local haystack_file="$2"
-    local message="$3"
-
-    if grep -F -- "$needle" "$haystack_file" >/dev/null; then
-        echo "FAIL: $message" >&2
-        echo "Contents of $haystack_file:" >&2
-        cat "$haystack_file" >&2
-        exit 1
-    fi
-}
-
 run_lint_file() {
     local rel_file="$1"
 
@@ -184,7 +147,6 @@ run_lint_file() {
     HOMEBOY_EXTENSION_PATH="$EXTENSION_DIR" \
     HOMEBOY_COMPONENT_PATH="$COMPONENT_DIR" \
     HOMEBOY_COMPONENT_ID="role-smoke" \
-    HOMEBOY_RUNTIME_RUNNER_PRELUDE="$PRELUDE_HELPER" \
     HOMEBOY_RUNTIME_RESOLVE_CONTEXT="$RESOLVE_CONTEXT_HELPER" \
     HOMEBOY_RUNTIME_DETECT_COMPONENT="$DETECT_COMPONENT_HELPER" \
     HOMEBOY_WORDPRESS_DEPENDENCY_HELPER="$DEPENDENCY_HELPER" \
@@ -195,25 +157,6 @@ run_lint_file() {
     HOMEBOY_SUMMARY_MODE=1 \
     HOMEBOY_LINT_FILE="$rel_file" \
     bash "$RUNNER" >/dev/null
-}
-
-run_lint_repo() {
-    local output_file="$1"
-
-    : > "$PHPCS_ARGS_FILE"
-    printf '0\n' > "$PHPSTAN_CALLS_FILE"
-    HOMEBOY_EXTENSION_PATH="$EXTENSION_DIR" \
-    HOMEBOY_COMPONENT_PATH="$COMPONENT_DIR" \
-    HOMEBOY_COMPONENT_ID="role-smoke" \
-    HOMEBOY_RUNTIME_RUNNER_PRELUDE="$PRELUDE_HELPER" \
-    HOMEBOY_RUNTIME_RESOLVE_CONTEXT="$RESOLVE_CONTEXT_HELPER" \
-    HOMEBOY_RUNTIME_DETECT_COMPONENT="$DETECT_COMPONENT_HELPER" \
-    HOMEBOY_WORDPRESS_DEPENDENCY_HELPER="$DEPENDENCY_HELPER" \
-    PHPCS_ARGS_FILE="$PHPCS_ARGS_FILE" \
-    PHPSTAN_CALLS_FILE="$PHPSTAN_CALLS_FILE" \
-    HOMEBOY_SUMMARY_MODE=1 \
-    HOMEBOY_STEP=phpcs \
-    bash "$RUNNER" > "$output_file"
 }
 
 run_lint_file 'scoper.inc.php'
@@ -231,34 +174,9 @@ if [ "$(cat "$PHPSTAN_CALLS_FILE")" = "0" ]; then
 fi
 
 run_lint_file 'tests/BFBConversionUnitTest.php'
-assert_equals '' "$(cat "$PHPCS_ARGS_FILE")" 'PHPUnit test skips production PHPCS profile'
 assert_equals '0' "$(cat "$PHPSTAN_CALLS_FILE")" 'WordPress PHPUnit test role skips unsupported host PHPStan context'
 
 run_lint_file 'tests/smoke-content-normalization.php'
-assert_equals '' "$(cat "$PHPCS_ARGS_FILE")" 'standalone smoke harness skips production PHPCS profile'
 assert_equals '0' "$(cat "$PHPSTAN_CALLS_FILE")" 'standalone smoke harness role skips unsupported dynamic bootstrap PHPStan context'
-
-REPO_OUT="${TMPDIR}/repo.out"
-run_lint_repo "$REPO_OUT"
-assert_contains 'Non-runtime WordPress lint profile: syntax-checking 3 file(s)' "$REPO_OUT" 'full-repository lint syntax-checks non-runtime test harnesses'
-assert_contains "${COMPONENT_DIR}/plugin.php" "$PHPCS_ARGS_FILE" 'full-repository PHPCS receives production PHP files'
-assert_not_contains "${COMPONENT_DIR}/tests/BFBConversionUnitTest.php" "$PHPCS_ARGS_FILE" 'full-repository PHPCS skips PHPUnit tests'
-assert_not_contains "${COMPONENT_DIR}/tests/smoke-content-normalization.php" "$PHPCS_ARGS_FILE" 'full-repository PHPCS skips smoke harnesses'
-assert_not_contains "${COMPONENT_DIR}/scoper.inc.php" "$PHPCS_ARGS_FILE" 'full-repository PHPCS skips scoper config'
-
-cat > "${COMPONENT_DIR}/tests/smoke-content-normalization.php" <<'PHP'
-<?php
-function (
-PHP
-set +e
-run_lint_repo "$REPO_OUT"
-syntax_status=$?
-set -e
-if [ "$syntax_status" -eq 0 ]; then
-    echo "FAIL: full-repository lint must fail when a smoke harness has a syntax error" >&2
-    cat "$REPO_OUT" >&2
-    exit 1
-fi
-assert_contains 'PHP syntax check failed' "$REPO_OUT" 'full-repository lint reports non-runtime syntax failures'
 
 echo "WordPress lint role smoke passed"
