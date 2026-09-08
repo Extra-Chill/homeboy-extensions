@@ -2,6 +2,26 @@
 
 All notable changes to the **wordpress** extension will be documented in this file.
 
+## [3.45.5] - 2026-09-07
+
+### Fixed
+- treat a behind-upstream WP Codebox checkout as advisory when the pinned commit matches
+
+## [3.45.4] - 2026-09-07
+
+### Fixed
+- dump native MariaDB host diagnostics when readiness is not ready
+
+## [3.45.3] - 2026-09-07
+
+### Fixed
+- read native MariaDB support from packageCapabilities
+
+## [3.45.2] - 2026-09-07
+
+### Fixed
+- emit runtimes shape from env detector; fail on unresolved validation deps
+
 ## [3.45.1] - 2026-09-07
 
 ### Fixed
