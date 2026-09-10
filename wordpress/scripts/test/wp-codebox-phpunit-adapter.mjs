@@ -650,7 +650,7 @@ function canonicalMounts(value) {
 }
 function managedPreloadFiles(bootstrapMode, preloadFiles) {
   const configured = Array.isArray(preloadFiles) ? preloadFiles : [];
-  return bootstrapMode === 'managed' ? [wpCliBootstrapTarget, ...configured] : configured;
+  return !discoveryOnly && bootstrapMode === 'managed' ? [wpCliBootstrapTarget, ...configured] : configured;
 }
 // WP Codebox normalizes the changed-file scope and the discovered test files
 // against the SAME root, and that root is the PHPUnit test root — not the

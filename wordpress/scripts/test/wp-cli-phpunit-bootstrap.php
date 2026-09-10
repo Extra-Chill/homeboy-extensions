@@ -11,10 +11,6 @@ $wp_cli_root = $vendor_dir . '/wp-cli/wp-cli';
 
 require_once $vendor_dir . '/autoload.php';
 
-if ( ! defined( 'WP_CLI' ) ) {
-	define( 'WP_CLI', true );
-}
-
 if ( ! defined( 'WP_CLI_ROOT' ) ) {
 	define( 'WP_CLI_ROOT', $wp_cli_root );
 }
