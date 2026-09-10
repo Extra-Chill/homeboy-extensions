@@ -739,8 +739,8 @@ function resolveDatabaseService(configuration, environment) {
   if (configuration.database_type !== 'mysql') {
     throw new Error('wp_codebox_database_service requires database_type=mysql');
   }
-  if (!['external', 'native'].includes(value.provider)) {
-    throw new Error('wp_codebox_database_service.provider must be external or native');
+  if (!['docker', 'external', 'native'].includes(value.provider)) {
+    throw new Error('wp_codebox_database_service.provider must be docker, external, or native');
   }
   if (value.provider === 'native') {
     const nativeUnknownKeys = Object.keys(value).filter((key) => !['provider', 'engine'].includes(key));
@@ -759,6 +759,24 @@ function resolveDatabaseService(configuration, environment) {
       },
       secretEnv: [],
       requiredCapability: NATIVE_MARIADB_CAPABILITY,
+    };
+  }
+  if (value.provider === 'docker') {
+    const dockerUnknownKeys = Object.keys(value).filter((key) => !['provider', 'engine'].includes(key));
+    if (dockerUnknownKeys.length > 0) {
+      throw new Error(`wp_codebox_database_service docker provider contains unsupported fields: ${dockerUnknownKeys.join(', ')}`);
+    }
+    if (value.engine !== undefined && !['mysql', 'mariadb'].includes(value.engine)) {
+      throw new Error('wp_codebox_database_service docker provider requires engine=mysql or mariadb');
+    }
+    return {
+      service: {
+        id: 'wordpress-database',
+        kind: 'mysql',
+        configuration: { provider: 'docker', ...(value.engine ? { engine: value.engine } : {}) },
+        outputs: { host: 'DB_HOST', port: 'DB_PORT', username: 'DB_USER', password: 'DB_PASSWORD', database: 'DB_NAME' },
+      },
+      secretEnv: [],
     };
   }
   if (value.engine !== undefined && !['mysql', 'mariadb'].includes(value.engine)) {
