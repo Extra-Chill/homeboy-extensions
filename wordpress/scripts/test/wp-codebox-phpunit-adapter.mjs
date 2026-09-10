@@ -659,7 +659,7 @@ function canonicalExtraPlugins(value) {
     throw new Error('wp_codebox_extra_plugins must be an array');
   }
   return value.map((plugin, index) => {
-    if (!isObject(plugin) || typeof plugin.source !== 'string' || plugin.source === '' || typeof plugin.slug !== 'string' || plugin.slug === '') {
+    if (!isObject(plugin) || typeof plugin.source !== 'string' || plugin.source.trim() === '' || typeof plugin.slug !== 'string' || plugin.slug.trim() === '') {
       throw new Error(`wp_codebox_extra_plugins[${index}] requires non-empty source and slug`);
     }
     return clean(plugin);
