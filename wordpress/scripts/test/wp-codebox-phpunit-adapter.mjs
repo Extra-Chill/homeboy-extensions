@@ -123,7 +123,10 @@ const options = clean({
   databaseType: discoveryOnly ? 'sqlite' : settings.database_type,
   services: !discoveryOnly && databaseService ? [databaseService.service] : undefined,
   pluginSlug: slug,
-  extra_plugins: activationPlan.map(({ role, ...plugin }) => clean({ ...plugin, activate: true })),
+  extra_plugins: [
+    ...activationPlan.map(({ role, ...plugin }) => clean({ ...plugin, activate: true })),
+    ...canonicalExtraPlugins(settings.wp_codebox_extra_plugins),
+  ],
   dependencyMounts: [...new Set([sandboxPluginDirectory(slug), ...dependencies.map(({ sandboxDirectory }) => sandboxDirectory)])],
   selectedTestFile: discoveryOnly ? '' : selectedTestFile,
   changedTestFiles: discoveryOnly ? [] : changedTestFileScope.sandbox,
@@ -647,6 +650,20 @@ function phpunitChangedTestFiles() {
 }
 function canonicalMounts(value) {
   return Array.isArray(value) ? value : [];
+}
+function canonicalExtraPlugins(value) {
+  if (value === undefined) {
+    return [];
+  }
+  if (!Array.isArray(value)) {
+    throw new Error('wp_codebox_extra_plugins must be an array');
+  }
+  return value.map((plugin, index) => {
+    if (!isObject(plugin) || typeof plugin.source !== 'string' || plugin.source === '' || typeof plugin.slug !== 'string' || plugin.slug === '') {
+      throw new Error(`wp_codebox_extra_plugins[${index}] requires non-empty source and slug`);
+    }
+    return clean(plugin);
+  });
 }
 function managedPreloadFiles(bootstrapMode, preloadFiles) {
   const configured = Array.isArray(preloadFiles) ? preloadFiles : [];
