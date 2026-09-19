@@ -136,6 +136,7 @@ PHPSTAN_COMPONENT_CONFIG=""
 PHPSTAN_COMPONENT_CONFIG_SOURCE="extension-default"
 PHPSTAN_COMPONENT_CONFIG_HAS_RULESET=0
 PHPSTAN_COMPONENT_CONFIG_STANDALONE=0
+PHPSTAN_COMPONENT_CONFIG_SUPPLIES_WORDPRESS=0
 PHPSTAN_COMPONENT_CONFIG_INCLUDES_BASELINE=0
 PHPSTAN_BASE_CONFIG="$PHPSTAN_DEFAULT_CONFIG"
 PHPSTAN_LEVEL_SOURCE="extension-default"
@@ -266,6 +267,20 @@ if [ -n "$PHPSTAN_COMPONENT_CONFIG" ]; then
     if grep -Eq '^[[:space:]]*#[[:space:]]*homeboy:[[:space:]]*standalone[[:space:]]*$' "$PHPSTAN_COMPONENT_CONFIG"; then
         PHPSTAN_COMPONENT_CONFIG_STANDALONE=1
     fi
+    # A component that already pulls phpstan-wordpress in itself must not also
+    # receive it from the extension config: PHPStan aborts outright on a
+    # repeated include —
+    #
+    #   This file is included multiple times:
+    #   - .../vendor/szepeviktor/phpstan-wordpress/extension.neon
+    #
+    # Components adopted that include precisely because declaring `level:` used
+    # to cost them the environment, so a good many carry it today. They keep
+    # working untouched, and migrate by deleting the include, at which point
+    # they inherit the extension's copy.
+    if grep -Eq 'phpstan-wordpress/extension\.neon' "$PHPSTAN_COMPONENT_CONFIG"; then
+        PHPSTAN_COMPONENT_CONFIG_SUPPLIES_WORDPRESS=1
+    fi
     if grep -Eq '^[[:space:]]*-[[:space:]]+\.?/?phpstan-baseline\.neon([[:space:]]*(#.*)?)?$' "$PHPSTAN_COMPONENT_CONFIG"; then
         PHPSTAN_COMPONENT_CONFIG_INCLUDES_BASELINE=1
     fi
@@ -302,7 +317,9 @@ generate_dependency_config() {
         # directory, and wherever that vendor tree was absent PHPStan ran with
         # no WordPress signatures and reported correct core calls as errors
         # (`esc_html_e invoked with 2 parameters, 1 required`).
-        if [ -n "$PHPSTAN_COMPONENT_CONFIG" ] && [ "$PHPSTAN_COMPONENT_CONFIG_STANDALONE" -ne 1 ]; then
+        if [ -n "$PHPSTAN_COMPONENT_CONFIG" ] \
+            && [ "$PHPSTAN_COMPONENT_CONFIG_STANDALONE" -ne 1 ] \
+            && [ "$PHPSTAN_COMPONENT_CONFIG_SUPPLIES_WORDPRESS" -ne 1 ]; then
             printf '    - %s\n' "$PHPSTAN_DEFAULT_CONFIG"
         fi
         if [ -n "$PHPSTAN_COMPONENT_CONFIG" ]; then
