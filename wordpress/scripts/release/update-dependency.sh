@@ -26,7 +26,6 @@ PACKAGE="$(read_field package)"
 REQUESTED_VERSION="$(read_field version)"
 TAG="$(read_field tag)"
 SHA="$(read_field sha)"
-MIRROR_SHA="$(read_field expected_source_sha)"
 EXPECTED_SOURCE="$(read_field expected_source)"
 EXPECTED_SOURCE_SHA="$(read_field expected_source_sha)"
 LATEST_STABLE="$(read_field latest_stable)"
@@ -95,7 +94,6 @@ jq \
   --arg version "${TARGET_REQUIREMENT}" \
   --arg tag "${TAG}" \
   --arg sha "${SHA}" \
-  --arg mirror_sha "${MIRROR_SHA}" \
   --argjson update_requirement "$( [[ -n "${TARGET_REQUIREMENT}" ]] && printf true || printf false )" \
   '
   def archive_url($p):
@@ -106,7 +104,7 @@ jq \
   def update_inline:
     .package.version = $version
     | (if ($tag != "") then .package.dist.url = archive_url(.package) else . end)
-    | (if ($mirror_sha != "") then .package.dist.reference = $mirror_sha else . end)
+    | (if ($sha != "") then .package.dist.reference = $sha else . end)
     | (if ($sha != "" and .package.source) then .package.source.reference = $sha else . end);
   (if ($update_requirement and ((.require // {}) | has($package))) then .require[$package] = $version else . end)
   | (if ($update_requirement and ((."require-dev" // {}) | has($package))) then ."require-dev"[$package] = $version else . end)
@@ -127,13 +125,23 @@ fi
 if [[ "${MODE}" != "verify" && "${MODE}" != "dry-run" && -n "${REQUESTED_VERSION}" && "${CURRENT_VERSION}" == "${REQUESTED_VERSION}" && "${LOCK_VERSION}" == "${REQUESTED_VERSION}" ]]; then
   SOURCE_OK="true"
   SHA_OK="true"
+  INLINE_METADATA_OK="true"
   if [[ -n "${EXPECTED_SOURCE}" ]] && [[ "$(jq -r --arg package "${PACKAGE}" '((.packages // []) + (."packages-dev" // []))[]? | select(.name == $package) | (.source.url // .dist.url // "")' composer.lock 2>/dev/null | head -n 1)" != "${EXPECTED_SOURCE}" ]]; then
     SOURCE_OK="false"
   fi
   if [[ -n "${EXPECTED_SOURCE_SHA}" ]] && ! jq -e --arg package "${PACKAGE}" --arg expected "${EXPECTED_SOURCE_SHA}" '(((.packages // []) + (."packages-dev" // []))[] | select(.name == $package) | ((.source.reference // "") == $expected or (.dist.reference // "") == $expected))' composer.lock >/dev/null; then
     SHA_OK="false"
   fi
-  if [[ "${SOURCE_OK}" == "true" && "${SHA_OK}" == "true" ]]; then
+  if [[ "${INLINE_COUNT}" != "0" ]] && ! jq -e --arg package "${PACKAGE}" --arg tag "${TAG}" --arg sha "${SHA}" '
+    [ .repositories[]? | select(.type == "package" and .package.name == $package) | .package ]
+    | length == 1
+    and (.[0].version == $version)
+    and ($tag == "" or ((.[0].dist.url // "") | contains($tag)))
+    and ($sha == "" or ((.[0].dist.reference // "") == $sha and (.[0].source.reference // "") == $sha))
+  ' --arg version "${REQUESTED_VERSION}" composer.json >/dev/null; then
+    INLINE_METADATA_OK="false"
+  fi
+  if [[ "${SOURCE_OK}" == "true" && "${SHA_OK}" == "true" && "${INLINE_METADATA_OK}" == "true" ]]; then
     jq -cn --arg package "${PACKAGE}" --arg version "${REQUESTED_VERSION}" \
       '{success:true, package:$package, version:$version, changed:false, composer_refreshed:false}'
     exit 0
@@ -141,7 +149,10 @@ if [[ "${MODE}" != "verify" && "${MODE}" != "dry-run" && -n "${REQUESTED_VERSION
 fi
 
 COMPOSER_ARGS=(update "${PACKAGE}" --no-interaction --no-scripts --no-progress --prefer-stable)
-if ! (cd "${TMP_DIR}" && composer "${COMPOSER_ARGS[@]}"); then
+if [[ "${FINALIZE_DISCOVERY}" == "true" ]]; then
+  COMPOSER_ARGS+=(--with-all-dependencies)
+fi
+if ! (cd "${TMP_DIR}" && composer "${COMPOSER_ARGS[@]}" >&2); then
   echo "Error: composer update ${PACKAGE} failed; composer.json and composer.lock were left unchanged" >&2
   exit 1
 fi
@@ -154,6 +165,18 @@ fi
 if [[ -n "${REQUESTED_VERSION}" && "${RESOLVED_VERSION}" != "${REQUESTED_VERSION}" ]]; then
   echo "Error: Composer resolved ${PACKAGE} to ${RESOLVED_VERSION}, expected ${REQUESTED_VERSION}" >&2
   exit 1
+fi
+if [[ "${LATEST_STABLE}" == "true" ]]; then
+  if ! php -r 'exit(preg_match("/^[vV]?\\d+\\.\\d+\\.\\d+(?:\\.\\d+)?$/", $argv[1]) === 1 ? 0 : 1);' "${RESOLVED_VERSION}"; then
+    echo "Error: latest stable discovery resolved prerelease ${PACKAGE} ${RESOLVED_VERSION}" >&2
+    exit 1
+  fi
+  if [[ -n "${LOCK_VERSION}" ]] && php -r \
+    'exit(version_compare($argv[1], $argv[2], ">") ? 0 : 1);' \
+    "${LOCK_VERSION}" "${RESOLVED_VERSION}"; then
+    echo "Error: latest stable discovery would downgrade ${PACKAGE} from ${LOCK_VERSION} to ${RESOLVED_VERSION}" >&2
+    exit 1
+  fi
 fi
 if [[ -n "${EXPECTED_SOURCE_SHA}" ]] && ! jq -e --arg package "${PACKAGE}" --arg expected "${EXPECTED_SOURCE_SHA}" '
   (((.packages // []) + (."packages-dev" // []))[] | select(.name == $package) | ((.source.reference // "") == $expected or (.dist.reference // "") == $expected))
@@ -175,10 +198,15 @@ if [[ "${FINALIZE_DISCOVERY}" == "true" ]]; then
     else . end
   ' "${TMP_DIR}/composer.json" >"${TMP_DIR}/composer.json.final"
   mv "${TMP_DIR}/composer.json.final" "${TMP_DIR}/composer.json"
-  if ! (cd "${TMP_DIR}" && composer "${COMPOSER_ARGS[@]}"); then
+  if ! (cd "${TMP_DIR}" && composer "${COMPOSER_ARGS[@]}" >&2); then
     echo "Error: Composer could not finalize ${PACKAGE} at ${RESOLVED_VERSION}; composer.json and composer.lock were left unchanged" >&2
     exit 1
   fi
+fi
+
+if ! (cd "${TMP_DIR}" && composer validate --no-check-publish --check-lock --no-interaction >&2); then
+  echo "Error: Composer lock validation failed; composer.json and composer.lock were left unchanged" >&2
+  exit 1
 fi
 
 if [[ "${MODE}" == "verify" || "${MODE}" == "dry-run" ]]; then
