@@ -24,6 +24,7 @@ const MAX_ROOTS = 32;
 const MAX_COMMAND_BYTES = 1024 * 1024;
 const NATIVE_COMMAND_TIMEOUT_MS = 10_000;
 const NATIVE_COMPACTION_LIMIT = 1000;
+const NATIVE_COMPACTION_VERSION = 1;
 const MAX_WALK_ENTRIES = 10_000;
 const MAX_WALK_DEPTH = 32;
 const MAX_WALK_BYTES = 1024 * 1024 * 1024 * 1024;
@@ -44,17 +45,15 @@ function handleRequest(request, options = {}) {
 	let reclaimedBytes = 0;
 	let logicalDeletedBytes = 0;
 	let verifiedPhysicalFileBytes = 0;
-	const maintenance = [];
 	for (const target of request.reclaim_targets) {
 		const item = byId.get(target.id);
 		if (!item || item.reclaim_token !== target.reclaim_token || !reclaimable(item)) continue;
 		const receipt = nativeReclaim(item, config, options);
 		if (!receipt) continue;
 		reclaimed.push(item.id);
-		reclaimedBytes += receipt.logical_bytes ?? receipt.bytes;
-		logicalDeletedBytes += receipt.logical_bytes ?? receipt.bytes;
-		verifiedPhysicalFileBytes += receipt.verified_physical_file_bytes ?? (receipt.logical_bytes === undefined ? receipt.bytes : 0);
-		if (receipt.compaction) maintenance.push({ id: item.id, ...receipt.compaction });
+		reclaimedBytes += receipt.verified_physical_file_bytes ?? receipt.physical_bytes ?? (receipt.logical_bytes === undefined ? receipt.bytes : 0);
+		logicalDeletedBytes += receipt.logical_bytes ?? receipt.bytes ?? 0;
+		verifiedPhysicalFileBytes += receipt.verified_physical_file_bytes ?? receipt.physical_bytes ?? (receipt.logical_bytes === undefined ? receipt.bytes : 0);
 	}
 	// Echo the generation the reclaim was requested against. Homeboy validates
 	// this to confirm the provider acted on the inventory view it was handed;
@@ -66,7 +65,6 @@ function handleRequest(request, options = {}) {
 		reclaimed_item_ids: reclaimed, reclaimed_bytes: reclaimedBytes,
 		logical_deleted_bytes: logicalDeletedBytes,
 		verified_physical_file_bytes_reclaimed: verifiedPhysicalFileBytes,
-		...(maintenance.length ? { maintenance } : {}),
 	};
 }
 
@@ -124,7 +122,7 @@ function inventoryFor(config, options) {
 	const generation = digest(JSON.stringify({ roots: roots.map((root) => [root.id, fingerprint(root.path)]), items: items.map((item) => [item.id, item.state]) }));
 	return {
 		schema: SCHEMA, provider_id: PROVIDER_ID, generation, roots,
-		items: items.map(({ _path, _workspace, _session_id, _session_graph, state, ...item }) => ({ ...item, reclaim_token: reclaimToken(item.id, state, _path) })), unknown_bytes: unknownBytes,
+		items: items.map(({ _path, _workspace, _session_id, state, ...item }) => ({ ...item, reclaim_token: reclaimToken(item.id, state, _path) })), unknown_bytes: unknownBytes,
 		...(incomplete.length ? { completeness: { complete: false, incomplete_roots: incomplete } } : {}),
 	};
 }
@@ -363,6 +361,10 @@ function markerKey(env) {
 		const key = fs.readFileSync(file, 'utf8').trim(); return /^[a-f0-9]{64}$/.test(key) ? key : '';
 	} catch { return ''; }
 }
+function stateFile(env, name) {
+	const state = env?.XDG_STATE_HOME || (env?.HOME && path.join(env.HOME, '.local', 'state'));
+	return safeAbsolutePath(state) ? path.join(state, 'homeboy', name) : '';
+}
 function safeStateDirectory(state) {
 	const absolute = safeAbsolutePath(state); if (!absolute) return '';
 	let ancestor = absolute; const tail = [];
@@ -373,31 +375,31 @@ function safeStateDirectory(state) {
 	const directory = path.join(current, 'homeboy'); if (fs.existsSync(directory) && fs.lstatSync(directory).isSymbolicLink()) return '';
 	fs.mkdirSync(directory, { recursive: true, mode: 0o700 }); return fs.realpathSync(directory);
 }
-function stateFile(env, name) { const state = env?.XDG_STATE_HOME || (env?.HOME && path.join(env.HOME, '.local', 'state')); return safeAbsolutePath(state) ? path.join(state, 'homeboy', name) : ''; }
 function nativeEventLogStatus(config, env) {
 	const status = openCodeJson(config.command, ['db', 'event-log-status'], env);
-	return status && Number.isSafeInteger(Number(status.events)) && Number.isSafeInteger(Number(status.payloadBytes)) && Number.isSafeInteger(Number(status.compactableEvents)) && typeof status.recommended === 'boolean' ? status : null;
+	return status && nativeCompactionVersion(status) && Number.isSafeInteger(Number(status.events)) && Number.isSafeInteger(Number(status.payloadBytes)) && Number.isSafeInteger(Number(status.compactableEvents)) && typeof status.recommended === 'boolean' ? status : null;
 }
 function pendingCompaction(config, env, roots) {
 	const status = nativeEventLogStatus(config, env);
 	if (!status || status.compactableEvents <= 0) return null;
-	return item(`compaction:${digest(config.db_path).slice(0, 16)}`, rootId(config.db_path, roots), 'session_store', config.db_path, true, false, false, 0, `event-log:${JSON.stringify(status)}`, 0);
+	return item(`compaction:${digest(config.db_path).slice(0, 16)}`, rootId(config.db_path, roots), 'durable_artifact', config.db_path, true, false, false, 0, `event-log:${JSON.stringify(status)}`, Number(status.payloadBytes));
 }
 function compactEvents(config, env) {
 	const status = nativeEventLogStatus(config, env);
 	if (!status || status.compactableEvents <= 0) return null;
 	const dryRun = openCodeJson(config.command, ['db', 'compact-events', '--all', '--limit', String(NATIVE_COMPACTION_LIMIT)], env);
-	if (!dryRun || dryRun.dryRun !== true || !Number.isSafeInteger(Number(dryRun.inspected)) || !Number.isSafeInteger(Number(dryRun.candidates))) return null;
-	if (dryRun.candidates === 0) return { logical_bytes: 0, verified_physical_file_bytes: 0, compaction: { status: 'completed', retryable: false, bounded: true } };
-	const backup = stateFile({ ...env, XDG_STATE_HOME: env.XDG_STATE_HOME }, `opencode-event-log-backup-${crypto.randomUUID()}.db`);
+	if (!dryRun || !nativeCompactionVersion(dryRun) || dryRun.dryRun !== true || !Number.isSafeInteger(Number(dryRun.inspected)) || !Number.isSafeInteger(Number(dryRun.candidates))) return null;
+	if (dryRun.candidates === 0) return { logical_bytes: 0, verified_physical_file_bytes: 0 };
+	const backup = stateFile({ XDG_STATE_HOME: env.XDG_STATE_HOME }, `opencode-event-log-backup-${crypto.randomUUID()}.db`);
 	if (!backup) return null;
-	const applied = openCodeJson(config.command, ['db', 'compact-events', '--all', '--apply', '--until-done', '--vacuum', '--backup', backup, '--limit', String(NATIVE_COMPACTION_LIMIT)], env);
-	if (!applied || applied.dryRun !== false || applied.reclaim?.integrity !== 'ok' || applied.reclaim?.backupIntegrity !== 'ok') return null;
-	const logical = Number(applied.payloadBytesReclaimed);
+	const applied = openCodeJson(config.command, ['db', 'compact-events', '--all', '--apply', '--limit', String(NATIVE_COMPACTION_LIMIT), '--backup', backup, ...(dryRun.next ? ['--cursor', JSON.stringify(dryRun.next)] : [])], env);
+	if (!applied || !nativeCompactionVersion(applied) || applied.dryRun !== false || (applied.outcome !== undefined && applied.outcome !== 'completed') || !applied.reclaim || applied.reclaim.integrity !== 'ok') return null;
 	const physical = Number(applied.reclaim.bytesReclaimed);
-	if (!Number.isSafeInteger(logical) || !Number.isSafeInteger(physical) || logical < 0 || physical < 0) return null;
-	return { logical_bytes: logical, verified_physical_file_bytes: physical, compaction: { status: 'completed', retryable: false, bounded: true, cursor: dryRun.next || null } };
+	const logical = Number(applied.payloadBytesReclaimed);
+	if (!Number.isSafeInteger(logical) || logical < 0 || !Number.isSafeInteger(physical) || physical < 0) return null;
+	return { logical_bytes: logical, verified_physical_file_bytes: physical };
 }
+function nativeCompactionVersion(value) { return value.version === undefined || value.version === NATIVE_COMPACTION_VERSION; }
 function sign(value, key) { return crypto.createHmac('sha256', key).update(JSON.stringify(value)).digest('hex'); }
 function secureEqual(left, right) { return left.length === right.length && crypto.timingSafeEqual(Buffer.from(left), Buffer.from(right)); }
 function reclaimable(value) { return value.ownership_known && value.reconstructable && !value.active && !value.referenced && (value.id.startsWith('compaction:') || !['credential', 'history', 'pinned_export', 'session_store'].includes(value.class)); }
