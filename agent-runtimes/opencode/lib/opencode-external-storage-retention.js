@@ -25,8 +25,8 @@ const MAX_COMMAND_BYTES = 1024 * 1024;
 const NATIVE_COMMAND_TIMEOUT_MS = 10_000;
 const MAX_NATIVE_COMMAND_TIMEOUT_MS = 120_000;
 const NATIVE_COMPACTION_LIMIT = 1000;
-const NATIVE_COMPACTION_VERSION = 1;
 const MAX_COMPACTION_BATCHES = 10_000;
+const NATIVE_COMPACTION_CONTRACT = 'opencode.db.compact-events.v1';
 const MAX_WALK_ENTRIES = 10_000;
 const MAX_WALK_DEPTH = 32;
 const MAX_WALK_BYTES = 1024 * 1024 * 1024 * 1024;
@@ -376,7 +376,7 @@ function safeStateDirectory(state) {
 }
 function nativeEventLogStatus(config, env) {
 	const status = openCodeJson(config.command, ['db', 'event-log-status'], env, config.operation_timeout_ms);
-	return status && nativeCompactionVersion(status) && Number.isSafeInteger(Number(status.events)) && Number.isSafeInteger(Number(status.payloadBytes)) && Number.isSafeInteger(Number(status.compactableEvents)) && typeof status.recommended === 'boolean' ? status : null;
+	return status && Number.isSafeInteger(Number(status.events)) && Number.isSafeInteger(Number(status.payloadBytes)) && Number.isSafeInteger(Number(status.compactableEvents)) && typeof status.recommended === 'boolean' ? status : null;
 }
 function pendingCompaction(config, env, roots) {
 	const status = nativeEventLogStatus(config, env);
@@ -391,14 +391,20 @@ function compactEvents(config, env) {
 	let afterSeq;
 	let batches = 0;
 	let logicalBytes = 0;
+	const previous = readMaintenanceEvidence(evidencePath);
+	if (previous?.status === 'running') {
+		cursor = previous.cursor;
+		afterSeq = previous.after_seq;
+		logicalBytes = previous.logical_bytes;
+	}
 	while (batches < MAX_COMPACTION_BATCHES) {
 		const args = ['db', 'compact-events', '--all', '--apply', '--limit', String(NATIVE_COMPACTION_LIMIT)];
 		if (cursor !== undefined) args.push('--cursor', cursor);
 		if (afterSeq !== undefined) args.push('--after-seq', String(afterSeq));
 		const applied = openCodeJson(config.command, args, env, config.operation_timeout_ms);
-		if (!applied || !nativeCompactionVersion(applied) || applied.dryRun !== false || !Number.isSafeInteger(Number(applied.inspected)) || !Number.isSafeInteger(Number(applied.candidates)) || !Number.isSafeInteger(Number(applied.rewritten)) || !Number.isSafeInteger(Number(applied.payloadBytesReclaimed)) || (applied.outcome !== undefined && applied.outcome !== 'completed')) return null;
+		if (!nativeCompactionResponse(applied) || applied.dryRun !== false || !Number.isSafeInteger(Number(applied.inspected)) || !Number.isSafeInteger(Number(applied.candidates)) || !Number.isSafeInteger(Number(applied.rewritten)) || !Number.isSafeInteger(Number(applied.payloadBytesReclaimed)) || (applied.outcome !== undefined && applied.outcome !== 'completed')) return null;
 		batches += 1;
-		logicalBytes += Number(applied.payloadBytesReclaimed);
+		logicalBytes += Number(applied.bytes.logicalPayloadReclaimed);
 		writeMaintenanceEvidence(evidencePath, { schema: 'homeboy/opencode-event-log-maintenance/v1', status: 'running', batches, logical_bytes: logicalBytes, cursor: applied.next?.cursor, after_seq: applied.next?.afterSeq });
 		if (!applied.next) {
 			writeMaintenanceEvidence(evidencePath, { schema: 'homeboy/opencode-event-log-maintenance/v1', status: 'completed', batches, logical_bytes: logicalBytes, physical_bytes: 0 });
@@ -410,7 +416,16 @@ function compactEvents(config, env) {
 	}
 	return null;
 }
-function nativeCompactionVersion(value) { return value && value.version === NATIVE_COMPACTION_VERSION; }
+function nativeCompactionResponse(value) {
+	return value && value.contract === NATIVE_COMPACTION_CONTRACT && value.capabilities?.replaySafe === 'supported' && value.capabilities?.interruptionResume === 'supported' && value.bytes && Number.isSafeInteger(Number(value.bytes.logicalPayloadReclaimed)) && value.bytes.physicalReclaimed === null;
+}
+function readMaintenanceEvidence(file) {
+	if (!file || !safeRegularFile(file)) return null;
+	try {
+		const value = JSON.parse(fs.readFileSync(file, 'utf8'));
+		return value?.schema === 'homeboy/opencode-event-log-maintenance/v1' && value.status === 'running' && (value.cursor === undefined || typeof value.cursor === 'string') && (value.after_seq === undefined || Number.isSafeInteger(Number(value.after_seq))) && Number.isSafeInteger(Number(value.logical_bytes)) ? value : null;
+	} catch { return null; }
+}
 function writeMaintenanceEvidence(file, value) {
 	if (!file) return;
 	try { fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 }); fs.writeFileSync(`${file}.tmp-${process.pid}`, JSON.stringify(value), { mode: 0o600 }); fs.renameSync(`${file}.tmp-${process.pid}`, file); } catch { /* evidence is best effort and never enters the wire receipt */ }
@@ -454,7 +469,7 @@ function fingerprint(candidate) { try { const stat = fs.lstatSync(candidate); re
 // reclaim and rejected every request, including ones targeting items that
 // never moved (#2832). An item whose own directory changed since inventory
 // still fails this check and is left alone.
-function reclaimToken(id, state, candidate) { return digest(`${id}:${state}:${fingerprint(candidate)}`); }
+function reclaimToken(id, state, candidate) { return digest(id.startsWith('compaction:') ? `${id}:${state}` : `${id}:${state}:${fingerprint(candidate)}`); }
 function digest(value) { return crypto.createHash('sha256').update(value).digest('hex'); }
 function validId(value) { return typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value); }
 function ageDays(value, now = Date.now()) { const time = typeof value === 'number' ? value : Date.parse(value); return Number.isFinite(time) && time <= now ? Math.floor((now - time) / 86_400_000) : 0; }

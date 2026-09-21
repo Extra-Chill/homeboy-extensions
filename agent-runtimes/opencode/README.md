@@ -101,7 +101,14 @@ event-log compaction is a bounded rewrite operation; logical payload savings are
 private maintenance evidence and are never reported as physical reclaim. Physical
 reclaim requires the native CLI's separate verified maintenance operation.
 
+The native planner does not use an adapter-invented age threshold: default
+selection is superseded, projection-verified local message/part snapshots, while
+workspace- or sync-owned aggregates remain dry-run-only. A bounded response's
+`next.cursor` and `next.afterSeq` are persisted as private evidence and consumed
+on the next provider invocation after an interruption. They are not serialized as
+one cursor or exposed in the Homeboy receipt.
+
 Run the real SQLite/native dependency check with
-`HOMEBOY_OPENCODE_NATIVE_TEST_CONFIG=/absolute/path/to/disposable-config.json`
-and `npm run test:opencode-external-storage-native-integration`. The normal unit
-fixtures do not claim to replace that dependency test.
+`npm run test:opencode-external-storage-native-integration`. Set
+`HOMEBOY_OPENCODE_NATIVE_ROOT` only when using a different settled native checkout.
+The normal unit fixtures do not replace this dependency test.

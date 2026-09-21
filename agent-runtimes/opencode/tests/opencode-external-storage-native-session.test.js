@@ -25,11 +25,11 @@ const args = process.argv.slice(2); const db = ${JSON.stringify(database)};
 if (args.join(' ') === 'debug paths') process.stdout.write('tmp  ${temp}\\ndata  ${data}\\n');
 else if (args.join(' ') === 'db path') process.stdout.write(db + '\\n');
 else if (args.join(' ') === 'session list --format json') process.stdout.write(JSON.stringify([{id:'ses_unknown'},{id:'ses_pinned',owner_pid:0,pinned:true},{id:'ses_owned',owner_pid:0,pinned:false}]));
-else if (args.join(' ') === 'db event-log-status') process.stdout.write(JSON.stringify({version:1,events:2,payloadBytes:200,compactableEvents:2,recommended:true}));
+else if (args.join(' ') === 'db event-log-status') process.stdout.write(JSON.stringify({events:2,payloadBytes:200,compactableEvents:2,recommended:true}));
 else if (args[0] === 'db' && args[1] === 'compact-events' && args.includes('--apply')) {
   if (args.includes('--backup') || args.includes('--vacuum') || args.includes('--cursor')) process.exit(2);
   cp.spawnSync('sqlite3', [db, "UPDATE event SET type='event.compacted.1' WHERE id='e1'"]);
-  process.stdout.write(JSON.stringify({version:1,dryRun:false,inspected:2,candidates:1,rewritten:1,payloadBytesReclaimed:80}));
+  process.stdout.write(JSON.stringify({contract:'opencode.db.compact-events.v1',capabilities:{replaySafe:'supported',interruptionResume:'supported',physicalReclamation:'not-requested'},dryRun:false,inspected:2,candidates:1,rewritten:1,payloadBytesReclaimed:80,bytes:{logicalPayloadReclaimed:80,physicalReclaimed:null}}));
 }
 `);
 	fs.chmodSync(command, 0o755);
