@@ -9,7 +9,8 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { CONFIG_ENV, SCHEMA, handleRequest } = require('../lib/opencode-external-storage-retention');
 
-const nativeRoot = process.env.HOMEBOY_OPENCODE_NATIVE_ROOT || '/Users/chubes/Developer/opencode@event-log-retention';
+const nativeRoot = process.env.HOMEBOY_OPENCODE_NATIVE_ROOT;
+assert.ok(nativeRoot, 'Set HOMEBOY_OPENCODE_NATIVE_ROOT to the compatible native OpenCode checkout');
 assert.equal(fs.existsSync(path.join(nativeRoot, 'packages/opencode/src/index.ts')), true, `native source missing: ${nativeRoot}`);
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'homeboy-opencode-native-'));
 const home = path.join(root, 'home');
