@@ -386,15 +386,17 @@ function pendingCompaction(config, env, roots) {
 function compactEvents(config, env) {
 	const status = nativeEventLogStatus(config, env);
 	if (!status || status.compactableEvents <= 0) return null;
-	const evidencePath = stateFile({ XDG_STATE_HOME: env.XDG_STATE_HOME }, 'opencode-event-log-maintenance.json');
+	const databaseId = digest(`${NATIVE_COMPACTION_CONTRACT}:${safeAbsolutePath(config.db_path)}`);
+	const evidencePath = stateFile({ XDG_STATE_HOME: env.XDG_STATE_HOME }, `opencode-event-log-maintenance-${databaseId.slice(0, 32)}.json`);
 	let cursor;
 	let afterSeq;
 	let batches = 0;
 	let logicalBytes = 0;
-	const previous = readMaintenanceEvidence(evidencePath);
+	const previous = readMaintenanceEvidence(evidencePath, databaseId);
 	if (previous?.status === 'running') {
 		cursor = previous.cursor;
 		afterSeq = previous.after_seq;
+		batches = previous.batches;
 		logicalBytes = previous.logical_bytes;
 	}
 	while (batches < MAX_COMPACTION_BATCHES) {
@@ -402,30 +404,31 @@ function compactEvents(config, env) {
 		if (cursor !== undefined) args.push('--cursor', cursor);
 		if (afterSeq !== undefined) args.push('--after-seq', String(afterSeq));
 		const applied = openCodeJson(config.command, args, env, config.operation_timeout_ms);
-		if (!nativeCompactionResponse(applied) || applied.dryRun !== false || !Number.isSafeInteger(Number(applied.inspected)) || !Number.isSafeInteger(Number(applied.candidates)) || !Number.isSafeInteger(Number(applied.rewritten)) || !Number.isSafeInteger(Number(applied.payloadBytesReclaimed)) || (applied.outcome !== undefined && applied.outcome !== 'completed')) return null;
+		if (!nativeCompactionResponse(applied) || applied.dryRun !== false || !nonNegativeInteger(applied.inspected) || !nonNegativeInteger(applied.candidates) || !nonNegativeInteger(applied.rewritten) || !nonNegativeInteger(applied.payloadBytesReclaimed) || (applied.outcome !== undefined && applied.outcome !== 'completed')) return null;
 		batches += 1;
 		logicalBytes += Number(applied.bytes.logicalPayloadReclaimed);
-		writeMaintenanceEvidence(evidencePath, { schema: 'homeboy/opencode-event-log-maintenance/v1', status: 'running', batches, logical_bytes: logicalBytes, cursor: applied.next?.cursor, after_seq: applied.next?.afterSeq });
+		if (applied.next && (typeof applied.next.cursor !== 'string' || (applied.next.afterSeq !== undefined && !nonNegativeInteger(applied.next.afterSeq)))) return null;
+		writeMaintenanceEvidence(evidencePath, { schema: 'homeboy/opencode-event-log-maintenance/v1', contract: NATIVE_COMPACTION_CONTRACT, database_id: databaseId, status: 'running', batches, logical_bytes: logicalBytes, cursor: applied.next?.cursor, after_seq: applied.next?.afterSeq });
 		if (!applied.next) {
-			writeMaintenanceEvidence(evidencePath, { schema: 'homeboy/opencode-event-log-maintenance/v1', status: 'completed', batches, logical_bytes: logicalBytes, physical_bytes: 0 });
+			writeMaintenanceEvidence(evidencePath, { schema: 'homeboy/opencode-event-log-maintenance/v1', contract: NATIVE_COMPACTION_CONTRACT, database_id: databaseId, status: 'completed', batches, logical_bytes: logicalBytes, physical_bytes: 0 });
 			return { physical_bytes: 0 };
 		}
-		if (typeof applied.next.cursor !== 'string' || (applied.next.afterSeq !== undefined && !Number.isSafeInteger(Number(applied.next.afterSeq)))) return null;
 		cursor = applied.next.cursor;
 		afterSeq = applied.next.afterSeq;
 	}
 	return null;
 }
 function nativeCompactionResponse(value) {
-	return value && value.contract === NATIVE_COMPACTION_CONTRACT && value.capabilities?.replaySafe === 'supported' && value.capabilities?.interruptionResume === 'supported' && value.bytes && Number.isSafeInteger(Number(value.bytes.logicalPayloadReclaimed)) && value.bytes.physicalReclaimed === null;
+	return value && value.contract === NATIVE_COMPACTION_CONTRACT && value.capabilities?.replaySafe === 'supported' && value.capabilities?.interruptionResume === 'supported' && value.bytes && nonNegativeInteger(value.bytes.logicalPayloadReclaimed) && value.bytes.physicalReclaimed === null;
 }
-function readMaintenanceEvidence(file) {
+function readMaintenanceEvidence(file, databaseId) {
 	if (!file || !safeRegularFile(file)) return null;
 	try {
 		const value = JSON.parse(fs.readFileSync(file, 'utf8'));
-		return value?.schema === 'homeboy/opencode-event-log-maintenance/v1' && value.status === 'running' && (value.cursor === undefined || typeof value.cursor === 'string') && (value.after_seq === undefined || Number.isSafeInteger(Number(value.after_seq))) && Number.isSafeInteger(Number(value.logical_bytes)) ? value : null;
+		return value?.schema === 'homeboy/opencode-event-log-maintenance/v1' && value.contract === NATIVE_COMPACTION_CONTRACT && value.database_id === databaseId && value.status === 'running' && nonNegativeInteger(value.batches) && (value.cursor === undefined || typeof value.cursor === 'string') && (value.after_seq === undefined || nonNegativeInteger(value.after_seq)) && (value.after_seq === undefined || typeof value.cursor === 'string') && nonNegativeInteger(value.logical_bytes) ? value : null;
 	} catch { return null; }
 }
+function nonNegativeInteger(value) { return Number.isSafeInteger(Number(value)) && Number(value) >= 0; }
 function writeMaintenanceEvidence(file, value) {
 	if (!file) return;
 	try { fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 }); fs.writeFileSync(`${file}.tmp-${process.pid}`, JSON.stringify(value), { mode: 0o600 }); fs.renameSync(`${file}.tmp-${process.pid}`, file); } catch { /* evidence is best effort and never enters the wire receipt */ }

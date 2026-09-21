@@ -108,6 +108,14 @@ workspace- or sync-owned aggregates remain dry-run-only. A bounded response's
 on the next provider invocation after an interruption. They are not serialized as
 one cursor or exposed in the Homeboy receipt.
 
+Homeboy's external-storage planner defaults are `retention.external_storage_days`
+of 7 and `retention.external_storage_max_bytes` of 20 GiB. Because compaction
+inventory is intentionally reported with its real age and measured database
+bytes, default unattended cleanup does not select a newly created large event
+store. Operators may explicitly configure supported policy overrides; this does
+not make physical vacuum automatic. The real planner check is
+`npm run test:opencode-external-storage-homeboy-planner`.
+
 Run the real SQLite/native dependency check with
 `npm run test:opencode-external-storage-native-integration`. Set
 `HOMEBOY_OPENCODE_NATIVE_ROOT` only when using a different settled native checkout.
