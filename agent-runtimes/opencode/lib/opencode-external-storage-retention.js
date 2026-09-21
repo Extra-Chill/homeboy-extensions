@@ -23,6 +23,7 @@ const MAX_ITEMS = 5000;
 const MAX_ROOTS = 32;
 const MAX_COMMAND_BYTES = 1024 * 1024;
 const NATIVE_COMMAND_TIMEOUT_MS = 10_000;
+const NATIVE_COMPACTION_LIMIT = 1000;
 const MAX_WALK_ENTRIES = 10_000;
 const MAX_WALK_DEPTH = 32;
 const MAX_WALK_BYTES = 1024 * 1024 * 1024 * 1024;
@@ -152,17 +153,14 @@ function discoverSessions(config, roots, options, markerSessions = markerSession
 	if (!Array.isArray(sessions)) return { items: [item(`session-store:${digest(config.db_path).slice(0, 16)}`, rootId(config.db_path, roots), 'session_store', config.db_path, false, true, true, 0, `db:${fingerprint(config.db_path)}`)], ids: new Set() };
 	const storeId = `session-store:${digest(config.db_path).slice(0, 16)}`;
 	const validSessions = sessions.filter((session) => validId(session.id));
-	const graph = nativeSessionGraph(config, options.env || process.env);
 	const markers = new Map(markerSessions.map((entry) => [entry._session_id, entry]));
 	const sessionItems = validSessions.slice(0, MAX_ITEMS - 1).map((session) => {
 		const marker = markers.get(session.id);
-		const row = graph.rows.get(session.id);
-		const descendants = row && graph.complete ? descendantRows(row.id, graph.rows) : [];
-		const protectedDescendant = !graph.complete || descendants.some((child) => child.active || child.unknown || child.referenced);
-		const ownershipKnown = Boolean(marker && graph.complete && row && row.parent_id === null);
-		const discovered = item(`session:${session.id}`, rootId(config.db_path, roots), 'durable_artifact', config.db_path, ownershipKnown && !protectedDescendant, Boolean(marker?.active || row?.active), Boolean(marker?.active || protectedDescendant), ageDays(session.updated || session.created, options.now), `session:${session.id}:${digest(JSON.stringify({ marker: marker?.state, graph: graph.complete, row, descendants }))}`, row?.logical_bytes || 0);
-		discovered.ownership_known = ownershipKnown;
-		discovered._session_graph = graph;
+		const metadataKnown = Object.prototype.hasOwnProperty.call(session, 'owner_pid') && Object.prototype.hasOwnProperty.call(session, 'pinned');
+		const active = Boolean(marker?.active || processAlive(session.owner_pid));
+		const referenced = Boolean(marker?.active || session.pinned === true);
+		const discovered = item(`session:${session.id}`, rootId(config.db_path, roots), 'durable_artifact', config.db_path, false, active, referenced, ageDays(session.updated || session.created, options.now), `session:${session.id}:${digest(JSON.stringify({ marker: marker?.state, owner_pid: session.owner_pid, pinned: session.pinned }))}`, 0);
+		discovered.ownership_known = metadataKnown;
 		return discovered;
 	});
 	return { items: [item(storeId, rootId(config.db_path, roots), 'session_store', config.db_path, false, false, true, 0, `db:${fingerprint(config.db_path)}`), ...sessionItems], ids: new Set(validSessions.map((session) => session.id)) };
@@ -185,53 +183,10 @@ function discoverProtected(config, roots) {
 function nativeReclaim(itemToReclaim, config, options) {
 	if (itemToReclaim.id.startsWith(CARGO_TARGET_PREFIX)) return reclaimCargoTarget(itemToReclaim.id, config, options);
 	if (itemToReclaim.class === 'scratch') return reclaimScratch(itemToReclaim.id, config, options);
-	if (itemToReclaim.id.startsWith('compaction:')) return retryCompaction(config, options.env || process.env);
-	if (itemToReclaim.id.startsWith('session:')) return reclaimSession(itemToReclaim, config, options);
+	if (itemToReclaim.id.startsWith('compaction:')) return compactEvents(config, options.env || process.env);
+	// Session deletion is intentionally unavailable until native guarded graph and
+	// liveness APIs exist. Native session list metadata is never a delete proof.
 	return null;
-}
-
-function reclaimSession(itemToReclaim, config, options) {
-	const sessionId = itemToReclaim.id.slice('session:'.length);
-	const current = discoverSessions(config, [], options, markerSessionIds(config, options.env || process.env)).items.find((entry) => entry.id === itemToReclaim.id);
-	if (!current || reclaimToken(current.id, current.state, current._path) !== itemToReclaim.reclaim_token || !reclaimable(current)) return null;
-	const graph = current._session_graph;
-	const ids = [sessionId, ...descendantRows(sessionId, graph.rows).map((row) => row.id)];
-	const before = safeRegularFile(config.db_path) ? fs.statSync(config.db_path).size : 0;
-	const deleted = run(config.command, ['session', 'delete', sessionId], options.env || process.env);
-	if (deleted.status !== 0) return null;
-	const after = nativeSessionGraph(config, options.env || process.env);
-	if (!after.complete || ids.some((id) => after.rows.has(id))) return null;
-	const logical = ids.reduce((total, id) => total + (graph.rows.get(id)?.logical_bytes || 0), 0);
-	const compacted = compactDatabase(config, options.env || process.env);
-	if (!compacted.ok) {
-		writeCompaction(config, options.env || process.env);
-		return { logical_bytes: logical, verified_physical_file_bytes: 0, compaction: { status: 'failed', retryable: true } };
-	}
-	clearCompaction(options.env || process.env);
-	const physical = Math.max(0, before - (safeRegularFile(config.db_path) ? fs.statSync(config.db_path).size : before));
-	return { logical_bytes: logical, verified_physical_file_bytes: physical, compaction: { status: 'completed', retryable: false } };
-}
-
-function nativeSessionGraph(config, env) {
-	const query = 'SELECT s.id, s.parent_id, CASE WHEN s.time_compacting IS NOT NULL OR EXISTS (SELECT 1 FROM session_input i WHERE i.session_id = s.id AND i.promoted_seq IS NULL) OR EXISTS (SELECT 1 FROM message m WHERE m.session_id = s.id AND (m.data LIKE \'%"status":"running"%\' OR m.data LIKE \'%"status":"pending"%\')) THEN 1 ELSE 0 END AS active, COALESCE((SELECT SUM(length(m.data)) FROM message m WHERE m.session_id = s.id), 0) + COALESCE((SELECT SUM(length(p.data)) FROM part p WHERE p.session_id = s.id), 0) AS logical_bytes FROM session s';
-	const rows = openCodeJson(config.command, ['db', query, '--format', 'json'], env);
-	if (!Array.isArray(rows)) return { complete: false, rows: new Map() };
-	const map = new Map();
-	for (const row of rows) if (validId(row.id) && (row.parent_id === null || validId(row.parent_id))) map.set(row.id, { id: row.id, parent_id: row.parent_id ?? null, active: row.active === 1 || row.active === true, logical_bytes: Number.isFinite(Number(row.logical_bytes)) ? Number(row.logical_bytes) : 0, unknown: false, referenced: false });
-	if (map.size !== rows.length) return { complete: false, rows: map };
-	for (const row of map.values()) if (row.parent_id && !map.has(row.parent_id)) row.unknown = true;
-	return { complete: true, rows: map };
-}
-
-function descendantRows(id, rows) {
-	const result = []; const queue = [id]; const seen = new Set([id]);
-	while (queue.length) { const parent = queue.shift(); for (const row of rows.values()) if (row.parent_id === parent && !seen.has(row.id)) { seen.add(row.id); result.push(row); queue.push(row.id); } }
-	return result;
-}
-
-function compactDatabase(config, env) {
-	const result = run(config.command, ['db', 'VACUUM'], env);
-	return { ok: result.status === 0 };
 }
 
 // Cargo target directories accumulate under the temp root faster than any
@@ -419,10 +374,30 @@ function safeStateDirectory(state) {
 	fs.mkdirSync(directory, { recursive: true, mode: 0o700 }); return fs.realpathSync(directory);
 }
 function stateFile(env, name) { const state = env?.XDG_STATE_HOME || (env?.HOME && path.join(env.HOME, '.local', 'state')); return safeAbsolutePath(state) ? path.join(state, 'homeboy', name) : ''; }
-function writeCompaction(config, env) { try { const file = stateFile(env, 'opencode-retention-compaction.json'); if (file) fs.writeFileSync(file, JSON.stringify({ db_path: config.db_path, created_at: new Date().toISOString() }), { mode: 0o600 }); } catch { /* Retry state is best effort; the receipt still reports failed maintenance. */ } }
-function clearCompaction(env) { try { const file = stateFile(env, 'opencode-retention-compaction.json'); if (file) fs.unlinkSync(file); } catch { /* Already clear. */ } }
-function pendingCompaction(config, env, roots) { try { const file = stateFile(env, 'opencode-retention-compaction.json'); const state = file && JSON.parse(fs.readFileSync(file, 'utf8')); return state?.db_path === config.db_path ? item(`compaction:${digest(config.db_path).slice(0, 16)}`, rootId(config.db_path, roots), 'session_store', config.db_path, true, false, false, ageDays(state.created_at), `compaction:${fingerprint(file)}`, 0) : null; } catch { return null; } }
-function retryCompaction(config, env) { const before = safeRegularFile(config.db_path) ? fs.statSync(config.db_path).size : 0; const result = compactDatabase(config, env); if (!result.ok) return null; clearCompaction(env); const after = safeRegularFile(config.db_path) ? fs.statSync(config.db_path).size : before; return { logical_bytes: 0, verified_physical_file_bytes: Math.max(0, before - after), compaction: { status: 'completed', retryable: false } }; }
+function nativeEventLogStatus(config, env) {
+	const status = openCodeJson(config.command, ['db', 'event-log-status'], env);
+	return status && Number.isSafeInteger(Number(status.events)) && Number.isSafeInteger(Number(status.payloadBytes)) && Number.isSafeInteger(Number(status.compactableEvents)) && typeof status.recommended === 'boolean' ? status : null;
+}
+function pendingCompaction(config, env, roots) {
+	const status = nativeEventLogStatus(config, env);
+	if (!status || status.compactableEvents <= 0) return null;
+	return item(`compaction:${digest(config.db_path).slice(0, 16)}`, rootId(config.db_path, roots), 'session_store', config.db_path, true, false, false, 0, `event-log:${JSON.stringify(status)}`, 0);
+}
+function compactEvents(config, env) {
+	const status = nativeEventLogStatus(config, env);
+	if (!status || status.compactableEvents <= 0) return null;
+	const dryRun = openCodeJson(config.command, ['db', 'compact-events', '--all', '--limit', String(NATIVE_COMPACTION_LIMIT)], env);
+	if (!dryRun || dryRun.dryRun !== true || !Number.isSafeInteger(Number(dryRun.inspected)) || !Number.isSafeInteger(Number(dryRun.candidates))) return null;
+	if (dryRun.candidates === 0) return { logical_bytes: 0, verified_physical_file_bytes: 0, compaction: { status: 'completed', retryable: false, bounded: true } };
+	const backup = stateFile({ ...env, XDG_STATE_HOME: env.XDG_STATE_HOME }, `opencode-event-log-backup-${crypto.randomUUID()}.db`);
+	if (!backup) return null;
+	const applied = openCodeJson(config.command, ['db', 'compact-events', '--all', '--apply', '--until-done', '--vacuum', '--backup', backup, '--limit', String(NATIVE_COMPACTION_LIMIT)], env);
+	if (!applied || applied.dryRun !== false || applied.reclaim?.integrity !== 'ok' || applied.reclaim?.backupIntegrity !== 'ok') return null;
+	const logical = Number(applied.payloadBytesReclaimed);
+	const physical = Number(applied.reclaim.bytesReclaimed);
+	if (!Number.isSafeInteger(logical) || !Number.isSafeInteger(physical) || logical < 0 || physical < 0) return null;
+	return { logical_bytes: logical, verified_physical_file_bytes: physical, compaction: { status: 'completed', retryable: false, bounded: true, cursor: dryRun.next || null } };
+}
 function sign(value, key) { return crypto.createHmac('sha256', key).update(JSON.stringify(value)).digest('hex'); }
 function secureEqual(left, right) { return left.length === right.length && crypto.timingSafeEqual(Buffer.from(left), Buffer.from(right)); }
 function reclaimable(value) { return value.ownership_known && value.reconstructable && !value.active && !value.referenced && (value.id.startsWith('compaction:') || !['credential', 'history', 'pinned_export', 'session_store'].includes(value.class)); }
