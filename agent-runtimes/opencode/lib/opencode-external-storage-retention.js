@@ -22,6 +22,7 @@ const MAX_TARGETS = 1000;
 const MAX_ITEMS = 5000;
 const MAX_ROOTS = 32;
 const MAX_COMMAND_BYTES = 1024 * 1024;
+const NATIVE_COMMAND_TIMEOUT_MS = 10_000;
 const MAX_WALK_ENTRIES = 10_000;
 const MAX_WALK_DEPTH = 32;
 const MAX_WALK_BYTES = 1024 * 1024 * 1024 * 1024;
@@ -40,20 +41,32 @@ function handleRequest(request, options = {}) {
 	const byId = new Map(inventory.items.map((item) => [item.id, item]));
 	const reclaimed = [];
 	let reclaimedBytes = 0;
+	let logicalDeletedBytes = 0;
+	let verifiedPhysicalFileBytes = 0;
+	const maintenance = [];
 	for (const target of request.reclaim_targets) {
 		const item = byId.get(target.id);
 		if (!item || item.reclaim_token !== target.reclaim_token || !reclaimable(item)) continue;
 		const receipt = nativeReclaim(item, config, options);
 		if (!receipt) continue;
 		reclaimed.push(item.id);
-		reclaimedBytes += receipt.bytes;
+		reclaimedBytes += receipt.logical_bytes ?? receipt.bytes;
+		logicalDeletedBytes += receipt.logical_bytes ?? receipt.bytes;
+		verifiedPhysicalFileBytes += receipt.verified_physical_file_bytes ?? (receipt.logical_bytes === undefined ? receipt.bytes : 0);
+		if (receipt.compaction) maintenance.push({ id: item.id, ...receipt.compaction });
 	}
 	// Echo the generation the reclaim was requested against. Homeboy validates
 	// this to confirm the provider acted on the inventory view it was handed;
 	// returning a freshly recomputed generation fails that check on any root
 	// that saw unrelated writes since inventory (#2832). Per-item reclaim
 	// tokens, not this value, decide whether an individual item may be removed.
-	return { schema: SCHEMA, provider_id: PROVIDER_ID, generation: request.generation, reclaimed_item_ids: reclaimed, reclaimed_bytes: reclaimedBytes };
+	return {
+		schema: SCHEMA, provider_id: PROVIDER_ID, generation: request.generation,
+		reclaimed_item_ids: reclaimed, reclaimed_bytes: reclaimedBytes,
+		logical_deleted_bytes: logicalDeletedBytes,
+		verified_physical_file_bytes_reclaimed: verifiedPhysicalFileBytes,
+		...(maintenance.length ? { maintenance } : {}),
+	};
 }
 
 function writeOwnershipMarker(root, metadata = {}, env = process.env) {
@@ -94,13 +107,14 @@ function retentionConfig(env, options) {
 function inventoryFor(config, options) {
 	const roots = [...config.temp_roots.map((value, index) => ({ id: `temp-${index}`, path: value })), ...config.data_roots.map((value, index) => ({ id: `data-${index}`, path: value }))];
 	const markerDiscovery = config.marker_key ? discoverMarkers(config, roots, options, new Set()) : { items: [], incomplete: [] };
-	const sessionDiscovery = discoverSessions(config, roots, options, new Set(markerDiscovery.items.map((entry) => entry._session_id).filter(Boolean)));
+	const sessionDiscovery = discoverSessions(config, roots, options, markerDiscovery.items);
 	for (const marker of markerDiscovery.items) marker.referenced = Boolean(marker._session_id && sessionDiscovery.ids.has(marker._session_id));
 	const protectedItems = discoverProtected(config, roots);
 	const cargoDiscovery = discoverCargoTargets(config, options, new Set([...markerDiscovery.items, ...sessionDiscovery.items].map((entry) => entry._path).filter(Boolean)));
 	// Scratch is discovered before session rows so a busy session store cannot
 	// starve signed terminal scratch from the bounded inventory.
-	const items = [...markerDiscovery.items, ...sessionDiscovery.items, ...protectedItems, ...cargoDiscovery.items].slice(0, MAX_ITEMS);
+	const pending = pendingCompaction(config, options.env || process.env, roots);
+	const items = [...markerDiscovery.items, ...sessionDiscovery.items, ...protectedItems, ...(pending ? [pending] : []), ...cargoDiscovery.items].slice(0, MAX_ITEMS);
 	const known = new Set(items.map((item) => item._path).filter(Boolean));
 	const unknown = roots.map((root) => unknownBytesBelow(root.path, known));
 	const unknownBytes = unknown.reduce((total, value) => total + value.bytes, 0);
@@ -109,7 +123,7 @@ function inventoryFor(config, options) {
 	const generation = digest(JSON.stringify({ roots: roots.map((root) => [root.id, fingerprint(root.path)]), items: items.map((item) => [item.id, item.state]) }));
 	return {
 		schema: SCHEMA, provider_id: PROVIDER_ID, generation, roots,
-		items: items.map(({ _path, _workspace, _session_id, state, ...item }) => ({ ...item, reclaim_token: reclaimToken(item.id, state, _path) })), unknown_bytes: unknownBytes,
+		items: items.map(({ _path, _workspace, _session_id, _session_graph, state, ...item }) => ({ ...item, reclaim_token: reclaimToken(item.id, state, _path) })), unknown_bytes: unknownBytes,
 		...(incomplete.length ? { completeness: { complete: false, incomplete_roots: incomplete } } : {}),
 	};
 }
@@ -138,10 +152,22 @@ function discoverSessions(config, roots, options, markerSessions = markerSession
 	if (!Array.isArray(sessions)) return { items: [item(`session-store:${digest(config.db_path).slice(0, 16)}`, rootId(config.db_path, roots), 'session_store', config.db_path, false, true, true, 0, `db:${fingerprint(config.db_path)}`)], ids: new Set() };
 	const storeId = `session-store:${digest(config.db_path).slice(0, 16)}`;
 	const validSessions = sessions.filter((session) => validId(session.id));
-	const sessionItems = validSessions.slice(0, MAX_ITEMS - 1).map((session) => item(`session:${session.id}`, rootId(config.db_path, roots), 'durable_artifact', config.db_path, true, processAlive(session.owner_pid), session.pinned === true || markerSessions.has(session.id), ageDays(session.updated || session.created, options.now), `session:${session.id}:${fingerprint(config.db_path)}`, 0));
+	const graph = nativeSessionGraph(config, options.env || process.env);
+	const markers = new Map(markerSessions.map((entry) => [entry._session_id, entry]));
+	const sessionItems = validSessions.slice(0, MAX_ITEMS - 1).map((session) => {
+		const marker = markers.get(session.id);
+		const row = graph.rows.get(session.id);
+		const descendants = row && graph.complete ? descendantRows(row.id, graph.rows) : [];
+		const protectedDescendant = !graph.complete || descendants.some((child) => child.active || child.unknown || child.referenced);
+		const ownershipKnown = Boolean(marker && graph.complete && row && row.parent_id === null);
+		const discovered = item(`session:${session.id}`, rootId(config.db_path, roots), 'durable_artifact', config.db_path, ownershipKnown && !protectedDescendant, Boolean(marker?.active || row?.active), Boolean(marker?.active || protectedDescendant), ageDays(session.updated || session.created, options.now), `session:${session.id}:${digest(JSON.stringify({ marker: marker?.state, graph: graph.complete, row, descendants }))}`, row?.logical_bytes || 0);
+		discovered.ownership_known = ownershipKnown;
+		discovered._session_graph = graph;
+		return discovered;
+	});
 	return { items: [item(storeId, rootId(config.db_path, roots), 'session_store', config.db_path, false, false, true, 0, `db:${fingerprint(config.db_path)}`), ...sessionItems], ids: new Set(validSessions.map((session) => session.id)) };
 }
-function markerSessionIds(config, env) { const ids = new Set(); for (const root of config.temp_roots) for (const candidate of boundedDirectories(root).directories) { const marker = readMarker(candidate, env); if (marker?.session_id) ids.add(marker.session_id); } return ids; }
+function markerSessionIds(config, env) { const ids = []; for (const root of config.temp_roots) for (const candidate of boundedDirectories(root).directories) { const marker = readMarker(candidate, env); if (marker?.session_id) ids.push({ _session_id: marker.session_id, active: marker.active === true || processAlive(marker.owner_pid), state: `marker:${marker.signature}:${sizeOf(candidate)}` }); } return ids; }
 
 function discoverProtected(config, roots) {
 	const items = [];
@@ -159,7 +185,53 @@ function discoverProtected(config, roots) {
 function nativeReclaim(itemToReclaim, config, options) {
 	if (itemToReclaim.id.startsWith(CARGO_TARGET_PREFIX)) return reclaimCargoTarget(itemToReclaim.id, config, options);
 	if (itemToReclaim.class === 'scratch') return reclaimScratch(itemToReclaim.id, config, options);
+	if (itemToReclaim.id.startsWith('compaction:')) return retryCompaction(config, options.env || process.env);
+	if (itemToReclaim.id.startsWith('session:')) return reclaimSession(itemToReclaim, config, options);
 	return null;
+}
+
+function reclaimSession(itemToReclaim, config, options) {
+	const sessionId = itemToReclaim.id.slice('session:'.length);
+	const current = discoverSessions(config, [], options, markerSessionIds(config, options.env || process.env)).items.find((entry) => entry.id === itemToReclaim.id);
+	if (!current || reclaimToken(current.id, current.state, current._path) !== itemToReclaim.reclaim_token || !reclaimable(current)) return null;
+	const graph = current._session_graph;
+	const ids = [sessionId, ...descendantRows(sessionId, graph.rows).map((row) => row.id)];
+	const before = safeRegularFile(config.db_path) ? fs.statSync(config.db_path).size : 0;
+	const deleted = run(config.command, ['session', 'delete', sessionId], options.env || process.env);
+	if (deleted.status !== 0) return null;
+	const after = nativeSessionGraph(config, options.env || process.env);
+	if (!after.complete || ids.some((id) => after.rows.has(id))) return null;
+	const logical = ids.reduce((total, id) => total + (graph.rows.get(id)?.logical_bytes || 0), 0);
+	const compacted = compactDatabase(config, options.env || process.env);
+	if (!compacted.ok) {
+		writeCompaction(config, options.env || process.env);
+		return { logical_bytes: logical, verified_physical_file_bytes: 0, compaction: { status: 'failed', retryable: true } };
+	}
+	clearCompaction(options.env || process.env);
+	const physical = Math.max(0, before - (safeRegularFile(config.db_path) ? fs.statSync(config.db_path).size : before));
+	return { logical_bytes: logical, verified_physical_file_bytes: physical, compaction: { status: 'completed', retryable: false } };
+}
+
+function nativeSessionGraph(config, env) {
+	const query = 'SELECT s.id, s.parent_id, CASE WHEN s.time_compacting IS NOT NULL OR EXISTS (SELECT 1 FROM session_input i WHERE i.session_id = s.id AND i.promoted_seq IS NULL) OR EXISTS (SELECT 1 FROM message m WHERE m.session_id = s.id AND (m.data LIKE \'%"status":"running"%\' OR m.data LIKE \'%"status":"pending"%\')) THEN 1 ELSE 0 END AS active, COALESCE((SELECT SUM(length(m.data)) FROM message m WHERE m.session_id = s.id), 0) + COALESCE((SELECT SUM(length(p.data)) FROM part p WHERE p.session_id = s.id), 0) AS logical_bytes FROM session s';
+	const rows = openCodeJson(config.command, ['db', query, '--format', 'json'], env);
+	if (!Array.isArray(rows)) return { complete: false, rows: new Map() };
+	const map = new Map();
+	for (const row of rows) if (validId(row.id) && (row.parent_id === null || validId(row.parent_id))) map.set(row.id, { id: row.id, parent_id: row.parent_id ?? null, active: row.active === 1 || row.active === true, logical_bytes: Number.isFinite(Number(row.logical_bytes)) ? Number(row.logical_bytes) : 0, unknown: false, referenced: false });
+	if (map.size !== rows.length) return { complete: false, rows: map };
+	for (const row of map.values()) if (row.parent_id && !map.has(row.parent_id)) row.unknown = true;
+	return { complete: true, rows: map };
+}
+
+function descendantRows(id, rows) {
+	const result = []; const queue = [id]; const seen = new Set([id]);
+	while (queue.length) { const parent = queue.shift(); for (const row of rows.values()) if (row.parent_id === parent && !seen.has(row.id)) { seen.add(row.id); result.push(row); queue.push(row.id); } }
+	return result;
+}
+
+function compactDatabase(config, env) {
+	const result = run(config.command, ['db', 'VACUUM'], env);
+	return { ok: result.status === 0 };
 }
 
 // Cargo target directories accumulate under the temp root faster than any
@@ -325,7 +397,7 @@ function readConfig(file) { if (!file) return {}; if (!safeRegularFile(file) || 
 function openCodePaths(command, env) { const result = run(command, ['debug', 'paths'], env); return result.status === 0 ? Object.fromEntries(String(result.stdout).split(/\r?\n/).map((line) => line.trim().split(/\s{2,}/)).filter(([key, value]) => key && value)) : {}; }
 function openCodeDbPath(command, env) { const result = run(command, ['db', 'path'], env); const candidate = String(result.stdout || '').trim(); return result.status === 0 && safeAbsolutePath(candidate) ? candidate : ''; }
 function openCodeJson(command, args, env) { const result = run(command, args, env); if (result.status !== 0 || Buffer.byteLength(result.stdout || '') > MAX_COMMAND_BYTES) return null; try { return JSON.parse(result.stdout); } catch { return null; } }
-function run(command, args, env) { return spawnSync(command, args, { encoding: 'utf8', env, maxBuffer: MAX_COMMAND_BYTES }); }
+function run(command, args, env) { return spawnSync(command, args, { encoding: 'utf8', env, timeout: NATIVE_COMMAND_TIMEOUT_MS, maxBuffer: MAX_COMMAND_BYTES }); }
 function markerKey(env) {
 	try {
 		const state = env?.XDG_STATE_HOME || (env?.HOME && path.join(env.HOME, '.local', 'state'));
@@ -346,9 +418,14 @@ function safeStateDirectory(state) {
 	const directory = path.join(current, 'homeboy'); if (fs.existsSync(directory) && fs.lstatSync(directory).isSymbolicLink()) return '';
 	fs.mkdirSync(directory, { recursive: true, mode: 0o700 }); return fs.realpathSync(directory);
 }
+function stateFile(env, name) { const state = env?.XDG_STATE_HOME || (env?.HOME && path.join(env.HOME, '.local', 'state')); return safeAbsolutePath(state) ? path.join(state, 'homeboy', name) : ''; }
+function writeCompaction(config, env) { try { const file = stateFile(env, 'opencode-retention-compaction.json'); if (file) fs.writeFileSync(file, JSON.stringify({ db_path: config.db_path, created_at: new Date().toISOString() }), { mode: 0o600 }); } catch { /* Retry state is best effort; the receipt still reports failed maintenance. */ } }
+function clearCompaction(env) { try { const file = stateFile(env, 'opencode-retention-compaction.json'); if (file) fs.unlinkSync(file); } catch { /* Already clear. */ } }
+function pendingCompaction(config, env, roots) { try { const file = stateFile(env, 'opencode-retention-compaction.json'); const state = file && JSON.parse(fs.readFileSync(file, 'utf8')); return state?.db_path === config.db_path ? item(`compaction:${digest(config.db_path).slice(0, 16)}`, rootId(config.db_path, roots), 'session_store', config.db_path, true, false, false, ageDays(state.created_at), `compaction:${fingerprint(file)}`, 0) : null; } catch { return null; } }
+function retryCompaction(config, env) { const before = safeRegularFile(config.db_path) ? fs.statSync(config.db_path).size : 0; const result = compactDatabase(config, env); if (!result.ok) return null; clearCompaction(env); const after = safeRegularFile(config.db_path) ? fs.statSync(config.db_path).size : before; return { logical_bytes: 0, verified_physical_file_bytes: Math.max(0, before - after), compaction: { status: 'completed', retryable: false } }; }
 function sign(value, key) { return crypto.createHmac('sha256', key).update(JSON.stringify(value)).digest('hex'); }
 function secureEqual(left, right) { return left.length === right.length && crypto.timingSafeEqual(Buffer.from(left), Buffer.from(right)); }
-function reclaimable(value) { return value.class === 'scratch' && value.ownership_known && value.reconstructable && !value.active && !value.referenced; }
+function reclaimable(value) { return value.ownership_known && value.reconstructable && !value.active && !value.referenced && (value.id.startsWith('compaction:') || !['credential', 'history', 'pinned_export', 'session_store'].includes(value.class)); }
 function processAlive(pid) { if (!Number.isInteger(pid) || pid <= 0) return false; try { process.kill(pid, 0); return true; } catch (error) { return error?.code === 'EPERM'; } }
 function safeEntries(directory, limit = MAX_WALK_ENTRIES) { try { const handle = fs.opendirSync(directory, { bufferSize: Math.min(limit, 128) }); const entries = []; for (let entry = handle.readSync(); entry && entries.length < limit; entry = handle.readSync()) entries.push(entry); handle.closeSync(); return entries; } catch { return []; } }
 function sizeOf(candidate) { return walkBytes(candidate).bytes; }
