@@ -92,3 +92,16 @@ This is the runtime-side producer for Homeboy #8282. Homeboy must ingest the JSO
 file or callback as its single canonical structured event stream, preserving the
 cursor rather than serializing frames into log messages; that adoption is tracked by
 Homeboy #9162.
+
+## External Storage Retention
+
+The retention adapter emits the strict five-key reclaim receipt: `schema`,
+`provider_id`, `generation`, `reclaimed_item_ids`, and `reclaimed_bytes`. Native
+event-log compaction is a bounded rewrite operation; logical payload savings are
+private maintenance evidence and are never reported as physical reclaim. Physical
+reclaim requires the native CLI's separate verified maintenance operation.
+
+Run the real SQLite/native dependency check with
+`HOMEBOY_OPENCODE_NATIVE_TEST_CONFIG=/absolute/path/to/disposable-config.json`
+and `npm run test:opencode-external-storage-native-integration`. The normal unit
+fixtures do not claim to replace that dependency test.

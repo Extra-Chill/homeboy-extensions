@@ -23,8 +23,10 @@ const MAX_ITEMS = 5000;
 const MAX_ROOTS = 32;
 const MAX_COMMAND_BYTES = 1024 * 1024;
 const NATIVE_COMMAND_TIMEOUT_MS = 10_000;
+const MAX_NATIVE_COMMAND_TIMEOUT_MS = 120_000;
 const NATIVE_COMPACTION_LIMIT = 1000;
 const NATIVE_COMPACTION_VERSION = 1;
+const MAX_COMPACTION_BATCHES = 10_000;
 const MAX_WALK_ENTRIES = 10_000;
 const MAX_WALK_DEPTH = 32;
 const MAX_WALK_BYTES = 1024 * 1024 * 1024 * 1024;
@@ -43,17 +45,14 @@ function handleRequest(request, options = {}) {
 	const byId = new Map(inventory.items.map((item) => [item.id, item]));
 	const reclaimed = [];
 	let reclaimedBytes = 0;
-	let logicalDeletedBytes = 0;
-	let verifiedPhysicalFileBytes = 0;
 	for (const target of request.reclaim_targets) {
 		const item = byId.get(target.id);
 		if (!item || item.reclaim_token !== target.reclaim_token || !reclaimable(item)) continue;
 		const receipt = nativeReclaim(item, config, options);
 		if (!receipt) continue;
 		reclaimed.push(item.id);
-		reclaimedBytes += receipt.verified_physical_file_bytes ?? receipt.physical_bytes ?? (receipt.logical_bytes === undefined ? receipt.bytes : 0);
-		logicalDeletedBytes += receipt.logical_bytes ?? receipt.bytes ?? 0;
-		verifiedPhysicalFileBytes += receipt.verified_physical_file_bytes ?? receipt.physical_bytes ?? (receipt.logical_bytes === undefined ? receipt.bytes : 0);
+		// Logical event payload savings are private evidence, never physical reclaim.
+		reclaimedBytes += receipt.physical_bytes ?? receipt.bytes ?? 0;
 	}
 	// Echo the generation the reclaim was requested against. Homeboy validates
 	// this to confirm the provider acted on the inventory view it was handed;
@@ -63,8 +62,6 @@ function handleRequest(request, options = {}) {
 	return {
 		schema: SCHEMA, provider_id: PROVIDER_ID, generation: request.generation,
 		reclaimed_item_ids: reclaimed, reclaimed_bytes: reclaimedBytes,
-		logical_deleted_bytes: logicalDeletedBytes,
-		verified_physical_file_bytes_reclaimed: verifiedPhysicalFileBytes,
 	};
 }
 
@@ -100,7 +97,9 @@ function retentionConfig(env, options) {
 	if (tempRoots.length + dataRoots.length > MAX_ROOTS) throw new Error('Retention configuration exceeds the root ceiling.');
 	if (hasOverlappingRoots(tempRoots) || hasOverlappingRoots(dataRoots)) throw new Error('Retention roots in the same storage class must not overlap.');
 	if (tempRoots.some((root) => dataRoots.some((data) => overlaps(root, data)))) throw new Error('Retention roots must not overlap.');
-	return { command, temp_roots: tempRoots, data_roots: dataRoots, db_path: dbPath, marker_key: markerKey(env) };
+	const operation_timeout_ms = value.operation_timeout_ms === undefined ? NATIVE_COMMAND_TIMEOUT_MS : Number(value.operation_timeout_ms);
+	if (!Number.isSafeInteger(operation_timeout_ms) || operation_timeout_ms < 1000 || operation_timeout_ms > MAX_NATIVE_COMMAND_TIMEOUT_MS) throw new Error('Retention operation timeout is invalid.');
+	return { command, temp_roots: tempRoots, data_roots: dataRoots, db_path: dbPath, marker_key: markerKey(env), operation_timeout_ms };
 }
 
 function inventoryFor(config, options) {
@@ -346,11 +345,11 @@ function validateRequest(request) {
 	if (request.operation === 'inventory' && (request.generation !== undefined || (request.reclaim_targets && request.reclaim_targets.length))) throw new Error('Inventory requests must not contain reclaim fields.');
 	if (request.operation === 'reclaim' && (!validId(request.generation) || !Array.isArray(request.reclaim_targets) || request.reclaim_targets.length > MAX_TARGETS || request.reclaim_targets.some((target) => !target || Object.keys(target).some((key) => !['id', 'reclaim_token'].includes(key)) || !validId(target.id) || !validId(target.reclaim_token)))) throw new Error('Reclaim request is invalid or exceeds the protocol target ceiling.');
 }
-function readConfig(file) { if (!file) return {}; if (!safeRegularFile(file) || fs.statSync(file).size > MAX_CONFIG_BYTES) throw new Error('Retention configuration is invalid or exceeds its byte ceiling.'); const value = JSON.parse(fs.readFileSync(file, 'utf8')); if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some((key) => !['command', 'temp_roots', 'data_roots'].includes(key)) || (value.temp_roots && !Array.isArray(value.temp_roots)) || (value.data_roots && !Array.isArray(value.data_roots))) throw new Error('Retention configuration has an invalid shape.'); return value; }
+function readConfig(file) { if (!file) return {}; if (!safeRegularFile(file) || fs.statSync(file).size > MAX_CONFIG_BYTES) throw new Error('Retention configuration is invalid or exceeds its byte ceiling.'); const value = JSON.parse(fs.readFileSync(file, 'utf8')); if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some((key) => !['command', 'temp_roots', 'data_roots', 'operation_timeout_ms'].includes(key)) || (value.temp_roots && !Array.isArray(value.temp_roots)) || (value.data_roots && !Array.isArray(value.data_roots))) throw new Error('Retention configuration has an invalid shape.'); return value; }
 function openCodePaths(command, env) { const result = run(command, ['debug', 'paths'], env); return result.status === 0 ? Object.fromEntries(String(result.stdout).split(/\r?\n/).map((line) => line.trim().split(/\s{2,}/)).filter(([key, value]) => key && value)) : {}; }
 function openCodeDbPath(command, env) { const result = run(command, ['db', 'path'], env); const candidate = String(result.stdout || '').trim(); return result.status === 0 && safeAbsolutePath(candidate) ? candidate : ''; }
-function openCodeJson(command, args, env) { const result = run(command, args, env); if (result.status !== 0 || Buffer.byteLength(result.stdout || '') > MAX_COMMAND_BYTES) return null; try { return JSON.parse(result.stdout); } catch { return null; } }
-function run(command, args, env) { return spawnSync(command, args, { encoding: 'utf8', env, timeout: NATIVE_COMMAND_TIMEOUT_MS, maxBuffer: MAX_COMMAND_BYTES }); }
+function openCodeJson(command, args, env, timeout = NATIVE_COMMAND_TIMEOUT_MS) { const result = run(command, args, env, timeout); if (result.status !== 0 || Buffer.byteLength(result.stdout || '') > MAX_COMMAND_BYTES) return null; try { return JSON.parse(result.stdout); } catch { return null; } }
+function run(command, args, env, timeout = NATIVE_COMMAND_TIMEOUT_MS) { return spawnSync(command, args, { encoding: 'utf8', env, timeout, maxBuffer: MAX_COMMAND_BYTES }); }
 function markerKey(env) {
 	try {
 		const state = env?.XDG_STATE_HOME || (env?.HOME && path.join(env.HOME, '.local', 'state'));
@@ -376,7 +375,7 @@ function safeStateDirectory(state) {
 	fs.mkdirSync(directory, { recursive: true, mode: 0o700 }); return fs.realpathSync(directory);
 }
 function nativeEventLogStatus(config, env) {
-	const status = openCodeJson(config.command, ['db', 'event-log-status'], env);
+	const status = openCodeJson(config.command, ['db', 'event-log-status'], env, config.operation_timeout_ms);
 	return status && nativeCompactionVersion(status) && Number.isSafeInteger(Number(status.events)) && Number.isSafeInteger(Number(status.payloadBytes)) && Number.isSafeInteger(Number(status.compactableEvents)) && typeof status.recommended === 'boolean' ? status : null;
 }
 function pendingCompaction(config, env, roots) {
@@ -387,19 +386,35 @@ function pendingCompaction(config, env, roots) {
 function compactEvents(config, env) {
 	const status = nativeEventLogStatus(config, env);
 	if (!status || status.compactableEvents <= 0) return null;
-	const dryRun = openCodeJson(config.command, ['db', 'compact-events', '--all', '--limit', String(NATIVE_COMPACTION_LIMIT)], env);
-	if (!dryRun || !nativeCompactionVersion(dryRun) || dryRun.dryRun !== true || !Number.isSafeInteger(Number(dryRun.inspected)) || !Number.isSafeInteger(Number(dryRun.candidates))) return null;
-	if (dryRun.candidates === 0) return { logical_bytes: 0, verified_physical_file_bytes: 0 };
-	const backup = stateFile({ XDG_STATE_HOME: env.XDG_STATE_HOME }, `opencode-event-log-backup-${crypto.randomUUID()}.db`);
-	if (!backup) return null;
-	const applied = openCodeJson(config.command, ['db', 'compact-events', '--all', '--apply', '--limit', String(NATIVE_COMPACTION_LIMIT), '--backup', backup, ...(dryRun.next ? ['--cursor', JSON.stringify(dryRun.next)] : [])], env);
-	if (!applied || !nativeCompactionVersion(applied) || applied.dryRun !== false || (applied.outcome !== undefined && applied.outcome !== 'completed') || !applied.reclaim || applied.reclaim.integrity !== 'ok') return null;
-	const physical = Number(applied.reclaim.bytesReclaimed);
-	const logical = Number(applied.payloadBytesReclaimed);
-	if (!Number.isSafeInteger(logical) || logical < 0 || !Number.isSafeInteger(physical) || physical < 0) return null;
-	return { logical_bytes: logical, verified_physical_file_bytes: physical };
+	const evidencePath = stateFile({ XDG_STATE_HOME: env.XDG_STATE_HOME }, 'opencode-event-log-maintenance.json');
+	let cursor;
+	let afterSeq;
+	let batches = 0;
+	let logicalBytes = 0;
+	while (batches < MAX_COMPACTION_BATCHES) {
+		const args = ['db', 'compact-events', '--all', '--apply', '--limit', String(NATIVE_COMPACTION_LIMIT)];
+		if (cursor !== undefined) args.push('--cursor', cursor);
+		if (afterSeq !== undefined) args.push('--after-seq', String(afterSeq));
+		const applied = openCodeJson(config.command, args, env, config.operation_timeout_ms);
+		if (!applied || !nativeCompactionVersion(applied) || applied.dryRun !== false || !Number.isSafeInteger(Number(applied.inspected)) || !Number.isSafeInteger(Number(applied.candidates)) || !Number.isSafeInteger(Number(applied.rewritten)) || !Number.isSafeInteger(Number(applied.payloadBytesReclaimed)) || (applied.outcome !== undefined && applied.outcome !== 'completed')) return null;
+		batches += 1;
+		logicalBytes += Number(applied.payloadBytesReclaimed);
+		writeMaintenanceEvidence(evidencePath, { schema: 'homeboy/opencode-event-log-maintenance/v1', status: 'running', batches, logical_bytes: logicalBytes, cursor: applied.next?.cursor, after_seq: applied.next?.afterSeq });
+		if (!applied.next) {
+			writeMaintenanceEvidence(evidencePath, { schema: 'homeboy/opencode-event-log-maintenance/v1', status: 'completed', batches, logical_bytes: logicalBytes, physical_bytes: 0 });
+			return { physical_bytes: 0 };
+		}
+		if (typeof applied.next.cursor !== 'string' || (applied.next.afterSeq !== undefined && !Number.isSafeInteger(Number(applied.next.afterSeq)))) return null;
+		cursor = applied.next.cursor;
+		afterSeq = applied.next.afterSeq;
+	}
+	return null;
 }
-function nativeCompactionVersion(value) { return value.version === undefined || value.version === NATIVE_COMPACTION_VERSION; }
+function nativeCompactionVersion(value) { return value && value.version === NATIVE_COMPACTION_VERSION; }
+function writeMaintenanceEvidence(file, value) {
+	if (!file) return;
+	try { fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 }); fs.writeFileSync(`${file}.tmp-${process.pid}`, JSON.stringify(value), { mode: 0o600 }); fs.renameSync(`${file}.tmp-${process.pid}`, file); } catch { /* evidence is best effort and never enters the wire receipt */ }
+}
 function sign(value, key) { return crypto.createHmac('sha256', key).update(JSON.stringify(value)).digest('hex'); }
 function secureEqual(left, right) { return left.length === right.length && crypto.timingSafeEqual(Buffer.from(left), Buffer.from(right)); }
 function reclaimable(value) { return value.ownership_known && value.reconstructable && !value.active && !value.referenced && (value.id.startsWith('compaction:') || !['credential', 'history', 'pinned_export', 'session_store'].includes(value.class)); }

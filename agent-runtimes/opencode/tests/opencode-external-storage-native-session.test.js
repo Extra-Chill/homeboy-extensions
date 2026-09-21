@@ -25,10 +25,11 @@ const args = process.argv.slice(2); const db = ${JSON.stringify(database)};
 if (args.join(' ') === 'debug paths') process.stdout.write('tmp  ${temp}\\ndata  ${data}\\n');
 else if (args.join(' ') === 'db path') process.stdout.write(db + '\\n');
 else if (args.join(' ') === 'session list --format json') process.stdout.write(JSON.stringify([{id:'ses_unknown'},{id:'ses_pinned',owner_pid:0,pinned:true},{id:'ses_owned',owner_pid:0,pinned:false}]));
-else if (args.join(' ') === 'db event-log-status') process.stdout.write(JSON.stringify({events:2,payloadBytes:200,compactableEvents:2,recommended:true}));
-else if (args[0] === 'db' && args[1] === 'compact-events') {
-  if (!args.includes('--apply')) process.stdout.write(JSON.stringify({dryRun:true,inspected:2,candidates:1,hasMore:true,next:{cursor:'ses_owned',afterSeq:1}}));
-  else { cp.spawnSync('sqlite3', [db, "UPDATE event SET type='message.compacted.1' WHERE id='e1'"]); const backup = args[args.indexOf('--backup') + 1]; cp.spawnSync('sqlite3', [db, 'VACUUM INTO "' + backup + '"']); process.stdout.write(JSON.stringify({dryRun:false,batches:1,inspected:2,candidates:1,rewritten:1,payloadBytesReclaimed:80,reclaim:{integrity:'ok',backupIntegrity:'ok',bytesReclaimed:40}})); }
+else if (args.join(' ') === 'db event-log-status') process.stdout.write(JSON.stringify({version:1,events:2,payloadBytes:200,compactableEvents:2,recommended:true}));
+else if (args[0] === 'db' && args[1] === 'compact-events' && args.includes('--apply')) {
+  if (args.includes('--backup') || args.includes('--vacuum') || args.includes('--cursor')) process.exit(2);
+  cp.spawnSync('sqlite3', [db, "UPDATE event SET type='event.compacted.1' WHERE id='e1'"]);
+  process.stdout.write(JSON.stringify({version:1,dryRun:false,inspected:2,candidates:1,rewritten:1,payloadBytesReclaimed:80}));
 }
 `);
 	fs.chmodSync(command, 0o755);
@@ -46,10 +47,10 @@ else if (args[0] === 'db' && args[1] === 'compact-events') {
 	assert.deepEqual(sessionReceipt.reclaimed_item_ids, []);
 	const receipt = handleRequest({ schema: SCHEMA, operation: 'reclaim', generation: inventory.generation, reclaim_targets: [{ id: compaction.id, reclaim_token: compaction.reclaim_token }] }, { env });
 	assert.deepEqual(receipt.reclaimed_item_ids, [compaction.id]);
-	assert.equal(receipt.logical_deleted_bytes, 80);
-	assert.equal(receipt.verified_physical_file_bytes_reclaimed, 40);
+  assert.deepEqual(Object.keys(receipt).sort(), ['generation', 'provider_id', 'reclaimed_bytes', 'reclaimed_item_ids', 'schema']);
+  assert.equal(receipt.reclaimed_bytes, 0, 'logical compaction savings are not physical reclaim');
 	assert.equal(spawnSync('sqlite3', [database, "SELECT count(*) FROM session WHERE id='ses_owned'"], { encoding: 'utf8' }).stdout.trim(), '1');
-	assert.equal(spawnSync('sqlite3', [database, "SELECT count(*) FROM event WHERE type='message.compacted.1'"], { encoding: 'utf8' }).stdout.trim(), '1');
+  assert.equal(spawnSync('sqlite3', [database, "SELECT count(*) FROM event WHERE type='event.compacted.1'"], { encoding: 'utf8' }).stdout.trim(), '1');
 	console.log('opencode native session retention: ok');
 } finally {
 	fs.rmSync(root, { recursive: true, force: true });
