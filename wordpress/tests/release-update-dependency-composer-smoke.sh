@@ -37,6 +37,27 @@ normal_out="$(cd "${NORMAL}" && HOMEBOY_SETTINGS_JSON="${NORMAL_PAYLOAD}" "${UPD
 echo "${normal_out}" | jq -e '.success == true and .version == "1.1.0" and .changed == true' >/dev/null
 jq -e '.packages[] | select(.name == "acme/library") | .version == "1.1.0"' "${NORMAL}/composer.lock" >/dev/null
 
+DISCOVERY="${WORK_DIR}/discovery"
+mkdir -p "${DISCOVERY}"
+cat > "${DISCOVERY}/composer.json" <<JSON
+{
+  "name": "acme/discovery-app",
+  "require": { "acme/library": "1.0.0", "php": ">=8.1" },
+  "repositories": [{ "type": "artifact", "url": "${ARTIFACTS}" }]
+}
+JSON
+(cd "${DISCOVERY}" && composer install --no-interaction --no-scripts --no-progress >/dev/null)
+discovery_out="$(cd "${DISCOVERY}" && HOMEBOY_SETTINGS_JSON='{"dependency":{"package":"acme/library","version":"latest","discovery_constraint":"^1.0","allow_constraint_replacement":true}}' "${UPDATE_DEP_SH}")"
+echo "${discovery_out}" | jq -e '.success == true and .version == "1.1.0" and .changed == true' >/dev/null
+jq -e '.require["acme/library"] == "1.1.0" and .require.php == ">=8.1"' "${DISCOVERY}/composer.json" >/dev/null
+
+discovery_json_hash="$(shasum "${DISCOVERY}/composer.json" | cut -d' ' -f1)"
+discovery_lock_hash="$(shasum "${DISCOVERY}/composer.lock" | cut -d' ' -f1)"
+verify_out="$(cd "${DISCOVERY}" && HOMEBOY_SETTINGS_JSON='{"dependency":{"package":"acme/library","version":"1.1.0","mode":"verify"}}' "${UPDATE_DEP_SH}")"
+echo "${verify_out}" | jq -e '.success == true and .verification_only == true and .changed == false' >/dev/null
+[[ "${discovery_json_hash}" == "$(shasum "${DISCOVERY}/composer.json" | cut -d' ' -f1)" ]]
+[[ "${discovery_lock_hash}" == "$(shasum "${DISCOVERY}/composer.lock" | cut -d' ' -f1)" ]]
+
 normal_json_hash="$(shasum "${NORMAL}/composer.json" | cut -d' ' -f1)"
 normal_lock_hash="$(shasum "${NORMAL}/composer.lock" | cut -d' ' -f1)"
 noop_out="$(cd "${NORMAL}" && HOMEBOY_SETTINGS_JSON="${NORMAL_PAYLOAD}" "${UPDATE_DEP_SH}")"
@@ -76,9 +97,15 @@ cat > "${INLINE}/composer.json" <<JSON
 }
 JSON
 (cd "${INLINE}" && composer install --no-interaction --no-scripts --no-progress >/dev/null)
-inline_out="$(cd "${INLINE}" && HOMEBOY_SETTINGS_JSON='{"dependency":{"package":"acme/library","version":"1.1.0","sha":"new","expected_source":"https://example.test/acme/library.git"}}' "${UPDATE_DEP_SH}")"
+set +e
+inline_discovery_err="$(cd "${INLINE}" && HOMEBOY_SETTINGS_JSON='{"dependency":{"package":"acme/library","version":"latest"}}' "${UPDATE_DEP_SH}" 2>&1 >/dev/null)"
+inline_discovery_status=$?
+set -e
+[[ ${inline_discovery_status} -ne 0 ]]
+printf '%s\n' "${inline_discovery_err}" | grep -q 'unavailable for one-item inline package metadata'
+inline_out="$(cd "${INLINE}" && HOMEBOY_SETTINGS_JSON='{"dependency":{"package":"acme/library","version":"1.1.0","sha":"dispatch","expected_source":"https://example.test/acme/library.git","expected_source_sha":"mirror"}}' "${UPDATE_DEP_SH}")"
 echo "${inline_out}" | jq -e '.success == true and .version == "1.1.0"' >/dev/null
-jq -e '.repositories[0].package.source.url == "https://example.test/acme/library.git" and .repositories[0].package.source.reference == "new"' "${INLINE}/composer.json" >/dev/null
+jq -e '.repositories[0].package.source.url == "https://example.test/acme/library.git" and .repositories[0].package.source.reference == "dispatch" and .repositories[0].package.dist.reference == "mirror"' "${INLINE}/composer.json" >/dev/null
 jq -e '.packages[] | select(.name == "acme/library") | .version == "1.1.0"' "${INLINE}/composer.lock" >/dev/null
 
 echo "PASS: release-update-dependency-composer-smoke"

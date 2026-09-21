@@ -26,8 +26,13 @@ PACKAGE="$(read_field package)"
 REQUESTED_VERSION="$(read_field version)"
 TAG="$(read_field tag)"
 SHA="$(read_field sha)"
+MIRROR_SHA="$(read_field expected_source_sha)"
 EXPECTED_SOURCE="$(read_field expected_source)"
+EXPECTED_SOURCE_SHA="$(read_field expected_source_sha)"
 LATEST_STABLE="$(read_field latest_stable)"
+DISCOVERY_CONSTRAINT="$(read_field discovery_constraint)"
+ALLOW_CONSTRAINT_REPLACEMENT="$(read_field allow_constraint_replacement)"
+MODE="$(read_field mode)"
 
 if [[ -z "${PACKAGE}" ]]; then
   echo "Error: dependency.package is required" >&2
@@ -49,6 +54,29 @@ if ! jq -e --arg package "${PACKAGE}" '
   exit 1
 fi
 
+CURRENT_VERSION="$(jq -r --arg package "${PACKAGE}" '(.require[$package] // ."require-dev"[$package] // "")' composer.json)"
+INLINE_COUNT="$(jq -r --arg package "${PACKAGE}" '[.repositories[]? | select(.type == "package" and .package.name == $package)] | length' composer.json)"
+TARGET_REQUIREMENT="${REQUESTED_VERSION}"
+FINALIZE_DISCOVERY="false"
+if [[ "${LATEST_STABLE}" == "true" ]]; then
+  if [[ "${INLINE_COUNT}" != "0" ]]; then
+    echo "Error: latest stable discovery is unavailable for one-item inline package metadata; provide exact published tag/version coordinates" >&2
+    exit 1
+  fi
+  if [[ "${CURRENT_VERSION}" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    if [[ -z "${DISCOVERY_CONSTRAINT}" || "${ALLOW_CONSTRAINT_REPLACEMENT}" != "true" ]]; then
+      echo "Error: exact Composer pins require dependency.discovery_constraint and dependency.allow_constraint_replacement=true for latest stable discovery" >&2
+      exit 1
+    fi
+    TARGET_REQUIREMENT="${DISCOVERY_CONSTRAINT}"
+    FINALIZE_DISCOVERY="true"
+  elif [[ -n "${DISCOVERY_CONSTRAINT}" ]]; then
+    TARGET_REQUIREMENT="${DISCOVERY_CONSTRAINT}"
+  else
+    TARGET_REQUIREMENT=""
+  fi
+fi
+
 TMP_DIR="$(mktemp -d "${PWD}/.homeboy-composer-update.XXXXXX")"
 cleanup() {
   rm -rf "${TMP_DIR}"
@@ -64,10 +92,11 @@ fi
 # source URL is retained; package-specific tags therefore remain intact.
 jq \
   --arg package "${PACKAGE}" \
-  --arg version "${REQUESTED_VERSION}" \
+  --arg version "${TARGET_REQUIREMENT}" \
   --arg tag "${TAG}" \
   --arg sha "${SHA}" \
-  --argjson update_requirement "$( [[ -n "${REQUESTED_VERSION}" ]] && printf true || printf false )" \
+  --arg mirror_sha "${MIRROR_SHA}" \
+  --argjson update_requirement "$( [[ -n "${TARGET_REQUIREMENT}" ]] && printf true || printf false )" \
   '
   def archive_url($p):
     ($p.dist.url // "") as $url
@@ -77,7 +106,7 @@ jq \
   def update_inline:
     .package.version = $version
     | (if ($tag != "") then .package.dist.url = archive_url(.package) else . end)
-    | (if ($sha != "") then .package.dist.reference = $sha else . end)
+    | (if ($mirror_sha != "") then .package.dist.reference = $mirror_sha else . end)
     | (if ($sha != "" and .package.source) then .package.source.reference = $sha else . end);
   (if ($update_requirement and ((.require // {}) | has($package))) then .require[$package] = $version else . end)
   | (if ($update_requirement and ((."require-dev" // {}) | has($package))) then ."require-dev"[$package] = $version else . end)
@@ -86,7 +115,6 @@ jq \
     ))
   ' composer.json >"${TMP_DIR}/composer.json"
 
-CURRENT_VERSION="$(jq -r --arg package "${PACKAGE}" '(.require[$package] // ."require-dev"[$package] // "")' composer.json)"
 LOCK_VERSION="$(jq -r --arg package "${PACKAGE}" '((.packages // []) + (."packages-dev" // []))[]? | select(.name == $package) | .version' composer.lock 2>/dev/null | head -n 1 || true)"
 
 if [[ -n "${REQUESTED_VERSION}" && -n "${LOCK_VERSION}" ]] && php -r \
@@ -96,8 +124,16 @@ if [[ -n "${REQUESTED_VERSION}" && -n "${LOCK_VERSION}" ]] && php -r \
   exit 1
 fi
 
-if [[ -n "${REQUESTED_VERSION}" && "${CURRENT_VERSION}" == "${REQUESTED_VERSION}" && "${LOCK_VERSION}" == "${REQUESTED_VERSION}" ]]; then
-  if [[ -z "${EXPECTED_SOURCE}" || "$(jq -r --arg package "${PACKAGE}" '((.packages // []) + (."packages-dev" // []))[]? | select(.name == $package) | (.source.url // .dist.url // "")' composer.lock 2>/dev/null | head -n 1)" == "${EXPECTED_SOURCE}" ]]; then
+if [[ "${MODE}" != "verify" && "${MODE}" != "dry-run" && -n "${REQUESTED_VERSION}" && "${CURRENT_VERSION}" == "${REQUESTED_VERSION}" && "${LOCK_VERSION}" == "${REQUESTED_VERSION}" ]]; then
+  SOURCE_OK="true"
+  SHA_OK="true"
+  if [[ -n "${EXPECTED_SOURCE}" ]] && [[ "$(jq -r --arg package "${PACKAGE}" '((.packages // []) + (."packages-dev" // []))[]? | select(.name == $package) | (.source.url // .dist.url // "")' composer.lock 2>/dev/null | head -n 1)" != "${EXPECTED_SOURCE}" ]]; then
+    SOURCE_OK="false"
+  fi
+  if [[ -n "${EXPECTED_SOURCE_SHA}" ]] && ! jq -e --arg package "${PACKAGE}" --arg expected "${EXPECTED_SOURCE_SHA}" '(((.packages // []) + (."packages-dev" // []))[] | select(.name == $package) | ((.source.reference // "") == $expected or (.dist.reference // "") == $expected))' composer.lock >/dev/null; then
+    SHA_OK="false"
+  fi
+  if [[ "${SOURCE_OK}" == "true" && "${SHA_OK}" == "true" ]]; then
     jq -cn --arg package "${PACKAGE}" --arg version "${REQUESTED_VERSION}" \
       '{success:true, package:$package, version:$version, changed:false, composer_refreshed:false}'
     exit 0
@@ -119,11 +155,36 @@ if [[ -n "${REQUESTED_VERSION}" && "${RESOLVED_VERSION}" != "${REQUESTED_VERSION
   echo "Error: Composer resolved ${PACKAGE} to ${RESOLVED_VERSION}, expected ${REQUESTED_VERSION}" >&2
   exit 1
 fi
+if [[ -n "${EXPECTED_SOURCE_SHA}" ]] && ! jq -e --arg package "${PACKAGE}" --arg expected "${EXPECTED_SOURCE_SHA}" '
+  (((.packages // []) + (."packages-dev" // []))[] | select(.name == $package) | ((.source.reference // "") == $expected or (.dist.reference // "") == $expected))
+' "${TMP_DIR}/composer.lock" >/dev/null; then
+  echo "Error: resolved ${PACKAGE} mirror source reference does not match dependency.expected_source_sha" >&2
+  exit 1
+fi
 if [[ -n "${EXPECTED_SOURCE}" ]] && ! jq -e --arg package "${PACKAGE}" --arg expected "${EXPECTED_SOURCE}" '
   (((.packages // []) + (."packages-dev" // []))[] | select(.name == $package) | (.source.url // .dist.url // "")) == $expected
 ' "${TMP_DIR}/composer.lock" >/dev/null; then
   echo "Error: resolved ${PACKAGE} source does not match dependency.expected_source" >&2
   exit 1
+fi
+
+if [[ "${FINALIZE_DISCOVERY}" == "true" ]]; then
+  jq --arg package "${PACKAGE}" --arg version "${RESOLVED_VERSION}" '
+    if ((.require // {}) | has($package)) then .require[$package] = $version
+    elif ((."require-dev" // {}) | has($package)) then ."require-dev"[$package] = $version
+    else . end
+  ' "${TMP_DIR}/composer.json" >"${TMP_DIR}/composer.json.final"
+  mv "${TMP_DIR}/composer.json.final" "${TMP_DIR}/composer.json"
+  if ! (cd "${TMP_DIR}" && composer "${COMPOSER_ARGS[@]}"); then
+    echo "Error: Composer could not finalize ${PACKAGE} at ${RESOLVED_VERSION}; composer.json and composer.lock were left unchanged" >&2
+    exit 1
+  fi
+fi
+
+if [[ "${MODE}" == "verify" || "${MODE}" == "dry-run" ]]; then
+  jq -cn --arg package "${PACKAGE}" --arg version "${RESOLVED_VERSION}" \
+    '{success:true, package:$package, version:$version, changed:false, verification_only:true, composer_refreshed:true}'
+  exit 0
 fi
 
 mv "${TMP_DIR}/composer.json" composer.json
