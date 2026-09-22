@@ -86,6 +86,15 @@ try {
 	]) });
 	assert.equal(missingAuth.classification, 'auth_failure');
 	assert.equal(missingAuth.reason, 'provider_credentials_missing');
+	const runnerWithoutControllerAuth = openCodeRuntimeReadiness(request(), { env: env({ HOME: path.join(root, 'runner-without-auth'), OPENAI_API_KEY: undefined }), spawnSync: probe([
+		readyResponses()[0],
+		{ args: ['auth', 'list'], result: { status: 0, stdout: 'Anthropic oauth\n', stderr: '' } },
+	]) });
+	assert.equal(runnerWithoutControllerAuth.classification, 'auth_failure');
+	assert.equal(runnerWithoutControllerAuth.reason, 'provider_credentials_missing');
+	const unsupportedRoute = openCodeRuntimeReadiness(request({ model: 'anthropic/claude-sonnet' }), { env: env() });
+	assert.equal(unsupportedRoute.classification, 'configuration_failure');
+	assert.equal(unsupportedRoute.reason, 'unsupported_provider_route');
 	const rejectedAuth = openCodeRuntimeReadiness(request(), { env: env(), spawnSync: probe([
 		readyResponses()[0],
 		{ args: ['auth', 'list'], result: { status: 1, stdout: '', stderr: 'authentication failed for secret-do-not-leak' } },

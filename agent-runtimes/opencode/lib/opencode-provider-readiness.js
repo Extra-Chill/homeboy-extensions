@@ -11,6 +11,7 @@ const {
 	boundedTimeout,
 	resolveExecutable,
 } = require('../../lib/cli-runtime-readiness');
+const { resolveOpenCodeAuthPlan } = require('./opencode-auth-plan');
 
 const OPENCODE_READINESS_TIMEOUT_MS = 15_000;
 const OPENCODE_READINESS_MAX_TIMEOUT_MS = 30_000;
@@ -28,6 +29,7 @@ function openCodeRuntimeReadiness(request = {}, options = {}) {
 	const config = objectValue(request.effective_config);
 	const env = objectValue(options.env || process.env);
 	const selected = selectedProviderModel(config || {});
+	const authPlan = resolveOpenCodeAuthPlan(config || {});
 	const identity = {
 		runtime_id: 'opencode',
 		provider_id: 'opencode.agent-task-executor',
@@ -35,13 +37,16 @@ function openCodeRuntimeReadiness(request = {}, options = {}) {
 		version: '',
 		provider: selected.provider,
 		model: selected.model,
-		credential_identity: credentialIdentity(env),
+		credential_identity: credentialIdentity(env, authPlan),
 	};
 	if (request.schema !== READINESS_REQUEST_SCHEMA || !config) {
 		return verdict('configuration_failure', identity, 'Provide a resolved effective_config using the provider readiness request contract.', false, 'invalid_readiness_request');
 	}
 	if (selected.error) {
 		return verdict('configuration_failure', identity, selected.error, false, 'invalid_provider_model');
+	}
+	if (!authPlan.supported) {
+		return verdict('configuration_failure', identity, authPlan.reason, false, 'unsupported_provider_route');
 	}
 
 	const command = config.runtime_bin || config.runtimeBin || config.command || 'opencode';
@@ -251,12 +256,18 @@ function verdict(classification, identity, remediation, retryable, reason) {
 	};
 }
 
-function credentialIdentity(env) {
+function credentialIdentity(env, authPlan = {}) {
 	const values = Object.entries(env)
 		.filter(([name]) => /(?:token|secret|api[_-]?key|credential|auth)/i.test(name))
 		.sort(([left], [right]) => left.localeCompare(right));
 	return crypto.createHash('sha256').update(JSON.stringify({
 		environment: values,
+		auth_plan: {
+			provider: authPlan.provider || '',
+			account_kind: authPlan.account_kind || '',
+			auth_kind: authPlan.auth_kind || '',
+			secret_env: authPlan.secret_env || [],
+		},
 		auth_store: authStoreIdentity(env),
 		// Custom provider credentials and account routing can be configured here.
 		opencode_config: configContentIdentity(env),

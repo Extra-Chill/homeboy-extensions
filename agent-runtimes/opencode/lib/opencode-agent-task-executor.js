@@ -24,6 +24,7 @@ const {
 } = require('./opencode-progress-events');
 const { applyOpenCodeRuntimeTools } = require('../../lib/runtime-tool-adapter');
 const { finalizeOwnershipMarker, writeOwnershipMarker } = require('./opencode-external-storage-retention');
+const { resolveOpenCodeAuthPlan } = require('./opencode-auth-plan');
 
 const { spawn, spawnSync } = require('node:child_process');
 const fs = require('node:fs');
@@ -40,6 +41,7 @@ const OPENCODE_SECRET_ENV = [
 	'AI_PROVIDER_OPENAI_CODEX_ACCOUNT_ID',
 	'AI_PROVIDER_OPENAI_CODEX_FEDRAMP',
 ];
+const OPENCODE_ALL_SECRET_ENV = [...OPENCODE_SECRET_ENV, 'OPENAI_API_KEY'];
 const OPENCODE_FATAL_LOG_PATTERNS = [
 	{
 		pattern: /\bAI_APICallError\b[\s\S]{0,1000}\b(?:weekly(?:\/monthly)?|monthly)\s+limit\s+exhausted\b/i,
@@ -122,7 +124,7 @@ const OPENCODE_READINESS_INVOCATION = {
 	env_allowlist: [
 		'HOME', 'PATH', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME',
 		'HOMEBOY_OPENCODE_COMMAND_ARGS', 'OPENCODE_CONFIG_CONTENT',
-		...OPENCODE_SECRET_ENV,
+		...OPENCODE_ALL_SECRET_ENV,
 	],
 	display: 'node {{runtime_path}}/scripts/agent/homeboy-opencode-provider-readiness.cjs',
 };
@@ -209,6 +211,15 @@ const OPENCODE_ROLE_ALIASES = {
 };
 
 const OPENCODE_PROVIDER_DEFAULTS = {
+	openai: {
+		secret_env: ['OPENAI_API_KEY'],
+		secret_env_sources: {
+			OPENAI_API_KEY: {
+				source: 'environment',
+				env: 'OPENAI_API_KEY',
+			},
+		},
+	},
 	codex: {
 		secret_env: [...OPENCODE_SECRET_ENV],
 		secret_env_sources: {
@@ -249,6 +260,15 @@ const OPENCODE_SESSION_METADATA_ABSENT = {
 };
 
 const OPENCODE_PROVIDER_PREFLIGHT = {
+	openai: {
+		label: 'OpenAI',
+		diagnostic_class: 'opencode.preflight.openai_api_key',
+		required_secret_env: ['OPENAI_API_KEY'],
+		optional_secret_env: [],
+		refresh_hook: 'openai-api-key-refresh',
+		validation_hooks: [],
+		guidance: 'Provide the OpenAI API key through the declared OPENAI_API_KEY secret environment mapping, or authenticate the provider through the provider-owned OpenCode auth store.',
+	},
 	codex: {
 		label: 'Codex',
 		diagnostic_class: 'opencode.preflight.codex_auth',
@@ -288,7 +308,10 @@ function providerContract(options = {}) {
 		invocation: options.invocation || OPENCODE_INVOCATION,
 		readiness_invocation: options.readinessInvocation || OPENCODE_READINESS_INVOCATION,
 		...contractFields,
-		secret_env_requirements: [providerSecretEnvRequirement('codex', OPENCODE_SECRET_ENV)],
+		secret_env_requirements: [
+			providerSecretEnvRequirement('openai', ['OPENAI_API_KEY']),
+			providerSecretEnvRequirement('codex', OPENCODE_SECRET_ENV),
+		],
 		capabilities: OPENCODE_CAPABILITIES,
 		workspace_materialization: OPENCODE_WORKSPACE_MATERIALIZATION,
 		runner_readiness: OPENCODE_RUNNER_READINESS,
@@ -317,7 +340,7 @@ function opencodeSpawnEnv(request = {}, options = {}) {
 	}
 	const env = cliAgentTaskSpawnEnv(request, options, {
 		allowlist: OPENCODE_PROCESS_ENV_ALLOWLIST,
-		secretEnv: OPENCODE_SECRET_ENV,
+		secretEnv: resolveOpenCodeAuthPlan(config).secret_env || OPENCODE_ALL_SECRET_ENV,
 	});
 	const configContent = opencodeConfigContentForRequest(request, env.OPENCODE_CONFIG_CONTENT, env);
 	return configContent ? { ...env, OPENCODE_CONFIG_CONTENT: configContent } : env;
@@ -1407,7 +1430,7 @@ function uniqueDeclaredArtifactRequirements(request = {}) {
 
 function redactKnownSecrets(content, env = process.env) {
 	let redacted = content;
-	for (const name of OPENCODE_SECRET_ENV) {
+	for (const name of OPENCODE_ALL_SECRET_ENV) {
 		const value = env?.[name] || process.env[name];
 		if (value) {
 			redacted = redacted.split(value).join('[redacted]');
@@ -2019,6 +2042,7 @@ module.exports = {
 	executeOpenCodeAgentTask,
 	parseOpenCodeUsage,
 	openCodeWorkspacePermissionPreflight,
+	opencodeSpawnEnv,
 	outcome,
 	providerContract,
 	validationFailure,
