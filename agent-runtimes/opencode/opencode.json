@@ -275,8 +275,8 @@
         "openai": {
           "label": "OpenAI",
           "diagnostic_class": "opencode.preflight.openai_api_key",
-          "required_secret_env": ["OPENAI_API_KEY"],
-          "optional_secret_env": [],
+          "required_secret_env": [],
+          "optional_secret_env": ["OPENAI_API_KEY"],
           "refresh_hook": "openai-api-key-refresh",
           "validation_hooks": [],
           "guidance": "Provide the OpenAI API key through the declared OPENAI_API_KEY secret environment mapping, or authenticate the provider through the provider-owned OpenCode auth store."

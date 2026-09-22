@@ -126,7 +126,7 @@ assert.deepEqual(secretEnvRequirementForProvider(provider, 'codex').env, OPENCOD
 assert.deepEqual(provider.provider_defaults.codex.secret_env, OPENCODE_SECRET_ENV);
 assert.equal(Object.hasOwn(provider.provider_defaults.codex, 'model'), false);
 assert.deepEqual(provider.provider_defaults.codex.secret_env_sources, OPENCODE_PROVIDER_DEFAULTS.codex.secret_env_sources);
-assert.deepEqual(resolveOpenCodeAuthPlan({ model: 'openai/gpt-5.6-luna' }), {
+assert.deepEqual(resolveOpenCodeAuthPlan({ model: 'openai/gpt-5.6-luna' }, { env: { OPENAI_API_KEY: 'openai-secret-must-not-leak' } }), {
 	supported: true,
 	provider: 'openai',
 	model: 'gpt-5.6-luna',
@@ -134,9 +134,12 @@ assert.deepEqual(resolveOpenCodeAuthPlan({ model: 'openai/gpt-5.6-luna' }), {
 	auth_kind: 'api_key',
 	secret_env: ['OPENAI_API_KEY'],
 	secret_env_sources: { OPENAI_API_KEY: { source: 'environment', env: 'OPENAI_API_KEY' } },
+	source: { kind: 'scoped_secret_env', location: 'OPENAI_API_KEY', handoff_supported: true },
+	metadata_only: true,
 });
-assert.equal(resolveOpenCodeAuthPlan({ model: 'codex/gpt-5.6-luna' }).account_kind, 'openai_codex_oauth');
-assert.equal(resolveOpenCodeAuthPlan({ model: 'anthropic/claude-sonnet' }).supported, false);
+assert.equal(resolveOpenCodeAuthPlan({ model: 'codex/gpt-5.6-luna' }, { env: { AI_PROVIDER_OPENAI_CODEX_ACCESS_TOKEN: 'codex-secret-must-not-leak' } }).account_kind, 'codex_oauth');
+assert.equal(resolveOpenCodeAuthPlan({ model: 'openai/gpt-5.6-luna', provider: 'codex' }).provider, 'codex');
+assert.equal(resolveOpenCodeAuthPlan({ model: 'anthropic/claude-sonnet' }).supported, true);
 const routeEnv = {
 	PATH: '/bin',
 	OPENAI_API_KEY: 'openai-secret-must-not-leak',

@@ -11,7 +11,7 @@ const {
 	boundedTimeout,
 	resolveExecutable,
 } = require('../../lib/cli-runtime-readiness');
-const { resolveOpenCodeAuthPlan } = require('./opencode-auth-plan');
+const { resolveOpenCodeAuthPlan, selectedOpenCodeRoute } = require('./opencode-auth-plan');
 
 const OPENCODE_READINESS_TIMEOUT_MS = 15_000;
 const OPENCODE_READINESS_MAX_TIMEOUT_MS = 30_000;
@@ -29,7 +29,7 @@ function openCodeRuntimeReadiness(request = {}, options = {}) {
 	const config = objectValue(request.effective_config);
 	const env = objectValue(options.env || process.env);
 	const selected = selectedProviderModel(config || {});
-	const authPlan = resolveOpenCodeAuthPlan(config || {});
+	const authPlan = resolveOpenCodeAuthPlan(config || {}, { env });
 	const identity = {
 		runtime_id: 'opencode',
 		provider_id: 'opencode.agent-task-executor',
@@ -92,15 +92,11 @@ function openCodeRuntimeReadiness(request = {}, options = {}) {
 }
 
 function selectedProviderModel(config = {}) {
-	const model = typeof config.model === 'string' ? config.model.trim() : '';
-	const configuredProvider = typeof config.provider === 'string' ? config.provider.trim() : '';
-	const separator = model.indexOf('/');
-	const modelProvider = separator > 0 ? model.slice(0, separator) : '';
-	const modelId = separator > 0 ? model.slice(separator + 1) : '';
-	if (!modelProvider || !modelId || !routeSegment(modelProvider) || !routeSegment(modelId)) {
-		return { provider: configuredProvider, model, error: 'Configure effective_config.model as provider/model so readiness can validate the selected route.' };
+	const route = selectedOpenCodeRoute(config);
+	if (!route.provider || !route.model || !routeSegment(route.provider) || !routeSegment(route.model)) {
+		return { provider: route.provider, model: route.model, error: 'Configure effective_config.model as provider/model so readiness can validate the selected route.' };
 	}
-	return { provider: modelProvider, model: modelId, error: '' };
+	return { provider: route.provider, model: route.model, error: '' };
 }
 
 function commandArgs(config = {}, env = {}, options = {}) {

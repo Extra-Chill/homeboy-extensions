@@ -24,7 +24,7 @@ const {
 } = require('./opencode-progress-events');
 const { applyOpenCodeRuntimeTools } = require('../../lib/runtime-tool-adapter');
 const { finalizeOwnershipMarker, writeOwnershipMarker } = require('./opencode-external-storage-retention');
-const { resolveOpenCodeAuthPlan } = require('./opencode-auth-plan');
+const { CODEX_SECRET_ENV, CODEX_SECRET_ENV_SOURCES, effectiveOpenCodeModel, resolveOpenCodeAuthPlan } = require('./opencode-auth-plan');
 
 const { spawn, spawnSync } = require('node:child_process');
 const fs = require('node:fs');
@@ -34,13 +34,7 @@ const { pathToFileURL } = require('node:url');
 
 const OPENCODE_PROVIDER_ID = 'opencode.agent-task-executor';
 const OPENCODE_PROVIDER_LABEL = 'OpenCode agent task executor';
-const OPENCODE_SECRET_ENV = [
-	'AI_PROVIDER_OPENAI_CODEX_ACCESS_TOKEN',
-	'AI_PROVIDER_OPENAI_CODEX_REFRESH_TOKEN',
-	'AI_PROVIDER_OPENAI_CODEX_EXPIRES_AT',
-	'AI_PROVIDER_OPENAI_CODEX_ACCOUNT_ID',
-	'AI_PROVIDER_OPENAI_CODEX_FEDRAMP',
-];
+const OPENCODE_SECRET_ENV = [...CODEX_SECRET_ENV];
 const OPENCODE_ALL_SECRET_ENV = [...OPENCODE_SECRET_ENV, 'OPENAI_API_KEY'];
 const OPENCODE_FATAL_LOG_PATTERNS = [
 	{
@@ -222,35 +216,7 @@ const OPENCODE_PROVIDER_DEFAULTS = {
 	},
 	codex: {
 		secret_env: [...OPENCODE_SECRET_ENV],
-		secret_env_sources: {
-			AI_PROVIDER_OPENAI_CODEX_ACCESS_TOKEN: {
-				source: 'json-file',
-				path: '~/.codex/auth.json',
-				field: 'tokens.access_token',
-			},
-			AI_PROVIDER_OPENAI_CODEX_REFRESH_TOKEN: {
-				source: 'json-file',
-				path: '~/.codex/auth.json',
-				field: 'tokens.refresh_token',
-			},
-			AI_PROVIDER_OPENAI_CODEX_EXPIRES_AT: {
-				source: 'json-file-jwt-expiration',
-				path: '~/.codex/auth.json',
-				field: 'tokens.access_token',
-				fallback_fields: ['tokens.expires_at', 'tokens.expiresAt'],
-			},
-			AI_PROVIDER_OPENAI_CODEX_ACCOUNT_ID: {
-				source: 'json-file',
-				path: '~/.codex/auth.json',
-				field: 'tokens.account_id',
-			},
-			AI_PROVIDER_OPENAI_CODEX_FEDRAMP: {
-				source: 'json-file',
-				path: '~/.codex/auth.json',
-				field: 'tokens.fedramp',
-				value: 'false',
-			},
-		},
+		secret_env_sources: CODEX_SECRET_ENV_SOURCES,
 	},
 };
 
@@ -263,8 +229,8 @@ const OPENCODE_PROVIDER_PREFLIGHT = {
 	openai: {
 		label: 'OpenAI',
 		diagnostic_class: 'opencode.preflight.openai_api_key',
-		required_secret_env: ['OPENAI_API_KEY'],
-		optional_secret_env: [],
+		required_secret_env: [],
+		optional_secret_env: ['OPENAI_API_KEY'],
 		refresh_hook: 'openai-api-key-refresh',
 		validation_hooks: [],
 		guidance: 'Provide the OpenAI API key through the declared OPENAI_API_KEY secret environment mapping, or authenticate the provider through the provider-owned OpenCode auth store.',
@@ -340,7 +306,7 @@ function opencodeSpawnEnv(request = {}, options = {}) {
 	}
 	const env = cliAgentTaskSpawnEnv(request, options, {
 		allowlist: OPENCODE_PROCESS_ENV_ALLOWLIST,
-		secretEnv: resolveOpenCodeAuthPlan(config).secret_env || OPENCODE_ALL_SECRET_ENV,
+		secretEnv: resolveOpenCodeAuthPlan(config, { env: options.env || process.env }).secret_env,
 	});
 	const configContent = opencodeConfigContentForRequest(request, env.OPENCODE_CONFIG_CONTENT, env);
 	return configContent ? { ...env, OPENCODE_CONFIG_CONTENT: configContent } : env;
@@ -348,7 +314,7 @@ function opencodeSpawnEnv(request = {}, options = {}) {
 
 function opencodeConfigContentForRequest(request = {}, existingContent = '', env = process.env) {
 	const config = request.executor?.config || {};
-	const model = config.model || request.executor?.model || request.model;
+	const model = effectiveOpenCodeModel(config, request.executor?.model || request.model);
 	const smallModel = config.small_model || config.smallModel;
 	const primaryAgent = config.agent || 'build';
 
@@ -1464,7 +1430,7 @@ function resolveCommandSpec(config = {}, options = {}) {
 }
 
 function opencodeRunArgs(request = {}, config = {}, commandSpec = {}, cwd = '') {
-	const model = config.model || request.executor?.model || request.model;
+	const model = effectiveOpenCodeModel(config, request.executor?.model || request.model);
 	const format = config.format || 'json';
 	return [
 		...arrayValue(commandSpec.args),
@@ -1615,7 +1581,7 @@ async function executeOpenCodeAgentTask(request = {}, options = {}) {
 		timeoutMs: timeoutSeconds > 0 ? timeoutSeconds * 1000 : 0,
 		runtimeLogPaths,
 		diagnosticLogPath: openCodeDiagnosticLogPath(config, spawnExtra.env),
-		expectedModel: config.model || request.executor?.model || request.model || '',
+		expectedModel: effectiveOpenCodeModel(config, request.executor?.model || request.model),
 		progress: createOpenCodeProgressAdapter({
 			taskId: request.task_id,
 			cwd,
