@@ -35,7 +35,7 @@ function materializeLoopPolicy(policy = {}, revolutions = 0) {
 }
 
 function runtimeOverrides(options = {}) {
-  const provider = stringValue(options.provider);
+  const provider = effectiveProvider(options);
   return cleanObject({
     runtime_id: stringValue(options.runtime_id || options.runtime),
     runtime_profile: stringValue(options.runtime_profile),
@@ -49,6 +49,28 @@ function runtimeOverrides(options = {}) {
     runtime_config_mounts: arrayValue(options.runtime_config_mounts),
     runtime_state_mounts: arrayValue(options.runtime_state_mounts),
   });
+}
+
+function effectiveProvider(options = {}) {
+  const explicitProvider = stringValue(options.provider);
+  if (explicitProvider) {
+    return explicitProvider;
+  }
+
+  const profileId = stringValue(options.runtime_profile || options.config?.runtime_profile);
+  const profiles = {
+    ...optionalObject(options.config?.runtime_profiles),
+    ...optionalObject(options.runtime_profiles),
+  };
+  const profile = optionalObject(options.runtime_profile_config || profiles[profileId]);
+  const profileProvider = stringValue(profile.provider || profile.auth_provider || profile.authProvider);
+  if (profileProvider) {
+    return profileProvider;
+  }
+
+  const model = stringValue(options.model);
+  const separator = model.indexOf('/');
+  return separator > 0 ? model.slice(0, separator) : '';
 }
 
 function secretEnvOverrides(options = {}, provider = '') {
@@ -156,5 +178,6 @@ module.exports = {
   materializeHeadlessProductionLoopSpec,
   parseJsonArray,
   parseJsonObject,
+  effectiveProvider,
   providerDefaultSecretEnv,
 };

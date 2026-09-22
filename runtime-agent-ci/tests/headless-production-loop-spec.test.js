@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const { buildGenericAgentLoopRequest } = require('../lib/generic-agent-loop-runner');
 const {
   materializeHeadlessProductionLoopSpec,
+  effectiveProvider,
   providerDefaultSecretEnv,
 } = require('../lib/headless-production-loop-spec');
 
@@ -68,6 +69,34 @@ assert.deepEqual(providerDefaultSecretEnv('codex', {
     },
   },
 }), ['CODEX_TOKEN']);
+
+const profileRoutedSpec = materializeHeadlessProductionLoopSpec(baseSpec, {
+  runtime_profile: 'codex-profile',
+  runtime_profiles: {
+    'codex-profile': {
+      id: 'codex-profile',
+      provider: 'codex',
+      runtime_task_ability: 'codex/run-task',
+    },
+  },
+  model: 'openai/gpt-5.6-luna',
+  runtime: {
+    provider_defaults: {
+      codex: { secret_env: ['CODEX_TOKEN'] },
+    },
+  },
+});
+assert.equal(effectiveProvider({ model: 'openai/gpt-5.6-luna', runtime_profile_config: { provider: 'codex' } }), 'codex');
+assert.equal(effectiveProvider({ provider: 'openai', model: 'openai/gpt-5.6-luna', runtime_profile_config: { provider: 'codex' } }), 'openai');
+assert.equal(profileRoutedSpec.provider, 'codex');
+assert.deepEqual(profileRoutedSpec.tasks[0].secret_env, ['CODEX_TOKEN']);
+
+const profileRoutedRequest = buildGenericAgentLoopRequest({
+  plan: profileRoutedSpec.tasks[0],
+  runtime: { id: 'opencode', executor: { backend: 'opencode' } },
+});
+assert.equal(profileRoutedRequest.executor.config.provider, 'codex');
+assert.equal(profileRoutedRequest.executor.config.model, 'openai/gpt-5.6-luna');
 
 const explicitSecretEnvSpec = materializeHeadlessProductionLoopSpec(baseSpec, {
   provider: 'codex',
