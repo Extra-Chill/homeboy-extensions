@@ -51,6 +51,32 @@ single `openai` route therefore cannot conditionally switch between the API
 key and the store; the `openai-oauth` account is the supported selector for
 the store handoff until core grows a conditional source mechanism.
 
+### Plan capacity in readiness
+
+Before the model probe runs, the readiness invocation checks the selected
+provider's plan usage endpoint. This uses the stored OpenCode credential and
+costs no inference. The result goes into Homeboy's readiness `capacity`
+contract:
+
+| Provider | Usage source | Windows |
+|---|---|---|
+| `anthropic` (OAuth) | `api.anthropic.com/api/oauth/usage` | 5-hour, 7-day, and model-scoped 7-day |
+| `openai` (OAuth) | `chatgpt.com/backend-api/wham/usage` | primary and secondary rate-limit windows |
+| `zai-coding-plan` | `api.z.ai/api/monitor/usage/quota/limit` | token windows |
+
+- `capacity` reports the most constrained window as
+  `{ remaining, limit: 100, unit: "percent", reset_at }`.
+- `capacity_windows` lists every window it found.
+- An exhausted plan is classified as `capacity` and skips the model probe.
+- Other providers leave `capacity` out, and Homeboy reads a missing field as
+  unknown.
+- A failed lookup adds `capacity_diagnostic` and leaves the readiness verdict
+  unchanged.
+
+Provider rate-limit or quota rejections from the model probe are also
+classified as `capacity`. That is the vocabulary Homeboy core recognizes;
+`provider_quota` was previously reduced to `unknown`.
+
 The JavaScript package exports the same provider contract through
 `providerContract()`, plus `executeOpenCodeAgentTask()` for the CLI wrapper and
 tests.
