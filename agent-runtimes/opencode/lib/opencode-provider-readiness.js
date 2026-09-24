@@ -112,12 +112,11 @@ async function openCodeProviderReadiness(request = {}, options = {}) {
 			env: objectValue(options.env || process.env),
 			fetch: options.fetch,
 			fs: options.capacityFs,
+			now: options.now,
 		});
 	const result = openCodeRuntimeReadiness(request, { ...options, capacityExhausted: Boolean(lookup?.exhausted) });
-	if (lookup?.capacity) {
-		result.capacity = lookup.capacity;
-		result.capacity_windows = lookup.windows;
-	}
+	if (lookup?.capacity) result.capacity = lookup.capacity;
+	if (lookup?.accounts) result.capacity_accounts = lookup.accounts;
 	if (lookup?.diagnostic) result.capacity_diagnostic = lookup.diagnostic;
 	return result;
 }

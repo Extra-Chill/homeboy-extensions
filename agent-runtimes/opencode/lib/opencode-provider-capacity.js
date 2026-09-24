@@ -1,10 +1,11 @@
 'use strict';
 
 const fs = require('node:fs');
+const path = require('node:path');
 const { authStorePath, openCodeStoreSecretEnv } = require('./opencode-auth-plan');
 
 const OPENCODE_CAPACITY_TIMEOUT_MS = 5_000;
-const OPENCODE_AUTH_STORE_MAX_BYTES = 64 * 1024;
+const OPENCODE_CREDENTIAL_STORE_MAX_BYTES = 256 * 1024;
 
 // Plan usage endpoints for providers that publish them. Each entry is a GET
 // that costs no inference and maps its response into percent-used windows.
@@ -13,17 +14,20 @@ const OPENCODE_AUTH_STORE_MAX_BYTES = 64 * 1024;
 const CAPACITY_PROVIDERS = {
 	anthropic: {
 		url: 'https://api.anthropic.com/api/oauth/usage',
-		headers: (credential) => ({ Authorization: `Bearer ${credential}`, 'anthropic-beta': 'oauth-2025-04-20' }),
+		headers: (account) => ({ Authorization: `Bearer ${account.credential}`, 'anthropic-beta': 'oauth-2025-04-20' }),
 		windows: anthropicWindows,
 	},
 	openai: {
 		url: 'https://chatgpt.com/backend-api/wham/usage',
-		headers: (credential) => ({ Authorization: `Bearer ${credential}` }),
+		headers: (account) => ({
+			Authorization: `Bearer ${account.credential}`,
+			...(account.accountId ? { 'ChatGPT-Account-Id': account.accountId } : {}),
+		}),
 		windows: openAiWindows,
 	},
 	'zai-coding-plan': {
 		url: 'https://api.z.ai/api/monitor/usage/quota/limit',
-		headers: (credential) => ({ Authorization: credential }),
+		headers: (account) => ({ Authorization: account.credential }),
 		windows: zaiWindows,
 	},
 };
@@ -32,30 +36,52 @@ const ANTHROPIC_WINDOWS = ['five_hour', 'seven_day', 'seven_day_opus', 'seven_da
 const ZAI_WINDOW_UNITS = { 3: 'hour', 4: 'day', 5: 'month', 6: 'week' };
 
 /**
- * Look up plan capacity for one OpenCode provider.
+ * Look up plan capacity for one OpenCode provider across every connected
+ * account.
+ *
+ * OpenCode multi-account plugins (for example Kimaki's) keep a pool of OAuth
+ * accounts per provider in `<provider>-oauth-accounts.json` beside the auth
+ * store and rotate between them, so the route's capacity is the pool's
+ * capacity. Without a pool, the single `auth.json` entry is the account.
  *
  * Resolves to null when the provider publishes no usage endpoint or has no
- * stored credential, to `{ diagnostic }` when the lookup fails, and otherwise
- * to `{ capacity, windows, exhausted }` where `capacity` matches Homeboy's
- * readiness `capacity` contract (percent of the most constrained window).
+ * stored credential. Otherwise resolves to `{ accounts, capacity?, exhausted,
+ * diagnostic? }`: `accounts` reports each account's state, and `capacity`
+ * matches Homeboy's readiness `capacity` contract for the pool (percent
+ * remaining on the best available account, or the earliest reset when every
+ * account is exhausted).
  */
 async function openCodeProviderCapacity(provider, options = {}) {
 	const source = CAPACITY_PROVIDERS[provider];
 	if (!source) return null;
-	const credential = providerCredential(provider, options.env || process.env, options.fs || fs);
-	if (!credential) return null;
+	const env = options.env || process.env;
+	const accounts = providerAccounts(provider, env, options.fs || fs);
+	if (!accounts.length) return null;
+	const now = options.now || Date.now();
+	const reports = await Promise.all(accounts.map((account) => accountCapacity(source, provider, account, now, options)));
+	return summarizePool(provider, reports);
+}
+
+async function accountCapacity(source, provider, account, now, options) {
+	const base = { account: account.label };
+	if (account.expires && account.expires <= now) {
+		// Refreshing would rotate a token another tool owns; report it instead.
+		return { ...base, state: 'credential_expired' };
+	}
 	const fetchImpl = options.fetch || globalThis.fetch;
 	let body;
 	try {
 		const response = await fetchImpl(source.url, {
 			method: 'GET',
-			headers: { Accept: 'application/json', ...source.headers(credential) },
+			headers: { Accept: 'application/json', ...source.headers(account) },
 			signal: AbortSignal.timeout(options.timeoutMs || OPENCODE_CAPACITY_TIMEOUT_MS),
 		});
-		if (!response.ok) return { diagnostic: `${provider} usage lookup returned HTTP ${response.status}` };
+		if (!response.ok) {
+			return { ...base, state: response.status === 401 || response.status === 403 ? 'credential_rejected' : 'lookup_failed', diagnostic: `${provider} usage lookup returned HTTP ${response.status}` };
+		}
 		body = await response.json();
 	} catch (error) {
-		return { diagnostic: `${provider} usage lookup failed: ${error?.name === 'TimeoutError' ? 'timed out' : 'request error'}` };
+		return { ...base, state: 'lookup_failed', diagnostic: `${provider} usage lookup failed: ${error?.name === 'TimeoutError' ? 'timed out' : 'request error'}` };
 	}
 	let windows;
 	try {
@@ -63,18 +89,55 @@ async function openCodeProviderCapacity(provider, options = {}) {
 	} catch {
 		windows = [];
 	}
-	if (!windows.length) return { diagnostic: `${provider} usage response did not include any recognized usage windows` };
-	return summarizeWindows(windows);
-}
-
-function summarizeWindows(windows) {
+	if (!windows.length) {
+		return { ...base, state: 'lookup_failed', diagnostic: `${provider} usage response did not include any recognized usage windows` };
+	}
 	const [tightest] = [...windows].sort((left, right) => (
 		right.used_percent - left.used_percent || resetOrder(left) - resetOrder(right)
 	));
-	const remaining = Math.max(0, round(100 - tightest.used_percent));
+	const exhausted = windows.some((window) => window.exhausted);
+	// Exhaustion lasts until the latest exhausted window resets.
+	const resetAt = exhausted
+		? windows.filter((window) => window.exhausted).map((window) => window.reset_at).filter(Boolean).sort().pop() || null
+		: tightest.reset_at;
+	return {
+		...base,
+		state: exhausted ? 'exhausted' : 'available',
+		remaining: exhausted ? 0 : Math.max(0, round(100 - tightest.used_percent)),
+		reset_at: resetAt,
+		windows,
+	};
+}
+
+function summarizePool(provider, accounts) {
+	const measured = accounts.filter((account) => account.state === 'available' || account.state === 'exhausted');
+	const result = { accounts, exhausted: false };
+	if (!measured.length) {
+		result.diagnostic = `${provider} usage could not be read for any of ${accounts.length} connected account(s)`;
+		return result;
+	}
+	const available = measured.filter((account) => account.state === 'available');
+	if (available.length) {
+		const [best] = [...available].sort((left, right) => right.remaining - left.remaining || resetOrder(left) - resetOrder(right));
+		result.capacity = capacityObject(best.remaining, best.reset_at);
+		return result;
+	}
+	// Every measured account is exhausted. The pool frees up at the earliest
+	// reset. Accounts that could not be measured might still have capacity,
+	// so only a fully measured pool is declared exhausted.
+	const [soonest] = [...measured].sort((left, right) => resetOrder(left) - resetOrder(right));
+	result.capacity = capacityObject(0, soonest.reset_at);
+	result.exhausted = measured.length === accounts.length;
+	if (!result.exhausted) {
+		result.diagnostic = `${accounts.length - measured.length} of ${accounts.length} ${provider} account(s) could not be measured`;
+	}
+	return result;
+}
+
+function capacityObject(remaining, resetAt) {
 	const capacity = { remaining, limit: 100, unit: 'percent' };
-	if (tightest.reset_at) capacity.reset_at = tightest.reset_at;
-	return { capacity, windows, exhausted: windows.some((window) => window.exhausted) };
+	if (resetAt) capacity.reset_at = resetAt;
+	return capacity;
 }
 
 function anthropicWindows(body) {
@@ -124,22 +187,48 @@ function windowName(seconds) {
 	return '';
 }
 
-function providerCredential(provider, env, fileSystem) {
-	const entry = authStoreEntry(provider, env, fileSystem);
-	if (entry?.type === 'api' && typeof entry.key === 'string' && entry.key) return entry.key;
-	if (entry?.type === 'oauth' && typeof entry.access === 'string' && entry.access) return entry.access;
+/**
+ * Every connected account for a provider, as `{ label, credential,
+ * accountId?, expires? }`. Labels never contain credentials.
+ */
+function providerAccounts(provider, env, fileSystem) {
+	const storePath = authStorePath(env);
+	const pool = readJson(path.join(path.dirname(storePath), `${provider}-oauth-accounts.json`), fileSystem);
+	const pooled = (Array.isArray(pool?.accounts) ? pool.accounts : [])
+		.map((entry, index) => oauthAccount(entry, entry?.email || `${provider}#${index}`))
+		.filter(Boolean);
+	if (pooled.length) return pooled;
+
+	const entry = readJson(storePath, fileSystem)?.[provider];
+	if (entry?.type === 'api' && typeof entry.key === 'string' && entry.key) {
+		return [{ label: provider, credential: entry.key }];
+	}
+	const stored = oauthAccount(entry, provider);
+	if (stored) return [stored];
 	// Lab runners materialize OAuth store secrets as AI_PROVIDER_OPENCODE_<PROVIDER>_ACCESS.
 	const accessEnv = openCodeStoreSecretEnv(provider).find((name) => name.endsWith('_ACCESS'));
-	return accessEnv && typeof env[accessEnv] === 'string' && env[accessEnv] ? env[accessEnv] : '';
+	return accessEnv && typeof env[accessEnv] === 'string' && env[accessEnv]
+		? [{ label: provider, credential: env[accessEnv] }]
+		: [];
 }
 
-function authStoreEntry(provider, env, fileSystem) {
+function oauthAccount(entry, label) {
+	if (entry?.type !== 'oauth' || typeof entry.access !== 'string' || !entry.access) return null;
+	const expires = Number(entry.expires);
+	return {
+		label: String(label),
+		credential: entry.access,
+		...(typeof entry.accountId === 'string' && entry.accountId ? { accountId: entry.accountId } : {}),
+		...(Number.isFinite(expires) && expires > 0 ? { expires } : {}),
+	};
+}
+
+function readJson(file, fileSystem) {
 	try {
-		const file = authStorePath(env);
 		const stat = fileSystem.statSync(file);
-		if (!stat.isFile() || stat.size > OPENCODE_AUTH_STORE_MAX_BYTES) return null;
-		const store = JSON.parse(fileSystem.readFileSync(file, 'utf8'));
-		return store && typeof store === 'object' ? store[provider] || null : null;
+		if (!stat.isFile() || stat.size > OPENCODE_CREDENTIAL_STORE_MAX_BYTES) return null;
+		const value = JSON.parse(fileSystem.readFileSync(file, 'utf8'));
+		return value && typeof value === 'object' ? value : null;
 	} catch {
 		return null;
 	}
@@ -151,8 +240,8 @@ function isoTime(value) {
 	return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
-function resetOrder(window) {
-	return window.reset_at ? Date.parse(window.reset_at) : Number.POSITIVE_INFINITY;
+function resetOrder(entry) {
+	return entry.reset_at ? Date.parse(entry.reset_at) : Number.POSITIVE_INFINITY;
 }
 
 function finiteNumber(value) {

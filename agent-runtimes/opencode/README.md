@@ -64,10 +64,22 @@ contract:
 | `openai` (OAuth) | `chatgpt.com/backend-api/wham/usage` | primary and secondary rate-limit windows |
 | `zai-coding-plan` | `api.z.ai/api/monitor/usage/quota/limit` | token windows |
 
-- `capacity` reports the most constrained window as
-  `{ remaining, limit: 100, unit: "percent", reset_at }`.
-- `capacity_windows` lists every window it found.
-- An exhausted plan is classified as `capacity` and skips the model probe.
+- **Account pools:** multi-account OpenCode plugins (for example Kimaki's) keep
+  a pool of OAuth accounts per provider in `<provider>-oauth-accounts.json`,
+  beside `auth.json`, and rotate between them. When a pool exists, every
+  account in it is checked. Without a pool, the single `auth.json` entry is
+  checked.
+- **Per-account results:** `capacity_accounts` reports each account as
+  `available`, `exhausted`, `credential_expired`, `credential_rejected`, or
+  `lookup_failed`, along with its windows and reset time. Expired access tokens
+  are reported and never refreshed, because the plugin that owns them rotates
+  them.
+- **Route capacity:** `capacity` is
+  `{ remaining, limit: 100, unit: "percent", reset_at }` for the pool, taken
+  from the available account with the most capacity left. When every account
+  is exhausted, it is `remaining: 0` with the earliest reset.
+- **Exhausted routes:** a route is classified as `capacity`, and skips the
+  model probe, only when every account in its pool was measured as exhausted.
 - Other providers leave `capacity` out, and Homeboy reads a missing field as
   unknown.
 - A failed lookup adds `capacity_diagnostic` and leaves the readiness verdict
