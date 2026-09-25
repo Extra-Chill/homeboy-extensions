@@ -329,3 +329,30 @@ for (const finding of [...baselineCampaign.findings, ...candidateCampaign.findin
 }
 
 console.log('wordpress layout-sweep workload smoke passed');
+
+// modeProperty passes the component's breakpoint signal through to Codebox.
+{
+	const withMode = buildLayoutSweepCodeboxArgs({ schema: 'homeboy/wordpress-layout-sweep-workload/v1', preview: { url: '/p' }, containerSelector: '.c', itemSelector: '.i', modeProperty: '--canvas-viewport' });
+	assert.ok(withMode.includes('mode-property=--canvas-viewport'));
+	const withoutMode = buildLayoutSweepCodeboxArgs({ schema: 'homeboy/wordpress-layout-sweep-workload/v1', preview: { url: '/p' }, containerSelector: '.c', itemSelector: '.i' });
+	assert.ok(!withoutMode.some((arg) => arg.startsWith('mode-property=')));
+	assert.throws(() => buildLayoutSweepCodeboxArgs({ schema: 'homeboy/wordpress-layout-sweep-workload/v1', preview: { url: '/p' }, containerSelector: '.c', itemSelector: '.i', modeProperty: 'color' }), /custom property/);
+	console.log('wordpress layout-sweep modeProperty smoke passed');
+}
+
+// Every mapped finding carries the fields Homeboy core requires on homeboy/fuzz-finding/v1.
+{
+	const mapped = mapLayoutSweepSummaryToFuzzFindings({ schema: 'wp-codebox/layout-sweep/v1', seed: 7, profile: 'quick', replay: { args: [] }, findings: [
+		{ kind: 'overflow', container: '#4 alignfull', item: '#2 wp-block-heading "Freely"', widthRange: [320, 1920], worstMagnitude: 104, scenarios: ['sweep'], count: 3 },
+		{ kind: 'hscroll', container: null, item: null, widthRange: [320, 320], worstMagnitude: 35, scenarios: ['sweep'], count: 1 },
+	] }, { workloadId: 'canvas-preview' });
+	for (const finding of mapped) {
+		for (const field of ['id', 'title', 'severity', 'status']) {
+			assert.equal(typeof finding[field], 'string', `finding.${field} is required by homeboy/fuzz-finding/v1`);
+			assert.ok(finding[field].length > 0);
+		}
+	}
+	assert.equal(mapped[0].title, 'Layout overflow: #4 alignfull / #2 wp-block-heading "Freely"');
+	assert.equal(mapped[1].title, 'Layout hscroll');
+	console.log('wordpress layout-sweep required finding fields smoke passed');
+}

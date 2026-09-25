@@ -35,7 +35,7 @@ const DEFAULT_SCENARIOS = Object.freeze(['sweep', 'history', 'storm', 'heights']
 const CORE_SCENARIO_NAMES = new Set(['sweep', 'history', 'storm', 'heights', 'drag']);
 
 const TOP_LEVEL_DECLARATION_FIELDS = new Set([
-	'schema', 'id', 'label', 'preview', 'containerSelector', 'itemSelector',
+	'schema', 'id', 'label', 'preview', 'containerSelector', 'itemSelector', 'modeProperty',
 	'minWidth', 'maxWidth', 'profile', 'seed', 'concurrency', 'scenarios',
 	'accepted', 'timeout', 'metadata',
 ]);
@@ -66,6 +66,16 @@ function normalizeLayoutSweepWorkloadDeclaration(declaration) {
 	const itemSelector = requiredNonEmptyString(declaration.itemSelector, 'itemSelector');
 	if (containerSelector.length > 512 || itemSelector.length > 512) {
 		throw new Error('layout-sweep workload declaration selectors must be at most 512 characters.');
+	}
+
+	// Container custom property naming the current layout mode, so breakpoint
+	// switches separate bands instead of reading as jumps or new overlaps.
+	let modeProperty;
+	if (declaration.modeProperty !== undefined) {
+		modeProperty = requiredNonEmptyString(declaration.modeProperty, 'modeProperty');
+		if (!/^--[A-Za-z0-9_-]{1,120}$/.test(modeProperty)) {
+			throw new Error('layout-sweep workload declaration modeProperty must be a CSS custom property name such as --layout-mode.');
+		}
 	}
 
 	const minWidth = positiveIntegerOrDefault(declaration.minWidth, DEFAULT_MIN_WIDTH, 'minWidth');
@@ -99,6 +109,7 @@ function normalizeLayoutSweepWorkloadDeclaration(declaration) {
 		preview,
 		containerSelector,
 		itemSelector,
+		modeProperty,
 		minWidth,
 		maxWidth,
 		profile,
@@ -189,11 +200,16 @@ function buildLayoutSweepCodeboxArgs(declaration) {
 		`url=${normalized.preview.url}`,
 		`container-selector=${normalized.containerSelector}`,
 		`item-selector=${normalized.itemSelector}`,
+	];
+	if (normalized.modeProperty !== undefined) {
+		args.push(`mode-property=${normalized.modeProperty}`);
+	}
+	args.push(
 		`min-width=${normalized.minWidth}`,
 		`max-width=${normalized.maxWidth}`,
 		`profile=${normalized.profile}`,
 		`seed=${normalized.seed}`,
-	];
+	);
 	if (normalized.concurrency !== undefined) {
 		args.push(`concurrency=${normalized.concurrency}`);
 	}
@@ -305,10 +321,16 @@ function mapLayoutSweepSummaryToFuzzFindings(summary, options = {}) {
 		const fingerprint = layoutSweepFindingFingerprint(identity);
 		const replayArgs = Array.isArray(group.replay?.args) ? group.replay.args : summaryReplayArgs;
 
+		const where = [identity.container, identity.item].filter(Boolean).join(' / ');
 		return {
 			schema: LAYOUT_SWEEP_FINDING_SCHEMA,
 			id: fingerprint,
+			// Homeboy fuzz findings require a title and severity. Layout findings
+			// use the extension's shared `error` severity; policy comes from status.
+			title: where ? `Layout ${kind}: ${where}` : `Layout ${kind}`,
+			severity: 'error',
 			fingerprint,
+			workload_id: options.workloadId,
 			kind,
 			identity,
 			status: group.suppressed === true ? 'suppressed' : 'open',

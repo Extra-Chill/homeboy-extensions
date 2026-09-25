@@ -1065,26 +1065,35 @@ const {
 } = require('homeboy-extension-wordpress/wordpress-layout-sweep-workload');
 
 const declaration = normalizeLayoutSweepWorkloadDeclaration({
-  id: 'canvas-grid',
+  id: 'canvas-preview',
   preview: {
-    url: '/canvas-demo/',
+    url: '/?pagename=canvas-preview',
     recipe: {
-      runtime: { wp: 'latest' },
+      // Canvas requires WordPress 7.1. The setup script activates the plugin and
+      // publishes the demo content as the `canvas-preview` page.
+      runtime: { backend: 'wordpress-playground', wp: '7.1' },
+      inputs: {
+        mounts: [
+          { source: './build/canvas', target: '/wordpress/wp-content/plugins/canvas', mode: 'readonly' },
+          { source: './fixture', target: '/wordpress/wp-content/canvas-fixture', mode: 'readonly' },
+        ],
+      },
       workflow: {
         steps: [
-          { command: 'wordpress.plugin-state', args: ['action=activate', 'plugin=tabor/tabor.php'] },
+          { command: 'wordpress.run-php', args: ['code-file=./fixture/setup.php'] },
         ],
       },
     },
   },
   containerSelector: '.wp-block-tabor-canvas',
   itemSelector: ':scope > .canvas__grid > .canvas__item',
-  minWidth: 360,
-  maxWidth: 1400,
+  // Canvas announces its breakpoint band on each container.
+  modeProperty: '--canvas-viewport',
   profile: 'quick',
   seed: 7,
-  scenarios: ['sweep', 'history'],
-  accepted: [{ kind: 'tiny-text', container: '#0 .wp-block-tabor-canvas', item: null }],
+  scenarios: ['sweep', 'history', 'storm', 'heights'],
+  // Container labels are `#<index> <id or first class>`, as reported by the sweep.
+  accepted: [{ kind: 'jump', container: '#1 alignfull', item: null }],
 });
 
 const result = await runWordPressLayoutSweepWorkload({
