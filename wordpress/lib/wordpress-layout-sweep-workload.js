@@ -443,53 +443,6 @@ function buildLayoutSweepFuzzCampaign(options = {}) {
 }
 
 /**
- * Classify layout-sweep findings across two mapped campaigns from the same
- * workload as new, resolved, or unchanged, by stable fingerprint identity.
- * This is the comparison `homeboy fuzz compare` needs; it is intentionally a
- * pure function over already-mapped findings so it can run on any two
- * campaigns produced by this module.
- * @param {Object[]} baselineFindings  Findings from the baseline campaign.
- * @param {Object[]} candidateFindings Findings from the candidate campaign.
- * @return {{new: Object[], resolved: Object[], unchanged: Object[]}} Classified findings.
- */
-function compareLayoutSweepFuzzFindings(baselineFindings = [], candidateFindings = []) {
-	const baselineByFingerprint = new Map(asArray(baselineFindings, 'baselineFindings').map((finding) => [finding.fingerprint, finding]));
-	const candidateByFingerprint = new Map(asArray(candidateFindings, 'candidateFindings').map((finding) => [finding.fingerprint, finding]));
-
-	const newFindings = [];
-	const unchangedFindings = [];
-	for (const [fingerprint, finding] of candidateByFingerprint) {
-		if (baselineByFingerprint.has(fingerprint)) {
-			unchangedFindings.push(finding);
-		} else {
-			newFindings.push(finding);
-		}
-	}
-
-	const resolvedFindings = [];
-	for (const [fingerprint, finding] of baselineByFingerprint) {
-		if (!candidateByFingerprint.has(fingerprint)) {
-			resolvedFindings.push(finding);
-		}
-	}
-
-	return { new: newFindings, resolved: resolvedFindings, unchanged: unchangedFindings };
-}
-
-/**
- * Classify findings between two `homeboy/fuzz-campaign/v1` campaigns built by
- * `buildLayoutSweepFuzzCampaign`.
- * @param {Object} baselineCampaign  Baseline campaign.
- * @param {Object} candidateCampaign Candidate campaign.
- * @return {{new: Object[], resolved: Object[], unchanged: Object[]}} Classified findings.
- */
-function compareLayoutSweepFuzzCampaigns(baselineCampaign, candidateCampaign) {
-	assertPlainObject(baselineCampaign, 'baselineCampaign');
-	assertPlainObject(candidateCampaign, 'candidateCampaign');
-	return compareLayoutSweepFuzzFindings(baselineCampaign.findings, candidateCampaign.findings);
-}
-
-/**
  * Run a layout-sweep workload declaration end to end: build the recipe, run
  * it through WP Codebox, read the `wordpress.layout-sweep` artifacts, and map
  * the result. This is the only function in this module that invokes
@@ -639,7 +592,5 @@ module.exports = {
 	mapLayoutSweepPerfToObservations,
 	mapLayoutSweepSummaryToWorkloadResult,
 	buildLayoutSweepFuzzCampaign,
-	compareLayoutSweepFuzzFindings,
-	compareLayoutSweepFuzzCampaigns,
 	runWordPressLayoutSweepWorkload,
 };

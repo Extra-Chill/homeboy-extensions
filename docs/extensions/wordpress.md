@@ -1036,6 +1036,15 @@ Automattic/wp-codebox#2530 (inputs, scenarios, finding kinds, the
 `files/browser/layout-sweep/{summary,findings}.json`); when that contract
 changes, only `buildLayoutSweepCodeboxArgs()` needs to change.
 
+`wordpress/scripts/fuzz/fuzz-runner.cjs` dispatches to this module whenever
+the `HOMEBOY_FUZZ_WORKLOAD_PATH` declaration's `schema` is
+`homeboy/wordpress-layout-sweep-workload/v1`: it builds the recipe, runs it
+through the same Codebox client path every other workload uses, reads
+`files/browser/layout-sweep/summary.json`, and persists the mapped campaign
+through the runner's existing results and artifact writers. `homeboy fuzz
+<component>` runs a declared layout-sweep workload the same way it runs any
+other declared workload.
+
 A declaration is the only product-specific surface: a preview target (a URL,
 or a Codebox recipe that boots a build with demo content), container and item
 selectors, a width range, a profile, a seed, scenarios, and accepted
@@ -1098,25 +1107,21 @@ turns it into report-only observations (`report_only: true`, `gates: false`)
 that never fail a campaign.
 
 ```js
-const {
-  buildLayoutSweepFuzzCampaign,
-  compareLayoutSweepFuzzCampaigns,
-} = require('homeboy-extension-wordpress/wordpress-layout-sweep-workload');
+const { buildLayoutSweepFuzzCampaign } = require('homeboy-extension-wordpress/wordpress-layout-sweep-workload');
 
 const trunkCampaign = buildLayoutSweepFuzzCampaign({ id: 'canvas-grid-trunk', declaration, summary: trunkSummary });
 const prCampaign = buildLayoutSweepFuzzCampaign({ id: 'canvas-grid-pr', declaration, summary: prSummary });
-
-const { new: newFindings, resolved, unchanged } = compareLayoutSweepFuzzCampaigns(trunkCampaign, prCampaign);
 ```
 
 `buildLayoutSweepFuzzCampaign()` wraps a mapped result in a minimal
 `homeboy/fuzz-campaign/v1` envelope so two campaigns from the same workload —
 a trunk envelope and a PR envelope — are directly comparable. Each finding's
 `fingerprint` is derived only from its `kind` + `container` + `item` identity,
-not from its evidence, so `homeboy fuzz compare` (via `compareLayoutSweepFuzzCampaigns()`
-or its lower-level `compareLayoutSweepFuzzFindings()`) classifies findings as
-new, resolved, or unchanged even when the width range, worst magnitude, or
-count of an unchanged finding shifts between runs.
+not from its evidence, so `homeboy fuzz compare` classifies findings as new,
+resolved, or unchanged even when the width range, worst magnitude, or count
+of an unchanged finding shifts between runs. Regression comparison is
+`homeboy fuzz compare`'s job, not this module's; this module's only
+responsibility toward that comparison is handing it a stable `fingerprint`.
 
 ## Block Theme Quality Probe
 

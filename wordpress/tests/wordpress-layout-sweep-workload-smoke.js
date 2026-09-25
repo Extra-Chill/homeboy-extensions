@@ -22,8 +22,6 @@ const {
 	mapLayoutSweepPerfToObservations,
 	mapLayoutSweepSummaryToWorkloadResult,
 	buildLayoutSweepFuzzCampaign,
-	compareLayoutSweepFuzzFindings,
-	compareLayoutSweepFuzzCampaigns,
 } = require('../lib/wordpress-layout-sweep-workload');
 
 // ---------------------------------------------------------------------------
@@ -298,15 +296,23 @@ assert.equal(baselineResult.observations.length, 1);
 assert.throws(() => mapLayoutSweepSummaryToFuzzFindings({ schema: 'wp-codebox/other/v1', findings: [] }), /Unsupported layout-sweep summary schema/);
 
 // ---------------------------------------------------------------------------
-// 4. Compare support: stable identities across two runs
+// 4. Identity fingerprints stay stable across two runs. Regression compare
+// (new/resolved/unchanged) is `homeboy fuzz compare`'s job, not this
+// module's; this only proves the identity handed to it is stable — the same
+// identity produces the same fingerprint even when the evidence around it
+// (widthRange, worstMagnitude, count) differs between runs.
 // ---------------------------------------------------------------------------
 
-// The same identity produces the same fingerprint even when the evidence
-// around it (widthRange, worstMagnitude, count) differs between runs.
 const fingerprintFromBaseline = layoutSweepFindingFingerprint({ kind: 'overflow', container: '#0 .wp-block-tabor-canvas', item: '#1 .canvas__item' });
 const fingerprintFromCandidate = layoutSweepFindingFingerprint({ kind: 'overflow', container: '#0 .wp-block-tabor-canvas', item: '#1 .canvas__item' });
 assert.equal(fingerprintFromBaseline, fingerprintFromCandidate);
 assert.notEqual(fingerprintFromBaseline, layoutSweepFindingFingerprint({ kind: 'leak', container: '#0 .wp-block-tabor-canvas', item: '#1 .canvas__item' }));
+
+const candidateFindings = mapLayoutSweepSummaryToFuzzFindings(candidateSummary, { workloadId: 'canvas-grid' });
+const overflowInBaseline = baselineFindings.find((finding) => finding.kind === 'overflow');
+const overflowInCandidate = candidateFindings.find((finding) => finding.kind === 'overflow');
+assert.equal(overflowInBaseline.fingerprint, overflowInCandidate.fingerprint);
+assert.notDeepEqual(overflowInBaseline.evidence, overflowInCandidate.evidence);
 
 const baselineCampaign = buildLayoutSweepFuzzCampaign({ id: 'canvas-grid-trunk', declaration, summary: baselineSummary });
 const candidateCampaign = buildLayoutSweepFuzzCampaign({ id: 'canvas-grid-pr', declaration, summary: candidateSummary });
@@ -314,24 +320,12 @@ assert.equal(baselineCampaign.schema, 'homeboy/fuzz-campaign/v1');
 assert.equal(baselineCampaign.findings.length, 4);
 assert.equal(candidateCampaign.findings.length, 4);
 
-const comparison = compareLayoutSweepFuzzCampaigns(baselineCampaign, candidateCampaign);
-assert.equal(comparison.resolved.length, 1);
-assert.equal(comparison.resolved[0].kind, 'leak');
-assert.equal(comparison.new.length, 1);
-assert.equal(comparison.new[0].kind, 'overlap');
-// Unchanged: overflow (evidence differs but identity is stable), tiny-text
-// (suppressed in both), and error (present in both).
-assert.equal(comparison.unchanged.length, 3);
-assert.deepEqual(new Set(comparison.unchanged.map((finding) => finding.kind)), new Set(['overflow', 'tiny-text', 'error']));
-
-// The "unchanged" overflow finding is actually classified as unchanged too —
-// verify it directly via the lower-level findings comparator, and confirm
-// its fingerprint matches across runs despite different evidence.
-const findingsComparison = compareLayoutSweepFuzzFindings(baselineCampaign.findings, candidateCampaign.findings);
-const overflowInBaseline = baselineCampaign.findings.find((finding) => finding.kind === 'overflow');
-const overflowInCandidate = candidateCampaign.findings.find((finding) => finding.kind === 'overflow');
-assert.equal(overflowInBaseline.fingerprint, overflowInCandidate.fingerprint);
-assert.notDeepEqual(overflowInBaseline.evidence, overflowInCandidate.evidence);
-assert.ok(findingsComparison.unchanged.some((finding) => finding.fingerprint === overflowInBaseline.fingerprint));
+// Each mapped finding carries its stable identity in the field Homeboy fuzz
+// findings use for identity — `fingerprint` — so `homeboy fuzz compare` can
+// match findings across runs by fingerprint alone.
+for (const finding of [...baselineCampaign.findings, ...candidateCampaign.findings]) {
+	assert.equal(typeof finding.fingerprint, 'string');
+	assert.ok(finding.fingerprint.length > 0);
+}
 
 console.log('wordpress layout-sweep workload smoke passed');
