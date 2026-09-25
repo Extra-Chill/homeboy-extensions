@@ -49,7 +49,7 @@ const declaration = {
 
 function findingGroup(overrides = {}) {
 	return {
-		schema: 'homeboy/fuzz-finding/v1',
+		schema: 'wp-codebox/layout-sweep-finding/v1',
 		identity: { kind: overrides.kind, container: overrides.container ?? null, item: overrides.item ?? null },
 		kind: overrides.kind,
 		container: overrides.container ?? null,
