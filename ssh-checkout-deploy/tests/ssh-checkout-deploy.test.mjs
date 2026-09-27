@@ -51,7 +51,7 @@ writeFileSync( deployStub, `#!/bin/bash
 n=$(( $(cat "${ attemptsFile }" 2>/dev/null || echo 0) + 1 ))
 echo $n > "${ attemptsFile }"
 if [ -n "$DEPLOY_FAIL" ]; then echo "rsync: connection unexpectedly closed"; exit 12; fi
-if [ "$n" -le "\${BUSY_ATTEMPTS:-0}" ]; then echo "alice is already running deploy.sh, please wait"; exit 1; fi
+if [ "$n" -le "\${BUSY_ATTEMPTS:-0}" ]; then echo "Deploy lock held by alice (try again later)"; exit 1; fi
 echo "Revision 4242 successfully deployed to 12 servers in 7 seconds"
 ` );
 chmodSync( deployStub, 0o755 );
@@ -59,12 +59,12 @@ chmodSync( deployStub, 0o755 );
 const policy = {
 	branch: 'main',
 	deploy_command: deployStub,
-	busy_pattern: '(?<holder>\\S+) is already running deploy\\.sh',
+	busy_pattern: 'Deploy lock held by (?<holder>\\S+)',
 	success_pattern: 'Revision (?<revision>\\d+) successfully deployed to (?<servers>\\d+) servers in (?<seconds>\\d+) seconds',
 	lock_retry: { attempts: 3, delay_ms: 1 },
 	timeout_ms: 60000,
 };
-const target = { ssh_host: 'sandbox', remote_path: remote, freshness_remote: origin };
+const target = { ssh_host: 'build-host', remote_path: remote, freshness_remote: origin };
 
 function payload( overrides = {} ) {
 	const value = overrides.policy ?? policy;

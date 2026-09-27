@@ -28,9 +28,9 @@ Attach the provider in the Homeboy project, not in the deployed repository:
         "policy": {
           "branch": "main",
           "deploy_command": "deploy app",
-          "busy_pattern": "(?<holder>\\S+) is already running deploy",
+          "busy_pattern": "Deploy lock held by (?<holder>\\S+)",
           "success_pattern": "Revision (?<revision>\\d+) successfully deployed",
-          "running_probe": "deploy.sh .* app",
+          "running_probe": "run-deploy .* app",
           "lock_retry": { "attempts": 40, "delay_ms": 45000 },
           "timeout_ms": 1800000
         }
