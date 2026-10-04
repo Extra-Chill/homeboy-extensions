@@ -66,11 +66,11 @@ contract:
 | `opencode-go` (API key) | `opencode.ai/zen/go/v1/usage` | rolling, weekly, and monthly usage windows |
 | `xai` (OAuth) | `cli-chat-proxy.grok.com/v1/billing?format=credits` | credits window for the billing period |
 
-- **Account pools:** multi-account OpenCode plugins (for example Kimaki's) keep
-  a pool of OAuth accounts per provider in `<provider>-oauth-accounts.json`,
-  beside `auth.json`, and rotate between them. When a pool exists, every
-  account in it is checked. Without a pool, the single `auth.json` entry is
-  checked.
+- **Account pools:** multi-account OAuth pool files
+  (`<provider>-oauth-accounts.json`, written by chat-bridge account plugins)
+  keep a pool of OAuth accounts per provider beside `auth.json`, and rotate
+  between them. When a pool exists, every account in it is checked. Without a
+  pool, the single `auth.json` entry is checked.
 - **Per-account results:** `capacity.accounts` reports each account as
   `available`, `exhausted`, `unverified`, `credential_rejected`, or
   `lookup_failed`, along with its windows and reset time. Each account is
