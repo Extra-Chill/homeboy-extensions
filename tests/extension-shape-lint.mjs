@@ -13,6 +13,7 @@ const extensionIds = new Set([
   'managed-preview',
   'nodejs',
   'rust',
+  'ssh-checkout-deploy',
   'swift',
   'wordpress',
 ]);
