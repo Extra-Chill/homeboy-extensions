@@ -1,5 +1,8 @@
 'use strict';
 
+// CI has no homeboy binary; pin the runtime contract constants first.
+require('../../../runtime-agent-ci/tests/helpers/runtime-contract-constants-fixture.cjs');
+
 // Controller-side Anthropic OAuth refresh (homeboy#15783).
 
 const assert = require('node:assert/strict');
