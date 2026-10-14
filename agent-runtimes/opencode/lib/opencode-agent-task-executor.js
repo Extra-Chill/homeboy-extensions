@@ -21,6 +21,8 @@ const {
 const { harvestDeclaredArtifacts } = require('../../lib/declared-artifact-harvester');
 const {
 	outputDeclarations,
+	outputDiagnostics,
+	parseStructuredAnswer,
 	requiredOutputInstructions,
 	structuredOutputsFromTexts,
 } = require('../../lib/declared-outputs');
@@ -110,6 +112,7 @@ const OPENCODE_SESSION_EXPORT_MAX_BYTES = 1024 * 1024;
 const OPENCODE_SESSION_EXPORT_ATTEMPTS = 2;
 const OPENCODE_USAGE_SCAN_MAX_BYTES = 16 * 1024 * 1024;
 const OPENCODE_USAGE_SCHEMA = 'homeboy/agent-task-usage/v1';
+const DEFAULT_OPENCODE_CONTINUATION_TURNS = 2;
 
 const OPENCODE_CAPABILITIES = [
 	'cli_runtime',
@@ -671,7 +674,7 @@ function intentionalNoChangeDeclaration(context, structured, emptyPatch, capture
 }
 
 function opencodeSuccessOutcome(context) {
-	const structured = structuredOpenCodeOutputs(context);
+	const structured = context.structuredOutputs || structuredOpenCodeOutputs(context);
 	const evidence = collectOpenCodeArtifacts(context, structured);
 	const session = sessionMetadata(context);
 	const emptyPatch = evidence.artifacts?.some((artifact) => artifact.name === 'patch' && artifact.bytes === 0);
@@ -703,6 +706,7 @@ function opencodeSuccessOutcome(context) {
 			...(session.model ? { model: session.model } : {}),
 			opencode_progress: progressMetadata(context),
 			...opencodeUsageMetadata(context),
+			...openCodeContinuationMetadata(context),
 		},
 		...(structured.outputs || intentionalNoChange ? {
 			outputs: {
@@ -717,6 +721,13 @@ function opencodeSuccessOutcome(context) {
 		} : {}),
 		...evidence,
 	});
+}
+
+function openCodeContinuationMetadata(context = {}) {
+	const continuations = context.opencodeContinuations;
+	return Array.isArray(continuations) && continuations.length > 0
+		? { opencode_continuations: continuations }
+		: {};
 }
 
 function opencodeUsageMetadata(context = {}) {
@@ -854,6 +865,7 @@ function opencodeFailureOutcome(context) {
 			opencode_session: sessionMetadata(context),
 			opencode_progress: progressMetadata(context),
 			...opencodeUsageMetadata(context),
+			...openCodeContinuationMetadata(context),
 		},
 		...collectOpenCodeArtifacts(context),
 	});
@@ -1437,7 +1449,7 @@ function resolveCommandSpec(config = {}, options = {}) {
 	return { command: configuredCommand.trim(), args: configuredArgs };
 }
 
-function opencodeRunArgs(request = {}, config = {}, commandSpec = {}, cwd = '') {
+function opencodeRunArgs(request = {}, config = {}, commandSpec = {}, cwd = '', continuation = {}) {
 	const model = effectiveOpenCodeModel(config, request.executor?.model || request.model);
 	const format = config.format || 'json';
 	return [
@@ -1445,6 +1457,9 @@ function opencodeRunArgs(request = {}, config = {}, commandSpec = {}, cwd = '') 
 		'run',
 		...(format ? ['--format', format] : []),
 		...(model ? ['--model', model] : []),
+		// Continue the same OpenCode session when the orchestrator nudges the
+		// model about contract gaps (homeboy#15880): every turn shares context.
+		...(continuation.sessionId ? ['--session', String(continuation.sessionId)] : []),
 		...(config.agent ? ['--agent', config.agent] : []),
 		...(config.variant ? ['--variant', config.variant] : []),
 		...(config.title ? ['--title', config.title] : []),
@@ -1452,8 +1467,164 @@ function opencodeRunArgs(request = {}, config = {}, commandSpec = {}, cwd = '') 
 		// Pass the same canonical directory as the child cwd so it cannot fall
 		// back to an inherited location and prefix a workspace path twice.
 		...(isWorkspaceDirectory(cwd) ? ['--dir', cwd] : []),
-		`${request.instructions}${requiredOutputInstructions(request, config)}`,
+		continuation.message !== undefined
+			? continuation.message
+			: `${request.instructions}${requiredOutputInstructions(request, config)}`,
 	];
+}
+
+const OPENCODE_EMPTY_CHANGE_CONTINUATION = 'The checkout is still unchanged from its starting revision. This task requires a code change with a regression test. Make the edit now in this workspace. If a specific blocker makes the change impossible, return the intentional_no_change declaration naming that blocker.';
+
+function openCodeContinuationMessage(gaps = [], missingOutputs = []) {
+	const parts = [];
+	if (gaps.includes('empty_change')) {
+		parts.push(OPENCODE_EMPTY_CHANGE_CONTINUATION);
+	}
+	if (missingOutputs.length > 0) {
+		parts.push(`Your work is captured. Return the final JSON object with the missing required output(s): ${missingOutputs.join(', ')}, following the schema given earlier.`);
+	}
+	return parts.join('\n\n');
+}
+
+function openCodeContinuationBudget(config = {}) {
+	const raw = config.max_continuation_turns ?? config.maxContinuationTurns;
+	if (raw === undefined || raw === null) {
+		return { turns: DEFAULT_OPENCODE_CONTINUATION_TURNS };
+	}
+	const turns = typeof raw === 'string' && raw.trim() !== '' ? Number(raw) : raw;
+	if (typeof turns !== 'number' || !Number.isInteger(turns) || turns < 0) {
+		return { error: 'executor.config.max_continuation_turns must be a non-negative integer.' };
+	}
+	return { turns };
+}
+
+/**
+ * A change task expects a patch artifact, allows writing, and currently diffs
+ * as empty against the attempt's original starting revision. The flag the
+ * model itself must return is a declared `intentional_no_change` object; a
+ * synthesized no-change classification is the executor's own judgment about
+ * an already-finished turn and never satisfies the contract.
+ */
+function openCodeContinuationTargets(context = {}, turnResults = []) {
+	const request = context.request || {};
+	const changeTask = arrayValue(request.expected_artifacts).includes('patch')
+		&& arrayValue(context.toolPermissions?.native).includes('edit')
+		&& Boolean(context.initialRevision?.revision)
+		&& gitDiff(context.cwd, context.initialRevision).content === '';
+	const gaps = [];
+	if (changeTask && !turnResults.some((turn) => openCodeDeclaredIntentionalNoChange(turn?.stdout))) {
+		gaps.push('empty_change');
+	}
+	const missingOutputs = openCodeMergedStructuredOutputs(request, turnResults).missingRequiredOutputs || [];
+	return { gaps, missingOutputs };
+}
+
+/**
+ * Merge structured outputs across continuation turns: later turns are more
+ * authoritative (they answer the specific gap message) but never erase an
+ * earlier turn's captured outputs. Required-output completeness is evaluated
+ * once against the merged result.
+ */
+function openCodeMergedStructuredOutputs(request = {}, turnResults = []) {
+	const declarations = outputDeclarations(request);
+	if (declarations.length === 0) {
+		return {};
+	}
+	const outputs = {};
+	for (const turn of turnResults) {
+		Object.assign(outputs, structuredOpenCodeOutputs({ request, spawnResult: turn }).outputs);
+	}
+	const missing = declarations
+		.filter((declaration) => declaration.required && !Object.hasOwn(outputs, declaration.name))
+		.map((declaration) => declaration.name);
+	return {
+		...(Object.keys(outputs).length > 0 ? { outputs } : {}),
+		missingRequiredOutputs: missing,
+		diagnostics: outputDiagnostics(missing, [], { runtime: 'opencode', label: 'OpenCode' }),
+	};
+}
+
+/**
+ * The model's own `intentional_no_change` declaration, returned through the
+ * declared-outputs JSON envelope (top level, or nested under `outputs`). Core
+ * owns schema validation; presence of a well-formed object is enough to treat
+ * the empty checkout as deliberate here.
+ */
+function openCodeDeclaredIntentionalNoChange(stdout = '') {
+	for (const text of parseJsonObjectsFromText(stdout).flatMap(openCodeTextParts)) {
+		const parsed = parseStructuredAnswer(text.text);
+		const declaration = objectValue(parsed).outputs?.intentional_no_change ?? parsed?.intentional_no_change;
+		if (declaration && typeof declaration === 'object' && !Array.isArray(declaration)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+function openCodeGapEvidence(gaps = [], missingOutputs = []) {
+	return [...gaps, ...missingOutputs.map((name) => `missing_outputs:${name}`)];
+}
+
+/**
+ * Continue the same session with precise gap feedback while the continuation
+ * budget and the overall timeout allow. Only successful turns with a single
+ * session id and detectable gaps trigger a nudge; failing turns are terminal
+ * route evidence. The final evaluation happens downstream against the merged
+ * result (all turns' edits count toward the patch; outputs merge, later
+ * turns win; usage and logs cover every turn).
+ */
+async function continueOpenCodeAgentTaskSessions(context = {}, { budget = 0, spawnOptions = {}, timeoutSeconds = 0, startedAt = 0 } = {}) {
+	const continuations = [];
+	const turnResults = [context.spawnResult];
+	const deadline = timeoutSeconds > 0 ? startedAt + timeoutSeconds * 1000 : 0;
+	// The overall timeout bounds all turns together: each continuation gets
+	// only the wall-clock time the earlier turns left unspent.
+	while (continuations.length < budget) {
+		const { gaps, missingOutputs } = openCodeContinuationTargets(context, turnResults);
+		const gapEvidence = openCodeGapEvidence(gaps, missingOutputs);
+		if (gapEvidence.length === 0) break;
+		const sessionIds = openCodeSessionIds(turnResults.at(-1).stdout);
+		if (sessionIds.length !== 1) break;
+		const remainingMs = deadline ? deadline - Date.now() : 0;
+		if (deadline && remainingMs <= 0) break;
+		const turn = continuations.length + 1;
+		const sessionId = sessionIds[0];
+		const turnResult = await spawnOpenCodeStreaming(context.commandSpec.command, opencodeRunArgs(
+			context.request,
+			context.config,
+			context.commandSpec,
+			context.cwd,
+			{ sessionId, message: openCodeContinuationMessage(gaps, missingOutputs) }
+		), {
+			...spawnOptions,
+			appendLogs: true,
+			timeoutMs: remainingMs > 0 ? remainingMs : 0,
+		});
+		turnResults.push(turnResult);
+		continuations.push({
+			turn,
+			gaps: gapEvidence,
+			session_id: sessionId,
+			exit_status: turnResult.status ?? turnResult.signal ?? null,
+		});
+		if (turnResult.error || turnResult.status !== 0) break;
+	}
+	if (continuations.length === 0) {
+		return;
+	}
+	context.opencodeContinuations = continuations;
+	context.structuredOutputs = openCodeMergedStructuredOutputs(context.request, turnResults);
+	const last = turnResults.at(-1);
+	context.spawnResult = {
+		stdout: turnResults.map((turn) => turn.stdout || '').join('\n'),
+		stderr: turnResults.map((turn) => turn.stderr || '').join('\n'),
+		// The shared progress adapter accumulates across turns.
+		progress: last.progress || { emitted: 0, coalesced_or_dropped: 0, last_type: '' },
+		status: last.status,
+		...(last.signal ? { signal: last.signal } : {}),
+		...(last.error ? { error: last.error } : {}),
+		...(last.fatalRuntimeError ? { fatalRuntimeError: last.fatalRuntimeError } : {}),
+	};
 }
 
 
@@ -1593,34 +1764,55 @@ async function executeOpenCodeAgentTask(request = {}, options = {}) {
 	const timeoutSeconds = timeoutSecondsFromLimits(request.limits, config.timeout_seconds);
 	const progressEventPath = openCodeProgressEventPath(request, config);
 	const initialRevision = gitRevision(cwd);
+	const continuationBudget = openCodeContinuationBudget(config);
+	if (continuationBudget.error) {
+		return outcome(request, {
+			status: 'provider_error',
+			failure_classification: 'provider_setup',
+			failure_code: 'agent_task.invalid_request',
+			summary: continuationBudget.error,
+			diagnostics: [{ classification: 'provider_setup', message: continuationBudget.error }],
+		});
+	}
 	const scratchRoot = config.runtime_env?.TMPDIR;
 	if (isAbsolutePath(scratchRoot)) {
 		try { writeOwnershipMarker(scratchRoot, { task_id: request.task_id, workspace: cwd }, options.env || process.env); } catch { /* Retention remains fail-closed when scratch cannot be marked. */ }
 	}
-	const spawnResult = await spawnOpenCodeStreaming(commandSpec.command, args, {
+	const startedAt = Date.now();
+	const progressAdapter = createOpenCodeProgressAdapter({
+		taskId: request.task_id,
+		cwd,
+		env: spawnExtra.env,
+		filePath: progressEventPath,
+		maxEvents: config.max_progress_events || config.maxProgressEvents,
+		onProgress: options.onProgress || options.on_progress,
+	});
+	const spawnOptions = {
 		cwd,
 		env: spawnExtra.env,
 		timeoutMs: timeoutSeconds > 0 ? timeoutSeconds * 1000 : 0,
 		runtimeLogPaths,
 		diagnosticLogPath: openCodeDiagnosticLogPath(config, spawnExtra.env),
 		expectedModel: effectiveOpenCodeModel(config, request.executor?.model || request.model),
-		progress: createOpenCodeProgressAdapter({
-			taskId: request.task_id,
-			cwd,
-			env: spawnExtra.env,
-			filePath: progressEventPath,
-			maxEvents: config.max_progress_events || config.maxProgressEvents,
-			onProgress: options.onProgress || options.on_progress,
-		}),
-	});
-	if (isAbsolutePath(scratchRoot)) {
-		try { finalizeOwnershipMarker(scratchRoot, openCodeSessionIds(spawnResult.stdout)[0], options.env || process.env); } catch { /* The active signed marker remains protected on finalization failure. */ }
+		progress: progressAdapter,
+	};
+	const spawnResult = await spawnOpenCodeStreaming(commandSpec.command, args, spawnOptions);
+	const context = { request, config, commandSpec, cwd, initialRevision, spawnResult, spawnExtra, runtimeLogPaths, progressEventPath, toolPermissions };
+	if (spawnResult.status === 0 && !spawnResult.error && continuationBudget.turns > 0) {
+		await continueOpenCodeAgentTaskSessions(context, {
+			budget: continuationBudget.turns,
+			spawnOptions,
+			timeoutSeconds,
+			startedAt,
+		});
 	}
-	const context = { request, config, commandSpec, cwd, initialRevision, spawnResult, spawnExtra, runtimeLogPaths, progressEventPath };
+	if (isAbsolutePath(scratchRoot)) {
+		try { finalizeOwnershipMarker(scratchRoot, openCodeSessionIds(context.spawnResult.stdout)[0], options.env || process.env); } catch { /* The active signed marker remains protected on finalization failure. */ }
+	}
 	const runtimeLogs = collectOpenCodeRuntimeLogs(context);
 	const progressEvidence = collectOpenCodeProgressEvents(context);
 
-	if (spawnResult.error?.code === 'ENOENT') {
+	if (context.spawnResult.error?.code === 'ENOENT') {
 		return outcome(request, {
 			status: 'provider_error',
 			failure_classification: 'provider',
@@ -1632,9 +1824,9 @@ async function executeOpenCodeAgentTask(request = {}, options = {}) {
 		});
 	}
 
-	if (spawnResult.error) {
-		const timedOut = spawnResult.error.code === 'ETIMEDOUT';
-		const fatalRuntimeError = spawnResult.fatalRuntimeError;
+	if (context.spawnResult.error) {
+		const timedOut = context.spawnResult.error.code === 'ETIMEDOUT';
+		const fatalRuntimeError = context.spawnResult.fatalRuntimeError;
 		return outcome(request, {
 			status: timedOut ? 'timeout' : 'provider_error',
 			failure_classification: fatalRuntimeError?.classification || (timedOut ? 'timeout' : 'provider'),
@@ -1643,7 +1835,7 @@ async function executeOpenCodeAgentTask(request = {}, options = {}) {
 			diagnostics: [{
 				class: fatalRuntimeError ? 'opencode.provider_quota' : undefined,
 				classification: fatalRuntimeError?.classification || (timedOut ? 'timeout' : 'provider_setup'),
-				message: spawnResult.error.message,
+				message: context.spawnResult.error.message,
 			}],
 			metadata: { opencode_session: sessionMetadata(context), opencode_progress: progressMetadata(context) },
 			...mergeEvidence(runtimeLogs, progressEvidence),
@@ -1651,7 +1843,7 @@ async function executeOpenCodeAgentTask(request = {}, options = {}) {
 	}
 
 	const declaredEvidence = harvestDeclaredArtifacts({ request, config, cwd, artifactDir: artifactDirectory(request, config) || resolveArtifactDir(context) });
-	const providerEvidence = spawnResult.status === 0 ? opencodeSuccessOutcome(context) : opencodeFailureOutcome(context);
+	const providerEvidence = context.spawnResult.status === 0 ? opencodeSuccessOutcome(context) : opencodeFailureOutcome(context);
 	const collected = { ...providerEvidence, ...mergeEvidence(providerEvidence, declaredEvidence) };
 	const terminal = applyDeclaredArtifactResult(withArtifactCaptureFailure(collected), declaredEvidence);
 	return outcome(request, { ...terminal, ...mergeEvidence(terminal, runtimeLogs) });
@@ -1739,10 +1931,13 @@ function spawnOpenCodeStreaming(command, args, options = {}) {
 
 		for (const filePath of Object.values(options.runtimeLogPaths || {})) {
 			fs.mkdirSync(path.dirname(filePath), { recursive: true });
-			fs.writeFileSync(filePath, '');
+			// Continuation turns append so the runtime transcript covers all turns.
+			if (options.appendLogs !== true) {
+				fs.writeFileSync(filePath, '');
+			}
 		}
 		const rootPath = options.env?.HOMEBOY_OPENCODE_ACTIVITY_ROOT;
-		if (rootPath) fs.writeFileSync(rootPath, '{}');
+		if (rootPath && options.appendLogs !== true) fs.writeFileSync(rootPath, '{}');
 
 		const reportFatalRuntimeError = (detected) => {
 			if (fatalRuntimeError) {
