@@ -118,7 +118,9 @@ function piRuntimeReadiness(request = {}, options = {}) {
 	const executable = result.identity.executable || resolveExecutable(config.command || env.HOMEBOY_PI_COMMAND || PI_DEFAULT_COMMAND, env, options);
 	const timeout = boundedTimeout(config.readiness_timeout_ms);
 	const probe = (options.spawnSync || spawnSync)(executable, ['--list-models'], {
-		encoding: 'utf8', timeout, maxBuffer: 16 * 1024, env,
+		// The catalog grows with every configured provider (hundreds of rows with
+		// aggregator keys); a small buffer would turn into a permanent ENOBUFS.
+		encoding: 'utf8', timeout, maxBuffer: 1024 * 1024, env,
 	});
 	if (probe.error || probe.signal) {
 		Object.assign(result, { ready: false, classification: 'transient_failure', retryable: true,
