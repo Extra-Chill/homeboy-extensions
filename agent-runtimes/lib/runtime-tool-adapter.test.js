@@ -3,7 +3,7 @@
 const assert = require('node:assert/strict');
 const {
 	adapterRuntimeToolRequest,
-	applyOpenCodeRuntimeTools,
+	applyPiRuntimeTools,
 	codexRuntimeToolConfigArgs,
 	RESOLVED_RUNTIME_TOOL_SCHEMA,
 	RAW_RUNTIME_TOOLS_ENV,
@@ -40,11 +40,11 @@ const env = { FIXTURE_TOKEN: 'private-token' };
 
 assert.deepEqual(resolvedRuntimeTools(request, env)[0].argv, ['/fixture/mcp', '--isolated']);
 assert.deepEqual(resolvedRuntimeTools({}, { [RESOLVED_RUNTIME_TOOLS_ENV]: JSON.stringify(request.resolved_runtime_tools) })[0].argv, ['/fixture/mcp', '--isolated']);
-const openCode = applyOpenCodeRuntimeTools({}, request, env);
-assert.deepEqual(openCode.mcp['fixture.mcp'], {
+const pi = applyPiRuntimeTools({}, request, env);
+assert.deepEqual(pi.mcp['fixture.mcp'], {
 	type: 'local', command: ['/fixture/mcp', '--isolated'], environment: { FIXTURE_MODE: 'isolated', FIXTURE_TOKEN: 'private-token' }, enabled: true,
 });
-assert.deepEqual(openCode.mcp['fixture.second'], {
+assert.deepEqual(pi.mcp['fixture.second'], {
 	type: 'local', command: ['/fixture/second'], environment: {}, enabled: true,
 });
 const codex = codexRuntimeToolConfigArgs(request, env);

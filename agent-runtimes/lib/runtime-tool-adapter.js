@@ -80,7 +80,7 @@ function readyRuntimeToolEvidence(readiness, capabilities) {
 		&& ['version_command', 'protocol', 'declared_probe'].includes(evidence.kind);
 }
 
-function applyOpenCodeRuntimeTools(content = {}, request = {}, env = process.env) {
+function applyPiRuntimeTools(content = {}, request = {}, env = process.env) {
 	const tools = resolvedRuntimeTools(request, env);
 	if (tools.length === 0) {
 		return content;
@@ -158,7 +158,7 @@ module.exports = {
 	RAW_RUNTIME_TOOLS_ENV,
 	RESOLVED_RUNTIME_TOOLS_ENV,
 	adapterRuntimeToolRequest,
-	applyOpenCodeRuntimeTools,
+	applyPiRuntimeTools,
 	codexRuntimeToolConfigArgs,
 	resolvedRuntimeTools,
 	runtimeToolSecretEnvNames,
