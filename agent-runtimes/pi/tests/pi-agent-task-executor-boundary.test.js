@@ -28,7 +28,7 @@ const provider = providerContract();
 assert.equal(provider.id, 'pi.agent-task-executor');
 assert.equal(provider.backend, 'pi');
 assert.equal(provider.runtime, 'pi');
-assert.equal(provider.status, 'experimental');
+assert.equal(provider.status, 'active');
 assert.equal(provider.integration_contract, 'homeboy-pi-agent-task/v1');
 assert.equal(Object.hasOwn(provider.lifecycle, 'max_concurrency_default'), false);
 assert.equal(provider.lifecycle.cancellation, 'process_signal');

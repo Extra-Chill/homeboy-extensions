@@ -87,7 +87,7 @@ function providerContract(options = {}) {
 			completion: 'synchronous_process',
 			cancellation: 'process_signal',
 		},
-		status: 'experimental',
+		status: 'active',
 		integration_contract: 'homeboy-pi-agent-task/v1',
 	};
 }
