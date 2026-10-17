@@ -231,6 +231,23 @@ the same event summary and exposes `progress_events` when events were emitted.
 
 ## Usage Accounting
 
+While a turn is successful, the executor compares the result with the task
+contract (homeboy#15880). Two gaps trigger a session continuation before the
+attempt ends: an unchanged checkout on a change task (a `patch` artifact is
+expected, write access is allowed, and the model did not return a declared
+`intentional_no_change` object), and required structured outputs missing from
+the merged result, for example `review_form`. `opencode run --session <id>`
+continues the exact conversation with a short gap message in the same
+workspace, model, directory, and JSON format. `executor.config.max_continuation_turns`
+caps the nudges (default 2, 0 disables), and the overall timeout bounds all
+turns together rather than resetting per turn. The final evaluation diffs the
+whole attempt against the original starting revision, merges structured
+outputs across turns with later turns winning, and aggregates usage, progress,
+transcript, and runtime-log evidence over every turn. Each continuation is
+recorded as `metadata.opencode_continuations` entries carrying the turn number,
+gap kinds, session id, and exit status. Failing turns, timeouts, spawn errors,
+and policy denials never trigger a continuation.
+
 The adapter emits `metadata.provider_usage` from verified `step_finish` JSONL
 frames. It sums only de-duplicated events identified by `sessionID` plus
 `part.id`; missing fields, malformed lines, and scan truncation set the
