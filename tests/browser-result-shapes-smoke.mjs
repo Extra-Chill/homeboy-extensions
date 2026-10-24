@@ -6,6 +6,7 @@ import {
     HOMEBOY_BROWSER_EVIDENCE_SCHEMA,
     buildBenchResultsEnvelope,
     buildBrowserBenchResult,
+    normalizeTraceAssertion,
 } from '../scripts/lib/browser-result-shapes.mjs';
 
 test('browser benchmark helpers emit the canonical Homeboy result envelope', () => {
@@ -43,5 +44,15 @@ test('browser benchmark helpers emit the canonical Homeboy result envelope', () 
             browser_evidence_schema: HOMEBOY_BROWSER_EVIDENCE_SCHEMA,
             route: '/wp-admin/',
         },
+    });
+});
+
+test('trace assertions carry details in the field Homeboy core reads', () => {
+    // Core's TraceAssertion accepts id, status, message and details, and rejects any other field.
+    assert.deepEqual(normalizeTraceAssertion('port-moved', 'pass', 'Moved off a taken port', { port: 8026 }), {
+        details: { port: 8026 },
+        id: 'port-moved',
+        message: 'Moved off a taken port',
+        status: 'pass',
     });
 });
