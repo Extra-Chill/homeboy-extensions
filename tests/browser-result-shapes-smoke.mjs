@@ -56,3 +56,26 @@ test('trace assertions carry details in the field Homeboy core reads', () => {
         status: 'pass',
     });
 });
+
+test('trace recorder writes events and assertions in the shape Homeboy core parses', async () => {
+    const { mkdtemp, readFile } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const { createTraceRecorder } = await import('../nodejs/scripts/trace/lib/timeline.mjs');
+    const dir = await mkdtemp(join(tmpdir(), 'trace-shape-'));
+    const recorder = createTraceRecorder({
+        scenarioId: 'shape',
+        resultsFile: join(dir, 'results.json'),
+        timelinePath: join(dir, 'trace.jsonl'),
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 3));
+    await recorder.recordEvent('scenario', 'ready', { port: 8026 });
+    recorder.recordCheck('port-moved', true, 'Moved off a taken port', { port: 8026 });
+    await recorder.writeTraceResults({ summary: 'ok' });
+
+    const results = JSON.parse(await readFile(join(dir, 'results.json'), 'utf8'));
+    // Core reads t_ms as an unsigned integer and assertion extras as `details`.
+    assert.ok(Number.isInteger(results.timeline[0].t_ms), `t_ms ${results.timeline[0].t_ms}`);
+    assert.deepEqual(results.assertions[0].details, { port: 8026 });
+});
