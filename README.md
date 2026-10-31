@@ -1,3 +1,5 @@
+> **This repository moved.** The extensions now live in [`extensions/`](https://github.com/Extra-Chill/homeboy/tree/main/extensions) of [Extra-Chill/homeboy](https://github.com/Extra-Chill/homeboy), with full history and tags (Extra-Chill/homeboy#16783). This repository is frozen, so please open issues and pull requests there. Existing installs follow the move on `homeboy extension update`.
+
 # Homeboy Extensions
 
 Agent runtime providers describe invocation and process lifecycle behavior. They do not own
